@@ -1,0 +1,21 @@
+# 统一换行符，避免 Windows 提交污染 diff
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+
+# 二进制
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.pdf   binary
+
+# 语言统计
+docs/* linguist-documentation

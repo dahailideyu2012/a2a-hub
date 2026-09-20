@@ -1,0 +1,51 @@
+# ---- secrets / local config ----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+config/agents.local.yaml
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-version
+
+# ---- test / tooling cache ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- runtime data ----
+data/
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# ---- editors / os ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- node (web console tooling, optional) ----
+node_modules/
+
+# ---- workbuddy agent-local state (session notes, local paths) ----
+.workbuddy/

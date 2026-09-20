@@ -1,0 +1,26 @@
+services:
+  hub:
+    build: .
+    image: a2a-hub:0.2.0
+    container_name: a2a-hub
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: "8080"
+      # 容器内跑不了宿主机的 claude/codex CLI，
+      # 需要本地 CLI agent 时请在宿主机直接运行（python run.py serve）
+      A2A_STORE: sqlite
+      A2A_DB_PATH: /app/data/a2a_hub.db
+      A2A_AGENTS_FILE: /app/config/agents.yaml
+    volumes:
+      - ./data:/app/data
+      - ./config/agents.yaml:/app/config/agents.yaml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

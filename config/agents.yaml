@@ -1,0 +1,290 @@
+# ============================================================================
+# A2A Hub —— Agent 注册表
+#
+# 每个条目 = 一个可被 A2A 协议调用的 agent。
+# 字段说明：
+#   id          唯一标识，也是 URL 路径 /agents/{id}/
+#   type        适配器类型，见 a2a_hub/adapters/__init__.py 的 ADAPTER_TYPES
+#   skills      能力清单，决定"该找谁"——标签和描述越准，自动路由越准
+#   priority    协同路由权重，越大越优先
+#   auto_route  false = 只能被显式点名，不参与自动路由（适合高风险/计费贵的 agent）
+#   config      适配器专属配置，支持 ${ENV_VAR} 占位符
+# ============================================================================
+
+hub:
+  name: A2A Hub
+  description: 异构 AI Agent 互联互通与多智能体协同网关
+
+agents:
+  # --------------------------------------------------------------------------
+  # 1. WorkBuddy —— 本地桌面智能体（CLI 无头模式）
+  # --------------------------------------------------------------------------
+  - id: workbuddy
+    name: WorkBuddy
+    type: workbuddy
+    description: 本地桌面 AI 智能体，擅长读写本地文件、执行命令、调用技能与 MCP 工具
+    priority: 6
+    tags: [local, filesystem, automation, cli, workbuddy]
+    skills:
+      - id: local-file-ops
+        name: 本地文件与工程操作
+        description: 读取/写入/重构本地代码与文档，执行 shell 命令，操作工作区文件
+        tags: [本地, 文件, file, 代码, code, 重构, refactor, 命令行, shell, workspace]
+        examples:
+          - 把 C:\soft\demo 下的 JS 项目改造成 TypeScript
+          - 扫描这个目录并生成项目结构说明
+      - id: skill-orchestration
+        name: 技能与工具编排
+        description: 调用已安装的 Skill、MCP server 与自动化任务
+        tags: [skill, mcp, 技能, 自动化, automation, workflow]
+        examples:
+          - 用 OCR 技能识别这批证件的字段
+      - id: long-task
+        name: 长任务执行
+        description: 适合多步骤、需要中途读写文件的工程类长任务
+        tags: [长任务, 多步骤, pipeline, 工程]
+    config:
+      command: "${WORKBUDDY_CLI:-workbuddy} -p {prompt} --output-format stream-json"
+      parser: jsonl
+      text_paths: ["result", "content", "message.content", "data.text"]
+      timeout: 300
+
+  # --------------------------------------------------------------------------
+  # 2. Claude Code —— Anthropic 本地编码智能体
+  # --------------------------------------------------------------------------
+  - id: claude-code
+    name: Claude Code
+    type: claude_code
+    description: Anthropic 官方编码智能体，代码理解与评审能力突出
+    priority: 7
+    tags: [coding, review, refactor, cli, anthropic]
+    skills:
+      - id: code-review
+        name: 代码评审
+        description: 深度代码审查，指出缺陷、安全风险与可维护性问题，给出改进补丁
+        tags: [评审, review, 审查, 质量, quality, 安全, security, bug, 缺陷, 重构, refactor]
+        examples:
+          - 评审这段 Python 代码并指出并发安全问题
+      - id: code-generation
+        name: 代码实现
+        description: 按需求编写、修改、重构代码，可操作真实仓库
+        tags: [写代码, 实现, 编码, code, implement, 开发, 函数, function, 脚本, script]
+        examples:
+          - 实现一个带重试的 HTTP 客户端
+      - id: repo-understanding
+        name: 仓库理解
+        description: 阅读大型代码库并回答架构与调用链问题
+        tags: [架构, architecture, 代码库, repo, 调用链, 分析]
+    config:
+      command: "claude -p {prompt} --output-format stream-json --verbose --permission-mode bypassPermissions"
+      parser: claude
+      timeout: 300
+
+  # --------------------------------------------------------------------------
+  # 3. Codex —— OpenAI 编码智能体
+  # --------------------------------------------------------------------------
+  - id: codex
+    name: Codex
+    type: codex
+    description: OpenAI Codex CLI，擅长算法实现、调试与自动化脚本
+    priority: 6
+    tags: [coding, algorithm, debug, cli, openai]
+    skills:
+      - id: algorithm-implementation
+        name: 算法与逻辑实现
+        description: 实现算法、数据结构、复杂业务逻辑，并可自行运行验证
+        tags: [算法, algorithm, 数据结构, 逻辑, 实现, implement, 调试, debug, 测试, test]
+        examples:
+          - 实现一个支持并发限流的地图缓存
+      - id: code-migration
+        name: 代码迁移与重构
+        description: 跨语言/跨版本迁移代码，批量重构
+        tags: [迁移, migrate, 重构, refactor, 升级, upgrade, 转换, convert]
+        examples:
+          - 把 Python 2 脚本迁移到 Python 3.13
+    config:
+      command: "codex exec --skip-git-repo-check --json {prompt}"
+      parser: codex
+      timeout: 300
+
+  # --------------------------------------------------------------------------
+  # 4. 千问办公 —— 阿里云通义千问（DashScope OpenAI 兼容模式）
+  # --------------------------------------------------------------------------
+  - id: qwen-office
+    name: 千问办公
+    type: openai_compat
+    description: 阿里云通义千问，中文写作、公文、PPT 大纲与长文档处理见长
+    priority: 8
+    tags: [chinese, writing, office, alibaba, qwen]
+    skills:
+      - id: chinese-writing
+        name: 中文写作与润色
+        description: 撰写公文、报告、方案、公众号文案，风格化改写与润色
+        tags: [写作, writing, 润色, polish, 文案, copywriting, 公文, 报告, report, 中文, 总结, summarize]
+        examples:
+          - 把这份技术材料改写成给管理层看的汇报稿
+      - id: office-document
+        name: 办公文档处理
+        description: 生成会议纪要、周报月报、PPT 大纲、表格分析与制度文本
+        tags: [办公, office, ppt, 大纲, outline, 纪要, minutes, 周报, 表格, excel, 制度]
+        examples:
+          - 根据这些要点生成一份 10 页 PPT 大纲
+      - id: general-qa
+        name: 通用问答与知识解释
+        description: 各类知识性问答、概念解释与中文语境理解
+        tags: [问答, qa, 解释, explain, 科普, 知识, knowledge, 是什么, 为什么]
+    config:
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      api_key: "${DASHSCOPE_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
+      model: "qwen-plus"
+      system_prompt: "你是千问，阿里巴巴通义大模型。回答专业、结构清晰，优先使用中文。"
+      temperature: 0.7
+      timeout: 180
+
+  # --------------------------------------------------------------------------
+  # 5. 扣子 Coze —— 字节跳动 Bot 平台
+  # --------------------------------------------------------------------------
+  - id: coze
+    name: 扣子 Coze
+    type: coze
+    description: 字节跳动扣子平台的 Bot，可挂载插件、工作流与知识库
+    priority: 5
+    tags: [coze, bot, workflow, plugin, bytedance]
+    skills:
+      - id: bot-workflow
+        name: Bot 工作流
+        description: 调用扣子 Bot 上绑定的插件、工作流与知识库完成业务任务
+        tags: [工作流, workflow, 插件, plugin, 知识库, knowledge, bot, 扣子, coze, 业务]
+        examples:
+          - 用已配置的工作流查询这批订单状态
+      - id: customer-service
+        name: 客服与问答机器人
+        description: 面向终端用户的问答、引导与工单处理
+        tags: [客服, service, 问答, faq, 工单, ticket, 引导]
+    config:
+      base_url: "https://api.coze.cn"
+      api_token: "${COZE_API_TOKEN}"
+      bot_id: "${COZE_BOT_ID}"
+      user_id: "a2a-hub"
+      timeout: 180
+
+  # --------------------------------------------------------------------------
+  # 6~8. 其他 OpenAI 兼容大模型（按需启用，留空 key 会自动标记 unavailable）
+  # --------------------------------------------------------------------------
+  - id: deepseek
+    name: DeepSeek
+    type: openai_compat
+    description: DeepSeek，推理与代码能力强，性价比高
+    priority: 7
+    tags: [reasoning, coding, chinese, deepseek]
+    skills:
+      - id: deep-reasoning
+        name: 复杂推理与数学
+        description: 多步推理、数学证明、逻辑分析、算法设计
+        tags: [推理, reasoning, 数学, math, 逻辑, logic, 证明, 分析, 算法]
+      - id: code-generation
+        name: 代码生成
+        description: 各类编程语言代码生成与排错
+        tags: [代码, code, 编程, 实现, implement, 报错, error, 排错]
+    config:
+      base_url: "https://api.deepseek.com/v1"
+      api_key: "${DEEPSEEK_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
+      model: "deepseek-chat"
+      timeout: 180
+
+  - id: kimi
+    name: Kimi
+    type: openai_compat
+    description: Moonshot Kimi，超长上下文，适合长文档分析
+    priority: 5
+    tags: [long-context, document, chinese, moonshot]
+    skills:
+      - id: long-document
+        name: 长文档分析
+        description: 处理超长文本、整本书/整套文档的摘要与问答
+        tags: [长文本, 长文档, 摘要, summarize, 分析, 文档, document, 阅读]
+    config:
+      base_url: "https://api.moonshot.cn/v1"
+      api_key: "${MOONSHOT_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
+      model: "moonshot-v1-128k"
+      timeout: 240
+
+  - id: glm
+    name: 智谱 GLM
+    type: openai_compat
+    description: 智谱清言 GLM，中文理解与工具调用
+    priority: 5
+    tags: [chinese, zhipu, glm]
+    skills:
+      - id: general-qa
+        name: 通用问答
+        description: 中文知识问答、常识解释、内容生成
+        tags: [问答, qa, 解释, explain, 中文, 生成]
+    config:
+      base_url: "https://open.bigmodel.cn/api/paas/v4"
+      api_key: "${ZHIPU_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
+      model: "glm-4-plus"
+      timeout: 180
+
+  # --------------------------------------------------------------------------
+  # 9. 本地模型（Ollama / vLLM / LM Studio）
+  # --------------------------------------------------------------------------
+  - id: local-llm
+    name: 本地模型
+    type: openai_compat
+    description: 本地部署的开源模型（Ollama / vLLM / LM Studio），数据不出内网
+    priority: 4
+    tags: [local, offline, privacy, ollama]
+    auto_route: false
+    skills:
+      - id: private-inference
+        name: 私有化推理
+        description: 敏感数据场景下的本地推理，不出内网
+        tags: [本地, local, 私有, private, 离线, offline, 敏感, 保密]
+    config:
+      base_url: "${OPENAI_BASE_URL:-http://localhost:11434/v1}"
+      api_key: "${OPENAI_API_KEY:-ollama}"  # gau:allow 环境变量占位符，非真实密钥
+      model: "qwen2.5:7b"
+      timeout: 300
+
+  # --------------------------------------------------------------------------
+  # 10. 演示 agent —— 零依赖，永远健康，用于连通性验证与自动化测试
+  # --------------------------------------------------------------------------
+  - id: echo
+    name: 回显助手
+    type: echo
+    description: 本地回显 agent，零依赖，用于验证 A2A 链路是否通畅
+    priority: -10
+    tags: [demo, test, offline, echo]
+    skills:
+      - id: echo
+        name: 连通性回显
+        description: 原样返回收到的内容，并附带链路元数据，用于自检与压测
+        tags: [回显, echo, 测试, test, 连通性, ping, 自检]
+        examples:
+          - ping
+    config:
+      prefix: "[echo]"
+      chunk_delay: 0.0
+      emit_data_part: true
+
+  # --------------------------------------------------------------------------
+  # 11. 示例：把别人的 A2A 服务挂进来（agent-to-agent 级联）
+  #     取消注释并填上真实地址即可使用
+  # --------------------------------------------------------------------------
+  # - id: partner-agent
+  #   name: 合作方 Agent
+  #   type: remote_a2a
+  #   description: 通过 A2A 协议接入的外部 agent
+  #   enabled: false
+  #   url: "https://partner.example.com/a2a"
+  #   skills:
+  #     - id: contract-review
+  #       name: 合同审查
+  #       description: 法务条款审查与风险提示
+  #       tags: [合同, contract, 法务, legal, 风险]
+  #   config:
+  #     discover: true
+  #     stream: true
+  #     headers:
+  #       Authorization: "Bearer ${PARTNER_TOKEN}"
