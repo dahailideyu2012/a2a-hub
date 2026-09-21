@@ -781,6 +781,28 @@ agents:
 
 ## 部署
 
+### 提交后自动同步 GitHub
+
+本仓库约定：**每次改动提交后都要推到 GitHub**。已配成 `post-commit` hook，
+commit 完后台自动推送，不用手动 `git push`。
+
+```bash
+sh scripts/install-hooks.sh      # 首次 clone 后执行一次
+```
+
+> 之所以需要这个脚本而不是直接 `git push`：本机代理只放行 `api.github.com`，
+> `github.com` 的 git 传输协议必然超时，所以走 `github-auto-upload` 的
+> **Git Data API** 模式。hook 后台执行（一次上传约 40~60 秒，不阻塞提交），
+> 推送日志在 `.workbuddy/auto-push.log`。
+> `.git/hooks/` 不被 git 跟踪，因此 hook 本体放在 `scripts/post-commit`
+> 并纳入仓库，换机器 clone 后重跑一次安装脚本即可。
+
+手动补推（hook 未装或想立刻同步时）：
+
+```bash
+"$PY" ~/.workbuddy/skills/github-auto-upload/scripts/auto_upload.py push --api
+```
+
 ### Docker
 
 ```bash

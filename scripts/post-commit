@@ -1,0 +1,22 @@
+#!/bin/sh
+# post-commit —— 每次提交后自动同步到 GitHub。
+#
+# 由 `scripts/install-hooks.sh` 复制到 .git/hooks/ 生效。
+# （`.git/hooks/` 不被 git 跟踪，所以脚本本体必须存在仓库里，否则换台机器
+#   clone 之后自动化就丢了。）
+#
+# 为什么不用 git push：本机代理只放行 api.github.com，github.com 的 git
+# 传输协议必然超时。所以走 github-auto-upload 的 Git Data API 模式。
+#
+# 为什么放后台：一次 API 上传要 40~60 秒，同步执行会把每次 commit 卡住。
+# 结果写在 .workbuddy/auto-push.log；git 忽略 post-commit 的退出码，
+# 所以推送失败也不会让提交失败。
+
+PY="${A2A_PUSH_PYTHON:-C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python.exe}"
+SK="${A2A_PUSH_SKILL:-C:/Users/Administrator/.workbuddy/skills/github-auto-upload/scripts/auto_upload.py}"
+LOG="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.workbuddy/auto-push.log"
+
+echo "----- $(date '+%Y-%m-%d %H:%M:%S') auto push -----" >> "$LOG"
+nohup "$PY" "$SK" push --api >> "$LOG" 2>&1 &
+
+exit 0
