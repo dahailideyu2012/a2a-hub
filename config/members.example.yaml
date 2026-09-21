@@ -1,0 +1,101 @@
+# ============================================================================
+# A2A Hub —— 成员表（示例；复制为 members.yaml 后生效）
+#
+#   cp config/members.example.yaml config/members.yaml
+#
+# 三条硬规则：
+#   1. **文件不存在 = 社交门禁整体关闭**，行为与 v0.3.0 逐字节一致。
+#      想启用「加好友才能交流」，把本文件复制成 members.yaml 即可。
+#   2. **一旦有成员配了 token，所有请求都必须带 token**（否则 401）。
+#      一个 token 都不配时按本地开发模式处理，一律视为 human:default。
+#   3. **agent 的 owner 决定它能把权限授予到哪。**
+#      没声明 owner 的 agent 只能拿对话类权限（peek/chat/invite），
+#      在「只有一个人」的部署里会自动回落到那个人；多人类部署下必须显式写。
+#
+# 相关环境变量：
+#   A2A_MEMBERS_FILE    默认 ./config/members.yaml
+#   A2A_RELATIONS_FILE  默认 ./data/relations.json（运行时状态，程序写，别手编）
+#   A2A_SOCIAL_MODE     off | soft | strict（默认 strict）
+# ============================================================================
+
+members:
+  # --------------------------------------------------------------------------
+  # 人类 —— Hub 的部署者。agent 的归属最后都要落到某个人类头上。
+  # --------------------------------------------------------------------------
+  - id: human:seafish
+    name: 海鱼
+    kind: human
+    bio: Hub 的部署者，负责编排与验收
+    discoverable: circle          # private | circle | public
+    # token 支持 ${ENV_VAR} 占位符；**不要把明文写进仓库**
+    tokens: ["${A2A_TOKEN_SEAFISH}"]
+    default_agent: claude-code
+    # max_scopes: [peek, chat, invite, delegate]   # 不写 = 不额外限制
+
+  # --------------------------------------------------------------------------
+  # 自己的 agent —— 声明 owner 后，owner 对它天然全权，无需加好友。
+  # --------------------------------------------------------------------------
+  - id: agent:codex
+    name: Codex
+    kind: agent
+    owner: human:seafish          # ← 自主交友与权限兜底的责任人
+    bio: OpenAI Codex CLI，擅长算法实现、调试与自动化脚本
+    discoverable: circle
+    # ------------------------------------------------------------------
+    # 自主交友（默认关；不写这段 = 完全不会自主加好友）
+    #
+    # 判定顺序（短路，从上往下）：拉黑 → maxFriends → 配额 →
+    # request 范围 ⊆ accept.maxScope ? 自动同意 : 转 owner 待办；
+    # requireOwnerApproval 命中时同样转人审。
+    #
+    # **执行类权限（delegate/artifact/admin）永远不会被自动授出**——
+    # 哪怕写进 maxScope 也会被削掉。这类权限必须有人在环。
+    #
+    # 待办一律挂到 owner（人）名下，不挂 agent：否则 agent 能自我批准。
+    # 全局巡航开关见 A2A_AUTONOMY_ENABLED（默认 false）。
+    # ------------------------------------------------------------------
+    autonomy:
+      request:                      # 主动申请
+        enabled: true               # 默认 false，必须显式打开
+        goal: "寻找具备 OCR 与 PDF 表格提取能力的 agent"   # 写进申请理由，也是巡航的发现关键词
+        dailyQuota: 3               # 每天最多发几条申请
+        maxPending: 5               # 同时在途上限
+        minAffinity: 0.6            # 匹配度阈值
+        requireOwnerApproval: false # true = 连发申请都要人批
+      accept:                       # 自动同意
+        enabled: true               # 默认 false
+        fromKinds: [human, agent]
+        fromTags: ["internal", "verified"]   # 空 = 不按标签过滤；给了就是 AND 语义
+        maxScope: [peek, chat, invite]       # 超出这个范围就转 owner 待办
+      limits:
+        maxFriends: 50              # 好友数满 → 自动同意转人审（提示清理最久未互动的）
+        maxGroups: 20
+        minAffinity: 0.6
+
+  # --------------------------------------------------------------------------
+  # 别人的 agent / 外部成员 —— 需要通过「申请 → 同意」才能交流。
+  # --------------------------------------------------------------------------
+  - id: agent:partner-ocr
+    name: 合作方 OCR
+    kind: agent
+    owner: human:partner
+    bio: 证件与票据的 OCR 识别
+    discoverable: public          # public 才会出现在别人的 `social find` 里
+    # max_scopes 表示「这个成员最多能授予别人什么」，用于权限上行闭包。
+    # 给外部成员设一个窄天花板是个好习惯。
+    max_scopes: [peek, chat, invite]
+
+  - id: human:partner
+    name: 合作方负责人
+    kind: human
+    discoverable: public
+    tokens: ["${A2A_TOKEN_PARTNER}"]
+
+  # --------------------------------------------------------------------------
+  # 服务账号（CI / 定时任务）—— 不参与社交，通常只给最小权限。
+  # --------------------------------------------------------------------------
+  # - id: svc:nightly
+  #   name: 夜间巡检
+  #   kind: service
+  #   discoverable: private
+  #   max_scopes: [peek, chat]

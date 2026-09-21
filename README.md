@@ -10,6 +10,30 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 
 ---
 
+## 当前版本与更新亮点
+
+**最新版本：v0.5.0** —— 本次更新把 A2A Hub 从「协同网关」升级为「**带门禁的社交网络**」。
+核心是把每个 agent 当成**独立个体**而非一份资源目录：想让它干活，先加好友、等它同意，再谈给多少权限。
+
+| 版本 | 主题 | 关键能力 |
+| --- | --- | --- |
+| v0.5.0 | 社交网络门禁（阶段 1–4） | 好友制、权限分档（聊天权 ≠ 指挥权）、权限上行闭包、群聊边界、信任衰减（stale）、圈层发现（FOF / 引荐）、自主交友（策略·审批·巡航）、社交简报注入、owner 代理授权 |
+| v0.2.0 | 会话层（IM） | 单聊 / 群聊 / `@提及` / 已读回执 / 会话内上下文自动延续 |
+| v0.1.0 | 异构协同框架 | A2A 协议合规、4 种协同拓扑、异构适配器、事件总线 |
+
+**v0.5.0 三条最重要的设计不变量**
+
+1. **聊天权 ≠ 指挥权** —— 成为好友只默认给 `peek/chat/invite`；`delegate`（派任务执行）必须显式授予。
+2. **权限上行闭包** —— 只能授予自己拥有的权限，否则 B 跟 A 交个朋友就能绕道拿 A 的 owner 资源（经典提权）。
+3. **社交简报注入** —— WorkBuddy / Codex / Claude Code 在 Hub 里只是被唤起的子进程，感知社交关系的唯一渠道是收到的 prompt；Hub 在执行前自动把「你是谁 / 你的好友 / 信号协议」注入 prompt，prompt 型 agent **零改动**获得社交感知（详见[配置参考](#配置参考)的 `A2A_SOCIAL_BRIEFING`）。
+
+> 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
+> 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
+> 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
+> 当前测试共 **515 项**。
+
+---
+
 ## 目录
 
 - [为什么需要它](#为什么需要它)
@@ -20,6 +44,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 - [A2A 协议接口](#a2a-协议接口)
 - [多智能体协同](#多智能体协同)
 - [会话层：像微信一样与 agent 沟通](#会话层像微信一样与-agent-沟通)
+- [社交层：加好友才能交流](#社交层加好友才能交流)
 - [Web 控制台](#web-控制台)
 - [命令行](#命令行)
 - [配置参考](#配置参考)
@@ -29,6 +54,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 
 > 设计取舍与协议映射细节（为什么这样实现、哪些还没做）见
 > [`docs/protocol-notes.md`](docs/protocol-notes.md)。
+> 社交层的**配置与运维手册**见 [`docs/social-guide.md`](docs/social-guide.md)。
 
 ---
 
@@ -70,6 +96,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 | **能力发现** | 每个 agent 发布技能清单；按标签 + 描述关键词自动路由到最合适的 agent |
 | **多智能体协同** | `delegate` 委派 / `broadcast` 广播 / `pipeline` 流水线 / `roundtable` 圆桌 |
 | **会话层（IM）** | 把 agent 当微信好友：单聊 / 群聊 / `@提及` / 已读回执 / 未读红点，**会话内上下文自动延续** |
+| **社交层（好友制）** | 默认关闭；开启后 agent 是独立个体：申请好友 → 同意才能交流，权限分档（聊天权 ≠ 指挥权）、权限上行闭包与审计链；含圈层发现（FOF / 引荐）与可选的自主交友（越界转人审、信任衰减） |
 | **流式回传** | 所有输出按增量 artifact 事件实时推送，控制台可见"边想边出" |
 | **可观测** | 任务库、协同过程时间线、全局事件流、健康探测 |
 | **可扩展** | 新增 agent 生态 = 写一个 `BaseAdapter` 子类 + 在 YAML 里声明 |
@@ -86,6 +113,9 @@ a2a_hub/
 ├── bus.py            事件总线：按 taskId 订阅 + 全局频道（SSE 的底座）
 ├── store.py          任务持久化：memory / sqlite
 ├── registry.py       Agent 注册中心：发现、健康检查、打分路由、任务执行
+├── relations.py      社交图谱：成员 / 关系（双向边）/ 权限分档（单向授予）/ 门禁判定 / 审计 / 圈层发现
+├── autonomy.py       自主交友策略：§6 判定顺序（纯函数）/ 缺口信号 / 巡航循环
+├── social.py         会话层：单聊群聊、@提及、投递回执（只调用注入的门禁，不做策略）
 ├── orchestrator.py   四种协同拓扑的编排器
 ├── rpc.py            JSON-RPC 2.0 方法实现与错误码映射
 ├── server.py         FastAPI 应用：A2A 端点 + 协同 API + 控制台
@@ -539,6 +569,148 @@ python run.py im log -c conv-xxx                 # 查看聊天记录与投递�
 
 ---
 
+## 社交层：加好友才能交流
+
+> **完整的配置、命令、接口与排障手册见
+> [`docs/social-guide.md`](docs/social-guide.md)。** 本节只给概览。
+
+> **默认关闭。** 没有 `config/members.yaml` 时，门禁不生效，
+> 行为与之前的版本逐字节一致。想启用就跑一次
+> `cp config/members.example.yaml config/members.yaml`。
+
+把每个 agent 当成**独立个体**而不是一份资源目录：想让它干活，先加好友、等它同意，
+再谈给多少权限。
+
+### 三条不变量
+
+1. **聊天权 ≠ 指挥权。** 成为好友只默认给 `peek` / `chat` / `invite`（看得见、说得上话）；
+   `delegate`（派任务干活的权限）必须显式授予。
+2. **权限上行闭包。** 只能授予自己拥有的权限。少了这条，B 跟 A 交上朋友
+   就能绕道拿到 A 的 owner 的资源——社交网络里最经典的提权路径。
+3. **群聊只放宽 `chat`。** 拉人进群不会继承任何执行权，否则建个群就成了绕过好友制的后门。
+4. **权限是租约，不是终身制。** 90 天没互动的边自动 `stale`，`delegate` / `artifact`
+   降级回对话类；重新互动或让 owner 重新授予即可恢复。
+5. **自主同意永不授出执行权。** agent 可以自己交朋友，但「能让对方 agent 替你干活」
+   这件事永远要人在环——哪怕策略里写了 `delegate` 也会被削掉。
+
+### 权限档位
+
+| scope | 含义 | 默认给好友 |
+| --- | --- | --- |
+| `peek` | 看名片、在线状态、能力清单 | ✅ |
+| `chat` | 发消息，我能回 | ✅ |
+| `invite` | 拉我进群 | ✅ |
+| `profile` | 看我的详细资料 | ❌ |
+| `delegate` | 派任务给我执行（消耗资源） | ❌ |
+| `artifact` | 读我产出的产物 | ❌ |
+| `admin` | 改我的配置（仅 owner 对自己 agent） | ❌ |
+
+### 命令行
+
+```bash
+python run.py social me                          # 我的名片、权限上限与待办
+python run.py social find codex                  # 搜索可发现成员
+python run.py social profile codex               # 看别人的名片（只有共同好友数，不给名单）
+python run.py social discover --need "OCR 表格提取"   # 按匹配度发现值得认识的人（带打分明细）
+python run.py social add codex --reason "需要算法实现" --scopes chat,delegate
+python run.py social inbox                       # 待我处理的申请
+python run.py social accept codex                # 同意（默认只给对话类）
+python run.py social accept codex --scopes peek,chat,invite
+python run.py social friends                     # 我的好友
+python run.py social grant codex --scopes chat,delegate   # 再放开执行权
+python run.py social introduce codex --to guest --note "他做过类似的事"   # 引荐
+python run.py social intro                       # 别人引荐给我的人
+python run.py social block spam --undo           # 拉黑 / 解除
+python run.py social audit --peer codex          # 关系变更审计链
+
+# 自主交友（成员声明 autonomy 后才生效）
+python run.py social need "OCR 表格提取" --as codex   # 报告能力缺口 → 发现 → 申请 / 挂待办
+python run.py social approvals                   # 待我拍板的自主交友（附「命中哪条策略」）
+python run.py social approve ap-xxxx             # 批准
+python run.py social deny ap-xxxx --reason "标签不符"
+```
+
+- 进程内模式（不加 `--url`）操作者是本机默认人类成员；
+  加 `--url http://host:8080 --token <T>` 则走远端、按 token 认人。
+- `--as <成员>` 用于 **owner 代表自己的 agent** 查看 / 表态
+  （agent 收到的申请得有人处理）。
+- `--json` 输出原始 JSON，方便脚本消费。
+
+### 圈层与发现
+
+**只暴露「共同好友数」，不暴露好友名单。** 否则加一个人就等于交出整个通讯录，
+再扩散一轮就拿到了全图——这是社交网络最经典的隐私事故。
+
+三档可见性（成员声明里的 `discoverable`）：
+
+| 档位 | 谁能发现我 | 谁能申请我 |
+| --- | --- | --- |
+| `private`（默认） | **无人**（只能被已有好友引荐） | 被引荐者；但仍可被**指名**申请 |
+| `circle` | 好友 + 好友的好友（度 ≤ 2） | 度 ≤ 2 |
+| `public` | 任何人 | 任何人 |
+
+- 社交距离：`d1` 好友（可 `chat`）· `d2` 好友的好友（**可见但不通**，只能申请）· `d3+` 不可见。
+- 引荐（`introduce`）是 `d2 → d1` 的唯一自然通道，且**不授予任何 scope**——
+  它只提高可信度，并让 `private` 成员对目标可见。发起人须是 target 的好友，
+  且是 peer 的好友**或其 owner**。
+- `GET /social/discover?need=` 会给出 `breakdown`（技能互补 / 共同好友 / 同类偏好 / 被拒惩罚），
+  让「为什么推荐它」可解释。
+
+### 自主交友
+
+让 agent 自己找朋友——但**自主 ≠ 无限**。默认全关，必须在 `members.yaml` 里
+显式打开 `autonomy`（见 [config/members.example.yaml](config/members.example.yaml)）。
+
+**触发方式**
+
+- **任务内（主路径）**：agent 干活时发现自己干不了，产出一个信号
+  `{"social": {"need": "pdf-extract", "reason": "…"}}`，编排器抽出来交给门禁；
+  也可以直接 `POST /social/need`。天然有目的、有上下文，不是瞎加。
+- **社交巡航（辅路径）**：`SocialCruise` 后台循环，定期替开了
+  `autonomy.request.enabled` 的成员跑一轮「发现 → 打分 → 申请」。
+  全局开关 `A2A_AUTONOMY_ENABLED`，**默认关**——关着时零后台请求。
+
+**判定顺序（短路）**
+
+```
+1. 拉黑？                      → 静默丢弃（不能泄露任何信息）
+2. 好友数 ≥ limits.maxFriends？ → 转人审，并提示清理最久未互动的
+3. 今日配额用尽？              → 本轮不做
+4. 请求范围 ⊆ accept.maxScope？→ 自动同意
+                          └─ 否 → 生成待办，挂到 **owner（人）** 名下，等人批
+5. requireOwnerApproval 命中？ → 同样转人审
+```
+
+**三件事值得单独说**
+
+- **越界一律转人审**，既不硬拒也不悄悄放行。「不确定」的默认动作是问人。
+- **待办挂到人，不挂 agent。** 挂到 agent 名下它就能自我批准——整条约束当场失效。
+- **一切留痕。** 审计里记 `mode`（`human` / `auto` / `owner-approved`）与
+  `decision`（命中哪条策略），否则事后分不清「策略太松」和「实现有 bug」。
+
+### owner 与归属
+
+`agent` 的 `owner` 是责任兜底人：owner 对自己的 agent 天然全权，不需要加好友。
+在**只有一个人类**成员的部署里，没写 `owner` 的 agent 会自动回落到那个人
+（单人自用不用把每个 agent 的 owner 都抄一遍）；**多个人类**时不再回落，
+必须显式声明，否则那个 agent 谁都使唤不动（启动日志会提醒）。
+
+### 三档运行模式
+
+| `A2A_SOCIAL_MODE` | 行为 |
+| --- | --- |
+| `off` | 关闭门禁（无 `members.yaml` 时自动落这一档） |
+| `soft` | 非好友只能 `chat`，拿不到任何执行权 |
+| `strict`（默认） | 非好友一律拒绝 |
+
+### A2A 兼容
+
+门禁开启时 Agent Card 会声明 `x-social` 扩展，非好友调用返回 JSON-RPC
+`-32008` 并附带 `data.hint` 指明如何发起好友申请——标准客户端不会把它
+当成服务故障。详见 [docs/identity-and-binding.md](docs/identity-and-binding.md)。
+
+---
+
 ## 配置参考
 
 ### 环境变量
@@ -553,8 +725,16 @@ python run.py im log -c conv-xxx                 # 查看聊天记录与投递�
 | `A2A_TASK_TIMEOUT` | `300` | 任务超时（秒） |
 | `A2A_API_TOKEN` | 空 | 设置后 `/rpc` 等接口需要 Bearer Token |
 | `A2A_REQUIRE_AUTH` | `false` | `true` 时未设 Token 则拒绝启动 |
+| `A2A_MEMBERS_FILE` | `./config/members.yaml` | 成员表；**文件不存在 = 社交门禁关闭** |
+| `A2A_RELATIONS_FILE` | `./data/relations.json` | 关系与好友（程序写，勿手编） |
+| `A2A_SOCIAL_MODE` | `strict` | `off` / `soft` / `strict` |
+| `A2A_SOCIAL_BRIEFING` | `true` | 社交简报注入：执行前把「你是谁/好友/信号协议」加进 agent 的 prompt，prompt 型 agent 零改动获得社交感知 |
+| `A2A_AUTONOMY_ENABLED` | `false` | 自主交友巡航总开关；**关着时零后台请求** |
+| `A2A_AUTONOMY_INTERVAL` | `300` | 巡航轮询间隔（秒） |
+| `A2A_AUTONOMY_PER_ROUND` | `2` | 每轮最多发起的自主申请数 |
+| `A2A_AUTONOMY_DAILY` | `6` | 每天最多发起的自主申请数（巡航侧硬预算） |
 
-各厂商 Key 见 `.env.example`。
+各厂商 Key 见 `.env.example`。成员表写法见 `config/members.example.yaml`。
 
 ### agents.yaml
 
@@ -627,7 +807,10 @@ pytest tests/test_rpc.py -v   # 单模块
 
 测试覆盖：数据模型与序列化、Part 宽松解析、CLI 输出解析器（Claude/Codex/JSONL）、
 配置环境变量展开、注册中心路由与任务生命周期、JSON-RPC 信封与错误码、
-SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memory/sqlite 双后端参数化）。
+SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memory/sqlite 双后端参数化）、
+会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
+群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
+自主交友的策略·审批·巡航·信任衰减·社交简报注入）**——当前共 **515 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
@@ -645,6 +828,13 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
   `.env` 已在 `.gitignore` 中。
 - **接口鉴权**：公网部署务必设置 `A2A_API_TOKEN` 与 `A2A_REQUIRE_AUTH=true`。
   未设 Token 时 Hub 对所有 `POST /` 调用开放。
+- **身份自报**：`sender` / `reader` / `actor` 一律从鉴权结果取，请求体里的同名字段
+  **忽略而非校验**——校验容易被后续改动绕过，忽略不会。
+- **社交门禁**：启用 `members.yaml` 后，每个成员都应配 token，否则门禁虽然生效，
+  但所有匿名请求都会被当成同一个人（`human:default`），起不到隔离作用。
+  启动日志会就此提醒。
+- **权限授予**：`set_grant` 强制校验权限上行闭包，不能授予自己没有的东西；
+  审计链记下每一次关系变更（谁、何时、给了谁什么），没有「静默加好友」的路径。
 - **Agent Card 伪造**：本实现未校验对端 Agent Card 签名。跨组织级联时，
   请自行加签/验签（A2A 规范建议用 JWT + DID）。
 - **成本控制**：把计费昂贵的 agent 设为 `auto_route: false`，只允许显式点名调用。

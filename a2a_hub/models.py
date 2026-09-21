@@ -323,6 +323,8 @@ class JsonRpcErrorCodes:
     CONTENT_TYPE_NOT_SUPPORTED = -32005
     INVALID_AGENT_RESPONSE = -32006
     AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED = -32007
+    #: 社交门禁拒绝（非好友 / 缺少所需 scope）。data 里带 hint 指路。
+    SOCIAL_DENIED = -32008
 
 
 class JsonRpcRequest(BaseModel):

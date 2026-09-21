@@ -32,6 +32,10 @@ A2A 协议里的 ``Task`` 是**执行单位**：提交一次、跑到终态、�
    没 @ 时默认按能力路由挑一个（``autoRoute``，可关）。
 5. **失败要可见**：agent 不可用/报错时，以一条系统消息呈现，
    而不是让消息石沉大海——静默失败在协作场景里最致命。
+6. **本层不做鉴权**，只调用注入的门禁。``SocialHub`` 拿到的
+   ``guard`` 决定「谁该出现在通讯录里」「这条消息能不能投给某人」，
+   而策略全在 ``relations.py``。默认注入 ``NullGuard``（全放行），
+   所以无配置时行为与 v0.3.0 一致，单测里也不需要任何身份配置。
 """
 
 from __future__ import annotations
@@ -48,12 +52,18 @@ from pydantic import BaseModel, Field
 from .bus import EventBus
 from .models import Message, TaskState, new_id, utc_now
 from .registry import AgentRecord, AgentRegistry
+#: ``USER`` / ``SYSTEM`` 这两个保留字只在 relations.py 里定义一份——
+#: 两边各写一个"user"常量迟早会漂移。
+from .relations import (
+    SCOPE_ORDER,
+    SYSTEM,
+    USER,
+    FriendshipGuard,
+    NullGuard,
+    Scope,
+)
 
 log = logging.getLogger("a2a_hub.social")
-
-#: 人类用户与会话自身在消息流里的保留发送者标识
-USER = "user"
-SYSTEM = "system"
 
 #: @ 提名的语法：``@codex`` / ``@claude-code`` / ``@千问办公`` / ``@所有人``
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9_.\-]*|[\u4e00-\u9fff]+)")
@@ -63,6 +73,16 @@ _BROADCAST_TOKENS = {"all", "everyone", "所有人", "全体", "大家", "全员
 
 #: 默认往前带几条历史作为上下文
 DEFAULT_HISTORY = 8
+
+
+def _bare(ref: str) -> str:
+    """``agent:codex`` → ``codex``；其余原样。
+
+    会话的 ``members`` 用的是**裸 agent id**（A2A 语义里的执行者），
+    而 ``owner`` / ``visibleTo`` 用的是**成员 id**。两种写法在同一条记录里
+    并存，比较时就得两边都试——否则 agent 自己看不到自己所在的群。
+    """
+    return ref[len("agent:"):] if ref.startswith("agent:") else ref
 
 
 class DeliveryState(str, Enum):
@@ -117,6 +137,10 @@ class Conversation(BaseModel):
 
     ``contextId`` 是它最关键的字段——会话内所有 Task 共用它，
     这是 agent「记得上文」的技术前提。
+
+    ``owner`` / ``visibleTo`` 把会话绑到主体上。**这不是权限判定**——
+    真正的判定在注入的 ``guard`` 里；这两个字段只回答「谁的会话列表里该有它」。
+    ``members`` 保持 A2A 语义（执行者），人类依然不是成员。
     """
 
     id: str = Field(default_factory=lambda: new_id("conv-"))
@@ -127,6 +151,9 @@ class Conversation(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     deliveries: list[Delivery] = Field(default_factory=list)
     reads: dict[str, str] = Field(default_factory=dict)
+    owner: str = ""  # 创建者；"" = 遗留单主体模式
+    visibleTo: list[str] = Field(default_factory=list)  # [] = 所有人可见（兼容旧行为）
+    frozen: bool = False  # 删除好友后的归档态：可读不可写
     createdAt: str = Field(default_factory=utc_now)
     updatedAt: str = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -146,9 +173,17 @@ class SocialHub:
     后者是无限延续的消息流。
     """
 
-    def __init__(self, registry: AgentRegistry, bus: EventBus) -> None:
+    def __init__(
+        self,
+        registry: AgentRegistry,
+        bus: EventBus,
+        guard: Optional[FriendshipGuard] = None,
+    ) -> None:
         self.registry = registry
         self.bus = bus
+        #: 门禁。默认 ``NullGuard``（全放行）——**本层只调用它，不实现策略**，
+        #: 这样会话层在单测里依然是零依赖的。
+        self.guard: FriendshipGuard = guard or NullGuard()
         self._convs: dict[str, Conversation] = {}
         self._order: list[str] = []
         # 后台派发任务：必须持有引用，否则可能被 GC 掉
@@ -158,8 +193,13 @@ class SocialHub:
     # 通讯录
     # ------------------------------------------------------------------ #
 
-    def contacts(self) -> list[dict[str, Any]]:
-        """好友列表 —— 就是 registry 里的 agent，外加会话层面的信息。"""
+    def contacts(self, viewer: str = USER) -> list[dict[str, Any]]:
+        """通讯录 —— registry 里的 agent，按门禁过滤后的结果。
+
+        无 ``members.yaml`` 时 ``guard.visible_contacts()`` 返回 ``None``，
+        表示「不过滤」，于是与 v0.3.0 完全一致。
+        """
+        allowed = self.guard.visible_contacts(viewer)
         by_agent: dict[str, str] = {}
         for conv in self._convs.values():
             if conv.kind == "direct":
@@ -169,6 +209,8 @@ class SocialHub:
         out: list[dict[str, Any]] = []
         for rec in self.registry.list_records():
             if not rec.spec.enabled:
+                continue
+            if allowed is not None and rec.id not in allowed:
                 continue
             status = rec.health.get("status", "unknown")
             out.append(
@@ -183,41 +225,209 @@ class SocialHub:
                     "tags": rec.spec.tags,
                     "skills": [s.name for s in rec.adapter.skills],
                     "conversationId": by_agent.get(rec.id),
+                    "scopes": self.scopes_for(viewer, rec.id),
                     "stats": {"tasks": rec.task_count, "errors": rec.error_count},
                 }
             )
         return out
 
-    def _display_name(self, agent_id: str) -> str:
-        if agent_id in (USER, SYSTEM):
-            return "我" if agent_id == USER else "系统"
-        if self.registry.has(agent_id):
-            return self.registry.get(agent_id).name
-        return agent_id
+    def scopes_for(self, actor: str, agent_id: str) -> list[str]:
+        """``actor`` 对某位 agent 实际能做什么。
+
+        只通过 ``guard.can()`` 逐项探测，不去翻关系图——门禁接口就这么大，
+        多开一个口子就多一条绕过路径。
+        """
+        return [
+            s.value
+            for s in SCOPE_ORDER
+            if self.guard.can(actor, agent_id, s)
+        ]
+
+    def _display_name(self, ref: str) -> str:
+        if ref in (USER, SYSTEM):
+            return "我" if ref == USER else "系统"
+        if self.registry.has(ref):
+            return self.registry.get(ref).name
+        # 成员名（人类 / 外部平台 bot / 未注册的远端 agent）
+        name = self.guard.display_name(ref) if hasattr(self.guard, "display_name") else ""
+        return name or ref
+
+    def can_view(self, conv: Conversation, viewer: str) -> bool:
+        """会话可见性。``visibleTo`` 为空 = 所有人可见（兼容旧行为）。
+
+        注意这**只回答「谁的会话列表里该有它」**，不是权限判定——
+        能不能发消息由 ``guard.can()`` 决定。
+        """
+        if not conv.visibleTo:
+            return True
+        if viewer == conv.owner or viewer in conv.visibleTo:
+            return True
+        # 群成员数组里是裸 agent id，而 viewer 可能是带前缀的成员 id
+        return viewer in conv.members or _bare(viewer) in conv.members
+
+    # ------------------------------------------------------------------ #
+    # 门禁问答（只问 guard，自己不实现策略）
+    # ------------------------------------------------------------------ #
+
+    def _why(self, actor: str, peer: str, scope: Scope, *, via: str = "direct") -> Optional[dict[str, Any]]:
+        """问 guard「为什么不行」。guard 没实现就返回 ``None``（不编造理由）。"""
+        fn = getattr(self.guard, "why_not", None)
+        if not callable(fn):
+            return None
+        try:
+            return fn(actor, peer, scope, via=via)
+        except Exception:  # noqa: BLE001  理由只是锦上添花，不该把发送搞崩
+            log.debug("guard.why_not 调用失败", exc_info=True)
+            return None
+
+    def _refusal_note(self, sender: str, refused: list[str], via: str) -> str:
+        """被门禁挡下时给人看的那句话。
+
+        「还不是好友」/「是好友但没给这一档」/「群里不给执行权」三种情况，
+        用户要做的事完全不同。用一句含糊的「无权限」等于没说。
+        """
+        names = "、".join(self._display_name(r) for r in refused)
+        reasons: list[str] = []
+        for r in refused:
+            why = self._why(sender, r, Scope.CHAT, via=via) or {}
+            reason = why.get("reason", "")
+            if reason == "group_boundary":
+                reasons.append("群聊通道只放宽 `chat`，执行类权限需单独授予")
+            elif reason == "missing_scope":
+                got = "、".join(why.get("granted") or []) or "无"
+                reasons.append(f"你与对方是好友，但对方没给你 `chat`（当前只给了 {got}）")
+            elif reason == "blocked":
+                reasons.append("对方当前不可达")
+            else:
+                reasons.append("与对方尚未建立好友关系")
+        return f"⚠ {names} 未收到这条消息：{'；'.join(dict.fromkeys(reasons))}"
+
+    def _require_group_control(self, conv: Conversation, actor: str) -> None:
+        """门禁启用时，只有会话所有者能改群成员。
+
+        群是权限放大器：谁都能往群里拉人，等于谁都能扩大自己的可接触面。
+        门禁关闭时（无 ``members.yaml``）保持 v0.3.0 的宽松行为。
+        """
+        if not getattr(self.guard, "enabled", False):
+            return
+        if not conv.owner or actor == conv.owner:
+            return
+        raise PermissionError("只有会话所有者能修改群成员")
+
+    def _note_interaction(self, a: str, b: str) -> None:
+        """告诉门禁「这两人刚成功互动过」，用于刷新信任租约（§7.4）。
+
+        设计明写「不依赖人工操作」——所以只能由投递成功这个事实来驱动。
+        同样走 ``getattr``：``NullGuard`` 没有这个方法，门禁关闭时静默跳过。
+
+        ⚠ 名字刻意不叫 ``_touch``：本类里已有一个 ``_touch(conv)``
+        （刷新 ``conv.updatedAt``），同名会把那个覆盖掉——两个同名的
+        私有方法后定义者胜，症状是「发消息时 TypeError」，极难一眼看出。
+        """
+        fn = getattr(self.guard, "touch_interaction", None)
+        if not callable(fn):
+            return
+        try:
+            fn(a, b)
+        except Exception:  # noqa: BLE001  刷新时间戳失败不该让消息发不出去
+            log.debug("guard.touch_interaction 调用失败", exc_info=True)
+
+    def request_for_need(
+        self, member: str, need: str, *, reason: str = ""
+    ) -> dict[str, Any]:
+        """把「我需要某种能力」的诉求交给门禁（§6.1 A 主路径）。
+
+        会话层不实现策略——它只把信号转给 guard，由关系层按策略决定
+        「去申请」「挂 owner 待办」还是「什么都不做」。
+        """
+        fn = getattr(self.guard, "request_for_need", None)
+        if not callable(fn):
+            return {
+                "member": member,
+                "need": need,
+                "action": "ignore",
+                "policy": "",
+                "detail": "门禁未启用，自主交友不生效",
+                "candidates": [],
+                "asked": None,
+            }
+        return fn(member, need, reason=reason)
+
+    # ------------------------------------------------------------------ #
+    # 关系解除后的会话归档
+    # ------------------------------------------------------------------ #
+
+    def freeze_between(self, a: str, b: str) -> int:
+        """把 a 与 b 之间的单聊标记为归档（**可读不可写**）。
+
+        设计 §4.3：删好友不清历史归档，但必须禁止新消息——
+        否则「关系已解除却还能继续说话」等于关系根本没解除。
+
+        返回被冻结的会话数。
+        """
+        return self._set_frozen(a, b, True)
+
+    def thaw_between(self, a: str, b: str) -> int:
+        """重新成为好友时解冻历史单聊。
+
+        少了这一步会踩坑：``open_direct`` 是幂等的，会返回**同一个**归档会话，
+        于是「重新加回好友却发现发不出消息」——一个很难自查的死结。
+        """
+        return self._set_frozen(a, b, False)
+
+    def _set_frozen(self, a: str, b: str, frozen: bool) -> int:
+        changed = 0
+        for owner_ref, agent_ref in ((a, b), (b, a)):
+            for conv in self._convs.values():
+                if conv.kind != "direct" or conv.frozen == frozen:
+                    continue
+                if conv.owner == owner_ref and _bare(agent_ref) in conv.members:
+                    conv.frozen = frozen
+                    self._touch(conv)
+                    self._publish(
+                        conv, "conversation-frozen" if frozen else "conversation-thawed"
+                    )
+                    changed += 1
+        return changed
 
     # ------------------------------------------------------------------ #
     # 会话管理
     # ------------------------------------------------------------------ #
 
-    def open_direct(self, agent_id: str) -> Conversation:
-        """打开与某位 agent 的单聊（幂等：已存在则直接返回）。"""
+    def open_direct(self, agent_id: str, owner: str = USER) -> Conversation:
+        """打开与某位 agent 的单聊（幂等：同一个 owner + 同一个 agent 只有一个）。
+
+        匹配键带上 ``owner`` 是必须的——旧实现只看 ``members == [agent_id]``，
+        于是两个人各自跟 codex 单聊会命中**同一个**会话，
+        不但串台，还会让 A 看到 B 的上下文。
+        """
         rec = self.registry.get(agent_id)  # 不存在会抛 A2AError
         for conv in self._convs.values():
-            if conv.kind == "direct" and conv.members == [agent_id]:
+            if (
+                conv.kind == "direct"
+                and conv.members == [agent_id]
+                and conv.owner == owner
+            ):
                 return conv
         conv = Conversation(
             kind="direct",
             title=rec.name,
             members=[agent_id],
+            owner=owner,
+            visibleTo=[owner] if owner else [],
         )
         self._register(conv)
         self._publish(conv, "conversation-created")
         return conv
 
     def create_group(
-        self, member_ids: list[str], title: str = "", auto_route: bool = True
+        self,
+        member_ids: list[str],
+        title: str = "",
+        auto_route: bool = True,
+        actor: str = USER,
     ) -> Conversation:
-        """建群。成员必须是已注册的 agent。"""
+        """建群。成员必须是已注册的 agent，且需要 ``invite`` 权限。"""
         members: list[str] = []
         for mid in member_ids:
             rec = self.registry.get(mid)  # 校验存在
@@ -225,6 +435,7 @@ class SocialHub:
                 members.append(rec.id)
         if not members:
             raise ValueError("群成员不能为空")
+        self._require_invite(actor, members)
         name = title.strip() or "、".join(self._display_name(m) for m in members[:3])
         if len(members) > 3 and not title.strip():
             name += f" 等 {len(members)} 人"
@@ -232,6 +443,8 @@ class SocialHub:
             kind="group",
             title=name,
             members=members,
+            owner=actor,
+            visibleTo=[actor] if actor else [],
             metadata={"autoRoute": auto_route},
         )
         self._register(conv)
@@ -243,11 +456,15 @@ class SocialHub:
         conv_id: str,
         add: Optional[list[str]] = None,
         remove: Optional[list[str]] = None,
+        actor: str = USER,
     ) -> Conversation:
-        """拉人进群 / 移出群。"""
+        """拉人进群 / 移出群。拉人需要 ``invite`` 权限。"""
         conv = self.get(conv_id)
         if conv.kind != "group":
             raise ValueError("只有群聊能改成员")
+        self._require_group_control(conv, actor)
+        fresh = [mid for mid in (add or []) if self.registry.get(mid).id not in conv.members]
+        self._require_invite(actor, fresh)
         for mid in add or []:
             rid = self.registry.get(mid).id
             if rid not in conv.members:
@@ -261,10 +478,28 @@ class SocialHub:
         self._publish(conv, "conversation-updated")
         return conv
 
-    def disband(self, conv_id: str) -> bool:
-        conv = self._convs.pop(conv_id, None)
+    def _require_invite(self, actor: str, targets: list[str]) -> None:
+        """拉人进群要对方给过 ``invite``。
+
+        门禁关闭时（无配置）不做任何校验，与 v0.3.0 一致。
+        """
+        refused = [
+            m for m in targets if not self.guard.can(actor, m, Scope.INVITE)
+        ]
+        if refused:
+            names = "、".join(self._display_name(m) for m in refused)
+            raise PermissionError(
+                f"没有邀请 {names} 的权限：对方未授予你 `invite`"
+            )
+
+    def disband(self, conv_id: str, actor: str = USER) -> bool:
+        conv = self._convs.get(conv_id)
         if conv is None:
             return False
+        if conv.owner and actor != conv.owner:
+            # 只有会话所有者能解散它；别人最多退出（stage 2 再补「退出」语义）
+            raise PermissionError("只有会话所有者能解散该会话")
+        self._convs.pop(conv_id, None)
         if conv_id in self._order:
             self._order.remove(conv_id)
         self.bus.publish(self._channel(conv_id), {"kind": "im-event", "event": "conversation-disbanded", "conversationId": conv_id})
@@ -281,40 +516,51 @@ class SocialHub:
     def has(self, conv_id: str) -> bool:
         return conv_id in self._convs
 
-    def list_conversations(self) -> list[dict[str, Any]]:
-        """会话列表 —— 微信首页那种，带最后一条消息和未读红点。"""
+    def list_conversations(self, viewer: str = USER) -> list[dict[str, Any]]:
+        """会话列表 —— 微信首页那种，带最后一条消息和未读红点。
+
+        只返回 ``viewer`` 看得见的会话；未读也是**按人算**的。
+        """
         items: list[dict[str, Any]] = []
         for cid in reversed(self._order):
             conv = self._convs.get(cid)
-            if conv is None:
+            if conv is None or not self.can_view(conv, viewer):
                 continue
-            items.append(self.summary(conv))
+            items.append(self.summary(conv, viewer))
         return items
 
-    def summary(self, conv: Conversation) -> dict[str, Any]:
-        """会话摘要（对外公开，供 HTTP / CLI 直接复用）。"""
+    def summary(self, conv: Conversation, viewer: str = USER) -> dict[str, Any]:
+        """会话摘要（对外公开，供 HTTP / CLI 直接复用）。
+
+        ``unread`` 按 ``viewer`` 算——旧实现写死 ``USER``，
+        多主体下每个人看到的红点都是同一个，等于没有。
+        """
         last = conv.last_message()
         return {
             "id": conv.id,
             "kind": conv.kind,
             "title": conv.title,
+            "owner": conv.owner,
             "members": [
                 {"id": m, "name": self._display_name(m)} for m in conv.members
             ],
             "contextId": conv.contextId,
             "messageCount": len(conv.messages),
-            "unread": self.unread_count(conv, USER),
+            "unread": self.unread_count(conv, viewer),
+            "frozen": conv.frozen,
             "lastMessage": last.model_dump(mode="json") if last else None,
             "updatedAt": conv.updatedAt,
         }
 
-    def history(self, conv_id: str, limit: int = 200) -> dict[str, Any]:
+    def history(
+        self, conv_id: str, limit: int = 200, viewer: str = USER
+    ) -> dict[str, Any]:
         """拉取聊天记录（含每条消息的投递回执）。"""
         conv = self.get(conv_id)
         msgs = conv.messages[-limit:]
         ids = {m.id for m in msgs}
         return {
-            "conversation": self.summary(conv),
+            "conversation": self.summary(conv, viewer),
             "messages": [m.model_dump(mode="json") for m in msgs],
             "deliveries": [
                 d.model_dump(mode="json") for d in conv.deliveries if d.messageId in ids
@@ -508,10 +754,15 @@ class SocialHub:
         这就是「聊天」——不会像 RPC 那样把调用方卡住。
 
         ``wake`` 可显式指定唤醒谁（覆盖 @ 解析），传空列表表示只存档不打扰。
+
+        被门禁挡下的目标**不会静默消失**：会补一条系统消息说明原因。
+        静默丢消息在协作场景里最伤人——你以为发了，对方根本没收到。
         """
         conv = self.get(conv_id)
         if not text.strip():
             raise ValueError("消息内容不能为空")
+        if conv.frozen:
+            raise ValueError("该会话已归档（好友关系已解除），不能继续发言")
 
         mentions, broadcast = self.parse_mentions(text)
         targets = (
@@ -519,6 +770,23 @@ class SocialHub:
             if wake is not None
             else self._resolve_targets(conv, text, mentions, broadcast)
         )
+
+        # 门禁。群聊走 ``via="group:<id>"``——那条通道只放宽 ``chat``，
+        # 不继承 ``delegate`` 之类的执行类权限（否则建个群就能绕过好友制）。
+        via = f"group:{conv.id}" if conv.kind == "group" else "direct"
+        allowed: list[str] = []
+        refused: list[str] = []
+        for target in targets:
+            if self.guard.can(sender, target, Scope.CHAT, via=via):
+                allowed.append(target)
+            else:
+                refused.append(target)
+        targets = allowed
+
+        # 消息真的投出去了 —— 这才是「成功互动」的事实依据。
+        # 信任衰减的 lastInteractAt 就靠这里刷新（§7.4）。
+        for target in targets:
+            self._note_interaction(sender, target)
 
         msg = ChatMessage(
             conversationId=conv.id,
@@ -550,6 +818,9 @@ class SocialHub:
             deliveries=[d.model_dump(mode="json") for d in deliveries],
         )
 
+        if refused:
+            self._system(conv, self._refusal_note(sender, refused, via))
+
         for d in deliveries:
             self._spawn(self._deliver(conv, msg, d))
 
@@ -557,6 +828,7 @@ class SocialHub:
             "message": msg.model_dump(mode="json"),
             "deliveries": [d.model_dump(mode="json") for d in deliveries],
             "woke": targets,
+            "refused": refused,
         }
 
     def _spawn(self, coro: Any) -> asyncio.Task[Any]:
@@ -594,7 +866,8 @@ class SocialHub:
                 f"成员有：{'、'.join(self._display_name(m) for m in conv.members)}。"
             )
         else:
-            scene = "你正在与用户一对一对话。"
+            # 写死「用户」在多主体下等于没说——agent 分不清是谁在跟它说话
+            scene = f"你正在与「{self._display_name(current.sender)}」一对一对话。"
 
         return (
             f"{scene}\n"

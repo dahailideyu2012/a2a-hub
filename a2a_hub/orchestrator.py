@@ -20,9 +20,11 @@ from typing import Any, AsyncIterator, Optional
 
 from pydantic import BaseModel, Field
 
+from .autonomy import extract_need
 from .bus import STREAM_END, EventBus
 from .models import Task, TaskState, new_id, utc_now
 from .registry import AgentRecord, AgentRegistry
+from .relations import Scope, SocialNotPermitted
 
 log = logging.getLogger("a2a_hub.orchestrator")
 
@@ -60,15 +62,24 @@ class CollaborationRun(BaseModel):
     createdAt: str = Field(default_factory=utc_now)
     updatedAt: str = Field(default_factory=utc_now)
     options: dict[str, Any] = Field(default_factory=dict)
+    #: 发起者。编排器也要过社交门禁（设计 §3.2 明确点名），所以得记住是谁在派活。
+    actor: str = "user"
+    #: 因为没拿到 `delegate` 而被剔出本次协同的 agent —— 不静默：前端要能显示原因。
+    refusedAgents: list[str] = Field(default_factory=list)
 
 
 MODES = ("delegate", "broadcast", "pipeline", "roundtable")
 
 
 class Orchestrator:
-    def __init__(self, registry: AgentRegistry, bus: EventBus) -> None:
+    def __init__(
+        self, registry: AgentRegistry, bus: EventBus, guard: Any = None
+    ) -> None:
         self.registry = registry
         self.bus = bus
+        #: 门禁。**编排器只调用它，不实现策略**；不注入（None）时全放行，
+        #: 与「没有 members.yaml」的退化行为一致。
+        self.guard = guard
         self._runs: dict[str, CollaborationRun] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._order: list[str] = []
@@ -108,6 +119,7 @@ class Orchestrator:
         prompt: str,
         agent_ids: Optional[list[str]] = None,
         options: Optional[dict[str, Any]] = None,
+        actor: str = "user",
     ) -> CollaborationRun:
         if mode not in MODES:
             raise ValueError(f"不支持的协同模式 `{mode}`，可选：{', '.join(MODES)}")
@@ -116,6 +128,7 @@ class Orchestrator:
             prompt=prompt,
             agentIds=list(agent_ids or []),
             options=options or {},
+            actor=actor,
         )
         self._runs[run.id] = run
         self._order.append(run.id)
@@ -127,6 +140,10 @@ class Orchestrator:
     async def launch(self, run: CollaborationRun) -> CollaborationRun:
         """异步启动（HTTP/Web 场景）。"""
         task = asyncio.create_task(self.execute(run))
+        # 社交门禁拒绝会从 execute 里重新抛出（好让同步调用方拿到明确错误）。
+        # 后台任务没人 await，所以这里主动把异常取走，免得刷
+        # 「Task exception was never retrieved」——run.error 里已经有原因了。
+        task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
         self._tasks[run.id] = task
         return run
 
@@ -204,6 +221,14 @@ class Orchestrator:
             await handler(run)
             if run.status == "running":
                 run.status = "completed"
+        except SocialNotPermitted as exc:
+            # 「你不被允许」不是「跑挂了」。它必须能被同步调用方看见
+            # （HTTP 403 / CLI 退出码 / RPC -32008），所以这里**重新抛出**，
+            # 而不是像普通异常那样悄悄变成 status=failed。
+            log.warning("协同任务 %s 被社交门禁拒绝：%s", run.id, exc)
+            run.status = "failed"
+            run.error = str(exc)
+            raise
         except asyncio.CancelledError:
             run.status = "canceled"
             raise
@@ -268,25 +293,118 @@ class Orchestrator:
             step.durationMs = int((time.perf_counter() - started) * 1000)
 
         await self._publish(run, "step-finished", step=step.model_dump(mode="json"))
+        if task is not None:
+            self._consume_social_signals(step, task)
         return step
+
+    def _consume_social_signals(self, step: StepRecord, task: Task) -> None:
+        """扫描 agent 产出里的 ``{"social": {"need": ...}}`` 信号（§6.1 A 主路径）。
+
+        agent 在 Hub 里没有常驻进程，所以「我干不了这个」只能由它**干活时**
+        自己吐出来。编排器正是汇集产出的地方，缺口信号天然在这里冒头。
+
+        信号交给注入的 guard 处理（发现 → 打分 → 申请 / 挂 owner 待办）；
+        没有 guard（无 ``members.yaml``）时整段跳过，行为与 v0.3.0 一致。
+        """
+        guard = self.guard
+        if guard is None or not getattr(guard, "enabled", False):
+            return
+        fn = getattr(guard, "request_for_need", None)
+        if not callable(fn):
+            return
+
+        payloads: list[Any] = [step.output]
+        for art in task.artifacts:
+            for part in art.parts:
+                data = getattr(part, "data", None)
+                if isinstance(data, dict):
+                    payloads.append(data)
+                text = getattr(part, "text", None)
+                if isinstance(text, str) and text:
+                    payloads.append(text)
+
+        seen: set[str] = set()
+        for payload in payloads:
+            for sig in extract_need(payload):
+                need = sig["need"]
+                if need in seen:
+                    continue
+                seen.add(need)
+                try:
+                    result = fn(step.agentId, need, reason=sig["reason"])
+                except Exception:  # noqa: BLE001  缺口信号处理失败不该让协同失败
+                    log.debug("处理 social.need 信号失败：%s", need, exc_info=True)
+                    continue
+                if result.get("asked"):
+                    log.info(
+                        "自主交友：%s 因「%s」向 %s 发起联系（action=%s，命中 %s）",
+                        step.agentId,
+                        need,
+                        result["asked"].get("peer"),
+                        result.get("action"),
+                        result.get("policy"),
+                    )
+
+    def _can_delegate(self, run: CollaborationRun, agent_id: str) -> bool:
+        """``run.actor`` 能否把任务派给这个 agent。
+
+        编排器是「让 agent 干活」的入口，所以它必须过 **delegate** 那道门
+        （设计 §3.2 明确把编排器列进唯一判定入口的使用方）。
+        没有注入 guard 时不设限，与 v0.3.0 一致。
+        """
+        guard = self.guard
+        if guard is None or not getattr(guard, "enabled", False):
+            return True
+        try:
+            return bool(guard.can(run.actor, agent_id, Scope.DELEGATE))
+        except Exception:  # noqa: BLE001  门禁自身出问题不该让协同整体挂掉
+            log.debug("guard.can 调用失败，按放行处理", exc_info=True)
+            return True
+
+    def _admit(
+        self, run: CollaborationRun, records: list[AgentRecord]
+    ) -> list[AgentRecord]:
+        """过滤掉派不动的 agent，并把它们记进 ``run.refusedAgents``。
+
+        **不静默剔除**：静默会让「为什么只有两个 agent 参与」变成玄学，
+        而这正是社交门禁最容易被误判成 bug 的地方。
+        """
+        ok: list[AgentRecord] = []
+        for r in records:
+            if self._can_delegate(run, r.id):
+                ok.append(r)
+            elif r.id not in run.refusedAgents:
+                run.refusedAgents.append(r.id)
+        return ok
 
     def _pick_agents(
         self, run: CollaborationRun, prompt: str, default_k: int = 3
     ) -> list[AgentRecord]:
-        """确定参与本次协同的 agent 列表。"""
+        """确定参与本次协同的 agent 列表。
+
+        **门禁就落在这里**——四种模式共用同一个选人入口，
+        于是「delegate 二级门禁」不可能被某个模式漏掉。
+        """
         if run.agentIds:
-            picked: list[AgentRecord] = []
+            named: list[AgentRecord] = []
             for aid in run.agentIds:
                 if self.registry.has(aid):
-                    picked.append(self.registry.get(aid))
+                    named.append(self.registry.get(aid))
+            picked = self._admit(run, named)
             if picked:
                 return picked
+            if run.refusedAgents:
+                # 点名的全都派不动：宁可明确失败，也不要空跑一轮让调用方猜
+                raise SocialNotPermitted(
+                    "社交门禁：以下 agent 未授予你的执行权（delegate），无法协同："
+                    + "、".join(run.refusedAgents)
+                )
         k = int(run.options.get("topK", default_k))
         ranked = self.registry.rank(prompt, top_k=max(1, k))
-        selected = [r for r, _ in ranked]
+        selected = self._admit(run, [r for r, _ in ranked])
         if not selected:
             enabled = [r for r in self.registry.list_records() if r.spec.enabled]
-            selected = enabled[: max(1, k)]
+            selected = self._admit(run, enabled[: max(1, k)])
         return selected
 
     async def _synthesize(self, run: CollaborationRun, sections: list[tuple[str, str]]) -> str:
@@ -302,7 +420,7 @@ class Orchestrator:
             return valid[0][1]
 
         synth_id = run.options.get("synthesizer")
-        if synth_id and self.registry.has(synth_id):
+        if synth_id and self.registry.has(synth_id) and self._can_delegate(run, synth_id):
             body = "\n\n".join(
                 f"### 方案 {i}（来自 {n}）\n{t}" for i, (n, t) in enumerate(valid, 1)
             )
@@ -350,7 +468,12 @@ class Orchestrator:
         run.result = step.output or step.error or ""
 
         reviewer_id = run.options.get("reviewer")
-        if reviewer_id and self.registry.has(reviewer_id) and step.state == "completed":
+        if (
+            reviewer_id
+            and self.registry.has(reviewer_id)
+            and step.state == "completed"
+            and self._can_delegate(run, reviewer_id)
+        ):
             reviewer = self.registry.get(reviewer_id)
             review_prompt = (
                 f"请评审下面这份产出，指出具体问题并给出改进后的版本。\n\n"
@@ -390,7 +513,13 @@ class Orchestrator:
             for agent_id, label, template in chain:
                 if not self.registry.has(agent_id):
                     raise ValueError(f"流水线阶段引用了不存在的 agent `{agent_id}`")
-                resolved.append((self.registry.get(agent_id), label, template))
+                rec = self.registry.get(agent_id)
+                if not self._can_delegate(run, agent_id):
+                    raise SocialNotPermitted(
+                        f"社交门禁：流水线阶段 `{label}` 使用的 agent `{agent_id}` "
+                        "未授予你执行权（delegate）"
+                    )
+                resolved.append((rec, label, template))
         else:
             n = int(run.options.get("stagesCount", 3))
             agents = self._pick_agents(run, run.prompt, default_k=n)

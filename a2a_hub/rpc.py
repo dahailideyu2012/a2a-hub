@@ -15,10 +15,33 @@ Hub 扩展方法（非 A2A 标准，用于多 agent 协同）：
   collab/run                       发起一次多 agent 协同（返回 runId）
   collab/get                       查询协同运行详情
   collab/modes                     列出可用协同模式
+
+社交层（Hub 扩展，让 agent 能自己打理关系）：
+  social/me                        我的名片与关系概览
+  social/members                   搜索可发现成员
+  social/profile                   看别人的名片（只有共同好友数，无名单）
+  social/discover                  自主发现：按匹配度推荐 + 打分明细
+  social/introductions             别人引荐给我的（收件箱式）
+  social/introduce                 引荐（不授予任何 scope）
+  social/relations                 我的关系列表
+  social/requests                  待我处理 / 我发出的申请
+  social/request                   发起好友申请
+  social/accept                    同意申请
+  social/reject                    拒绝申请
+  social/grant                     调整某位好友的 scope
+  social/revoke                    删好友
+  social/block                     拉黑 / 解除
+
+自主交友（§6，需要成员声明 `autonomy`）：
+  social/need                      报告能力缺口 → 发现 → 申请 / 挂 owner 待办
+  social/pending                   需要我拍板的待办
+  social/approve                   批准待办（越界自主行为成真的唯一路径）
+  social/deny                      驳回待办
 """
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import logging
 from typing import Any, AsyncIterator, Optional
@@ -36,9 +59,24 @@ from .models import (
 )
 from .orchestrator import MODES, Orchestrator
 from .registry import AgentRegistry
+from .relations import Scope, SocialError, SocialGraph
 from .social import USER, SocialHub
 
 log = logging.getLogger("a2a_hub.rpc")
+
+#: 当前请求的调用者。用 contextvar 而不是实例属性，是为了让
+#: ``JsonRpcDispatcher`` 保持**无状态**（它被文档描述为无状态分发器，
+#: 塞一个 self.actor 进去会让并发请求互相串身份）。
+#:
+#: 注意：流式方法（``message/stream``）会把它交给 SSE 任务再被迭代，
+#: 届时 contextvar 未必还在。**需要身份的流式方法必须显式传参**，
+#: 不要依赖这个默认值。
+_ACTOR: contextvars.ContextVar[str] = contextvars.ContextVar("a2a_actor", default=USER)
+
+
+def current_actor() -> str:
+    """当前调用者的成员 id。未经鉴权时退化为 ``USER``。"""
+    return _ACTOR.get()
 
 
 def _require(params: dict[str, Any], key: str) -> Any:
@@ -77,20 +115,31 @@ class JsonRpcDispatcher:
         registry: AgentRegistry,
         orchestrator: Orchestrator,
         social: Optional[SocialHub] = None,
+        graph: Optional[SocialGraph] = None,
     ) -> None:
         self.registry = registry
         self.orchestrator = orchestrator
         # 会话层可选注入；不传就自带一个，方便单测与嵌入式使用
         self.social = social or SocialHub(registry, registry.bus)
+        #: 关系图。没注入时 `social/*` 方法一律返回 `-32008` 而不是假装成功。
+        self.graph = graph
 
     # ------------------------------------------------------------------ #
     # 入口
     # ------------------------------------------------------------------ #
 
     async def handle(
-        self, request: dict[str, Any], scoped_agent: Optional[str] = None
+        self,
+        request: dict[str, Any],
+        scoped_agent: Optional[str] = None,
+        actor: str = USER,
     ) -> dict[str, Any]:
-        """处理一个 JSON-RPC 请求，返回响应 dict。"""
+        """处理一个 JSON-RPC 请求，返回响应 dict。
+
+        ``actor`` 由 **HTTP 层从鉴权结果**传入，**绝不从请求体里取**——
+        请求体是客户端可以随便写的。
+        """
+        _ACTOR.set(actor)
         req_id = request.get("id")
         if request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str):
             return JsonRpcResponse(
@@ -174,6 +223,24 @@ class JsonRpcDispatcher:
             "im/send",
             "im/history",
             "im/events",
+            "social/me",
+            "social/members",
+            "social/profile",
+            "social/discover",
+            "social/introductions",
+            "social/introduce",
+            "social/relations",
+            "social/requests",
+            "social/request",
+            "social/accept",
+            "social/reject",
+            "social/grant",
+            "social/revoke",
+            "social/block",
+            "social/pending",
+            "social/approve",
+            "social/deny",
+            "social/need",
         ]
 
     # ------------------------------------------------------------------ #
@@ -202,10 +269,66 @@ class JsonRpcDispatcher:
             )
         return agent_id
 
+    def _require_delegate(self, actor: str, agent_id: str) -> None:
+        """**二道门**：让某个 agent 干活，需要它给过 ``delegate``。
+
+        「能聊天」≠「能指挥你干活」。IM 会话里发消息只要 ``chat``，
+        而 ``message/send`` / ``collab/run`` 这类**消耗对方额度**的调用，
+        必须额外拿到 ``delegate``——否则加个好友就等于让人替你加班。
+
+        门禁没启用（无 ``members.yaml``）时直接放行，与 v0.3.0 一致。
+        """
+        g = self.graph
+        if g is None or not g.enabled:
+            return
+        if g.delegable(actor, agent_id):
+            return
+        data = g.refusal_data(
+            actor,
+            agent_id,
+            Scope.DELEGATE,
+            hint=(
+                f"先与 {g.normalize(agent_id)} 建立好友关系，"
+                f'再 `PATCH /social/relations/{g.normalize(agent_id)} '
+                '{"scopes":["peek","chat","invite","delegate"]}` 显式授予执行权'
+            ),
+        )
+        raise A2AError(
+            JsonRpcErrorCodes.SOCIAL_DENIED,
+            f"社交门禁：`{actor}` 尚未获得 `{agent_id}` 的执行授权（delegate）",
+            data,
+        )
+
+    def _require_delegate_for(self, actor: str, agent_ids: list[str]) -> None:
+        """批量版 delegate 门禁：一次把**所有**派不动的 agent 报出来。
+
+        逐个报会让调用方改一个试一次（N 次往返），一次报全反而更好用。
+        """
+        g = self.graph
+        if g is None or not g.enabled or not agent_ids:
+            return
+        refused = g.refused_agents(actor, agent_ids)
+        if not refused:
+            return
+        raise A2AError(
+            JsonRpcErrorCodes.SOCIAL_DENIED,
+            "社交门禁：以下 agent 尚未授予你执行权（delegate）："
+            + "、".join(refused),
+            {
+                "peer": refused[0],
+                "peers": refused,
+                "needScope": Scope.DELEGATE.value,
+                "reason": "missing_scope",
+                "hint": "请对方（或其 owner）执行 PATCH /social/relations/<你> 授予 delegate",
+            },
+        )
+
     def _new_task(
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> tuple[Task, Message, str]:
         agent_id = self._resolve_agent(params, scoped_agent)
+        # **先过门禁再建任务**：反过来的话，被拒的请求已经落库了
+        self._require_delegate(current_actor(), agent_id)
         message = _build_message(_require(params, "message"))
         context_id = params.get("contextId") or (params.get("configuration") or {}).get("contextId")
         task = self.registry.new_task(
@@ -383,13 +506,19 @@ class JsonRpcDispatcher:
                 {"available": list(MODES)},
             )
         agent_ids = params.get("agentIds") or ([await self._resolve_agent(params, scoped_agent)] if scoped_agent else [])
+        actor = current_actor()
+        # 显式点名的成员要过 delegate 门禁；自动路由的那部分由编排器自己过滤
+        self._require_delegate_for(actor, agent_ids)
         run = self.orchestrator.create_run(
-            mode, prompt, agent_ids, params.get("options") or {}
+            mode, prompt, agent_ids, params.get("options") or {}, actor=actor
         )
-        if params.get("blocking", True):
-            await self.orchestrator.run_sync(run)
-        else:
-            await self.orchestrator.launch(run)
+        try:
+            if params.get("blocking", True):
+                await self.orchestrator.run_sync(run)
+            else:
+                await self.orchestrator.launch(run)
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
         return run.model_dump(mode="json")
 
     async def _m_collab_get(
@@ -414,19 +543,21 @@ class JsonRpcDispatcher:
     async def _m_im_contacts(
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> dict[str, Any]:
-        items = self.social.contacts()
-        return {"count": len(items), "contacts": items}
+        actor = current_actor()
+        items = self.social.contacts(actor)
+        return {"count": len(items), "contacts": items, "me": actor}
 
     async def _m_im_conversations(
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> dict[str, Any]:
-        items = self.social.list_conversations()
+        items = self.social.list_conversations(current_actor())
         return {"count": len(items), "conversations": items}
 
     async def _m_im_open(
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> dict[str, Any]:
         """打开（或复用）与某位 agent 的单聊。"""
+        actor = current_actor()
         agent_id = _require(params, "agentId")
         if not self.registry.has(agent_id):
             raise A2AError(
@@ -434,12 +565,13 @@ class JsonRpcDispatcher:
                 f"未找到 agent `{agent_id}`",
                 {"available": [r.id for r in self.registry.list_records()]},
             )
-        return self.social.summary(self.social.open_direct(agent_id))
+        return self.social.summary(self.social.open_direct(agent_id, owner=actor), actor)
 
     async def _m_im_group(
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> dict[str, Any]:
         """建群。"""
+        actor = current_actor()
         members = params.get("members") or params.get("agentIds")
         if not members:
             raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, "`im/group` 需要 `members`")
@@ -453,10 +585,13 @@ class JsonRpcDispatcher:
                 list(members),
                 params.get("title") or "",
                 bool(params.get("autoRoute", True)),
+                actor=actor,
             )
+        except PermissionError as exc:
+            raise A2AError(JsonRpcErrorCodes.SOCIAL_DENIED, str(exc)) from exc
         except ValueError as exc:
             raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, str(exc)) from exc
-        return self.social.summary(conv)
+        return self.social.summary(conv, actor)
 
     async def _m_im_send(
         self, params: dict[str, Any], scoped_agent: Optional[str]
@@ -469,7 +604,7 @@ class JsonRpcDispatcher:
             return await self.social.send(
                 conv_id,
                 str(text),
-                sender=params.get("sender") or USER,
+                sender=current_actor(),
                 reply_to=params.get("replyTo"),
                 wake=params.get("wake"),
             )
@@ -481,7 +616,9 @@ class JsonRpcDispatcher:
     ) -> dict[str, Any]:
         conv_id = _require(params, "conversationId")
         self._conv(conv_id)
-        return self.social.history(conv_id, int(params.get("limit") or 200))
+        return self.social.history(
+            conv_id, int(params.get("limit") or 200), viewer=current_actor()
+        )
 
     async def _m_im_events(
         self, params: dict[str, Any], scoped_agent: Optional[str]
@@ -491,6 +628,260 @@ class JsonRpcDispatcher:
         self._conv(conv_id)
         async for event in self.social.stream(conv_id):
             yield event
+
+    # ------------------------------------------------------------------ #
+    # 社交层 —— 让 agent 能自己打理关系，而不是只能等人给它加好友
+    # ------------------------------------------------------------------ #
+
+    def _need_graph(self) -> SocialGraph:
+        if self.graph is None or not self.graph.enabled:
+            raise A2AError(
+                JsonRpcErrorCodes.SOCIAL_DENIED,
+                "社交层未启用（未找到 members.yaml，或 A2A_SOCIAL_MODE=off）",
+                {"reason": "social_disabled", "hint": "配置 config/members.yaml 后重启 Hub"},
+            )
+        return self.graph
+
+    @staticmethod
+    def _social_fail(exc: SocialError) -> A2AError:
+        return A2AError(
+            JsonRpcErrorCodes.SOCIAL_DENIED,
+            str(exc),
+            {"reason": type(exc).__name__, "hint": "POST /social/requests 建立好友关系"},
+        )
+
+    async def _social_actor(self, params: dict[str, Any]) -> str:
+        """只读社交方法的「以谁的身份看」。
+
+        owner 可以带 ``as=<自己的 agent>`` 看它的视角——否则 agent 收到的
+        好友申请就没人能处理了。越权直接 ``-32008``，与写入侧共用同一条规则。
+        """
+        g = self._need_graph()
+        actor = current_actor()
+        who = params.get("as")
+        if not who:
+            return actor
+        target = g.normalize(str(who))
+        if target != actor and not g.can_act_for(actor, target):
+            raise A2AError(
+                JsonRpcErrorCodes.SOCIAL_DENIED,
+                f"无权以 `{target}` 的身份查看",
+            )
+        return target
+
+    async def _m_social_me(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        return self._need_graph().me(await self._social_actor(params))
+
+    async def _m_social_members(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        items = g.search(
+            str(params.get("q") or ""),
+            viewer=who,
+            limit=int(params.get("limit") or 50),
+        )
+        return {"count": len(items), "members": items, "me": who}
+
+    async def _m_social_profile(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """看别人的名片：**只有共同好友数，没有好友名单**。"""
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        return g.profile(str(_require(params, "member")), who)
+
+    async def _m_social_discover(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """自主发现：按匹配度推荐值得认识的人，附打分明细。"""
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        need = str(params.get("need") or "")
+        items = g.discover(who, need=need, limit=int(params.get("limit") or 10))
+        return {"count": len(items), "candidates": items, "need": need, "me": who}
+
+    async def _m_social_introductions(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        items = g.introductions(who)
+        return {"count": len(items), "introductions": items, "me": who}
+
+    async def _m_social_introduce(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """引荐。只有同时是双方好友的人能做，且**不授予任何 scope**。"""
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            return g.introduce(
+                actor,
+                str(_require(params, "to")),
+                str(_require(params, "peer")),
+                str(params.get("note") or ""),
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+
+    async def _m_social_relations(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        items = self._need_graph().relations_of(await self._social_actor(params))
+        return {"count": len(items), "relations": items}
+
+    async def _m_social_pending(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """需要我拍板的自主交友待办（§6 约束 2）。每条都写明命中了哪条策略。"""
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        items = g.pending_approvals(owner=who)
+        return {"count": len(items), "pending": items, "me": who}
+
+    async def _m_social_approve(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """批准一条待办。**这是越界自主行为成真的唯一路径。**"""
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            return g.approve_pending(
+                actor, str(_require(params, "id")), params.get("scopes")
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+
+    async def _m_social_deny(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """驳回一条待办。理由只进自己的审计，不告诉对方。"""
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            return g.deny_pending(
+                actor, str(_require(params, "id")), str(params.get("reason") or "")
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+
+    async def _m_social_need(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """报告能力缺口（§6.1 A）。由 Hub 去发现并按策略申请 / 挂 owner 待办。"""
+        g = self._need_graph()
+        who = await self._social_actor(params)
+        return g.request_for_need(
+            who,
+            str(_require(params, "need")),
+            reason=str(params.get("reason") or ""),
+            limit=int(params.get("limit") or 3),
+        )
+
+    async def _m_social_requests(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        g = self._need_graph()
+        actor = await self._social_actor(params)
+        box = str(params.get("box") or "in")
+        items = g.inbox(actor) if box == "in" else g.outbox(actor)
+        return {"count": len(items), "box": box, "member": actor, "requests": items}
+
+    async def _m_social_request(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """发起好友申请。``message`` 必填——理由既是防骚扰，也让对方知道你是谁。"""
+        g = self._need_graph()
+        actor = current_actor()
+        to = _require(params, "to")
+        try:
+            rel = g.request(
+                actor, str(to), str(params.get("message") or ""), params.get("scopes")
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        return g.describe(rel, actor)
+
+    async def _m_social_accept(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """同意申请。``scopes`` 是**我实际授予对方**的范围，默认只给对话类。"""
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            rel = g.accept(
+                actor,
+                str(_require(params, "peer")),
+                params.get("scopes"),
+                as_member=params.get("as"),
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        acting = g.normalize(params.get("as") or actor)
+        self.social.thaw_between(acting, g.normalize(str(_require(params, "peer"))))
+        return g.describe(rel, actor)
+
+    async def _m_social_reject(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            rel = g.reject(
+                actor,
+                str(_require(params, "peer")),
+                str(params.get("reason") or ""),
+                as_member=params.get("as"),
+            )
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        return g.describe(rel, actor)
+
+    async def _m_social_grant(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """调权限。会强制检查权限上行闭包——不能授予自己没有的东西。"""
+        g = self._need_graph()
+        actor = current_actor()
+        try:
+            rel = g.set_grant(actor, str(_require(params, "peer")), params.get("scopes") or [])
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        return g.describe(rel, actor)
+
+    async def _m_social_revoke(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        g = self._need_graph()
+        actor = current_actor()
+        peer = str(_require(params, "peer"))
+        try:
+            rel = g.revoke(actor, peer)
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        self.social.freeze_between(actor, g.normalize(peer))
+        return g.describe(rel, actor)
+
+    async def _m_social_block(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """拉黑 / 解除。``{"peer": "spammer", "unblock": true}`` 表示解除。"""
+        g = self._need_graph()
+        actor = current_actor()
+        peer = str(_require(params, "peer"))
+        try:
+            rel = g.unblock(actor, peer) if params.get("unblock") else g.block(actor, peer)
+        except SocialError as exc:
+            raise self._social_fail(exc) from exc
+        if not params.get("unblock"):
+            self.social.freeze_between(actor, g.normalize(peer))
+        else:
+            self.social.thaw_between(actor, g.normalize(peer))
+        return g.describe(rel, actor)
 
 
 # 兼容：JsonRpcError 从 models 引入便于外部使用

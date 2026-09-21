@@ -29,6 +29,12 @@ env/
 .coverage
 htmlcov/
 
+# ---- local scratch (test basetemps / smoke runs / captured output) ----
+_bt*/
+_smoke*/
+_smoke_relations.py
+_*.txt
+
 # ---- runtime data ----
 data/
 *.db

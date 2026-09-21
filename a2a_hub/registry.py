@@ -13,8 +13,9 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
+from . import __version__ as APP_VERSION
 from .adapters import BaseAdapter, TaskContext, build_adapter
 from .bus import EventBus
 from .config import AgentSpec, HubConfig, Settings
@@ -117,8 +118,15 @@ class AgentRegistry:
         self.store = store
         self.bus = bus
         self._records: dict[str, AgentRecord] = {}
+        #: 社交简报生成器 ``fn(agent_id) -> str``。None/空串 = 不注入，
+        #: 社交层关闭时 prompt 逐字节不变。见 relations.social_briefing。
+        self._briefing_resolver: Optional[Callable[[str], str]] = None
         self._lock = asyncio.Lock()
         self._load()
+
+    def set_briefing_resolver(self, fn: Optional[Callable[[str], str]]) -> None:
+        """注入社交简报生成器（与能力画像一样走注入，不 import relations 之外的层）。"""
+        self._briefing_resolver = fn
 
     # ------------------------------------------------------------------ #
     # 注册 / 发现
@@ -154,8 +162,13 @@ class AgentRegistry:
         base = base_url or self.settings.public_url
         return [r.snapshot(base) for r in self._records.values()]
 
-    def hub_card(self) -> dict[str, Any]:
-        """Hub 自身的 Agent Card —— 聚合所有子 agent 的 skill。"""
+    def hub_card(self, social: Any = None) -> dict[str, Any]:
+        """Hub 自身的 Agent Card —— 聚合所有子 agent 的 skill。
+
+        ``social`` 传入关系图时，如果好友门禁开着，就在卡里声明
+        ``x-social`` 扩展。**这一步不是可选的**：不声明的话，标准 A2A 客户端
+        收到「非好友」的拒绝会以为对方坏了，而不是「我该先去加好友」。
+        """
         base = self.settings.public_url.rstrip("/")
         skills: list[dict[str, Any]] = [
             {
@@ -190,7 +203,7 @@ class AgentRegistry:
                 d["id"] = f"{r.id}:{s.id}"
                 skills.append(d)
 
-        return {
+        card: dict[str, Any] = {
             "name": self.settings.hub_name,
             "description": (
                 "异构 AI Agent 互联互通网关。将 WorkBuddy / 千问办公 / 扣子 Coze / "
@@ -198,7 +211,7 @@ class AgentRegistry:
                 "提供能力发现、任务委派、流式回传与多智能体协同编排。"
             ),
             "url": f"{base}/",
-            "version": "0.2.0",
+            "version": APP_VERSION,
             "protocolVersion": "0.3.0",
             "preferredTransport": "JSONRPC",
             "additionalInterfaces": [{"url": f"{base}/", "transport": "JSONRPC"}],
@@ -223,6 +236,26 @@ class AgentRegistry:
                 "collaborationModes": ["delegate", "broadcast", "pipeline", "roundtable"],
             },
         }
+
+        # 门禁开着时必须自我声明，否则标准客户端会把 -32008 当成故障
+        if social is not None and getattr(social, "enabled", False):
+            mode = getattr(social, "mode", "strict")
+            card["extensions"] = [
+                {
+                    "uri": "https://a2a-hub.local/x-social",
+                    "required": False,
+                    "description": (
+                        "本 Hub 启用了好友制访问控制。非好友调用会返回 JSON-RPC "
+                        "-32008，并附带 data.hint 指明如何发起好友申请。"
+                    ),
+                }
+            ]
+            # 用 update 而不是再写一个 "metadata" 键——后者会把 agent 列表整段盖掉
+            card["metadata"]["social"] = {"enabled": True, "mode": mode}
+            card["description"] += (
+                f"（已启用社交门禁，模式 {mode}：需先与目标成员建立好友关系）"
+            )
+        return card
 
     def agent_card(self, agent_id: str) -> dict[str, Any]:
         rec = self.get(agent_id)
@@ -337,7 +370,17 @@ class AgentRegistry:
         self, record: AgentRecord, task: Task, message: Message
     ) -> AsyncIterator[TaskEvent]:
         """驱动适配器执行任务，逐事件落库 + 推总线 + 向上产出。"""
-        ctx = TaskContext(task=task, message=message, adapter=record.adapter, bus=self.bus)
+        briefing = ""
+        if self._briefing_resolver is not None:
+            try:
+                briefing = self._briefing_resolver(record.id) or ""
+            except Exception:  # noqa: BLE001 - 简报失败绝不能拖垮任务本身
+                log.debug("社交简报生成失败 agent=%s", record.id, exc_info=True)
+                briefing = ""
+        ctx = TaskContext(
+            task=task, message=message, adapter=record.adapter, bus=self.bus,
+            briefing=briefing,
+        )
         record.task_count += 1
 
         self.store.save(task)

@@ -54,9 +54,39 @@ class Settings(BaseSettings):
     api_token: str = Field(default="", alias="A2A_API_TOKEN")
     require_auth: bool = Field(default=False, alias="A2A_REQUIRE_AUTH")
     agents_file: str = Field(default="./config/agents.yaml", alias="A2A_AGENTS_FILE")
+    # --- 社交层（见 docs/identity-and-binding.md）---
+    #: 成员声明。**文件不存在 = 门禁自动关闭，行为与 v0.3.0 一致。**
+    members_file: str = Field(default="./config/members.yaml", alias="A2A_MEMBERS_FILE")
+    #: 关系与好友。运行时状态，由程序写，不要手编。
+    relations_file: str = Field(
+        default="./data/relations.json", alias="A2A_RELATIONS_FILE"
+    )
+    #: off = 关闭门禁；soft = 非好友仅能 chat；strict = 非好友一律拒绝。
+    social_mode: str = Field(default="strict", alias="A2A_SOCIAL_MODE")
+    #: 社交简报：执行前把「你是谁/好友列表/缺口信号协议」注入 prompt，
+    #: 让 prompt 型 agent（WorkBuddy/Codex/Claude Code…）零改动获得社交感知。
+    #: 仅在社交层启用时生效；不想要就在 members.yaml 之外设 false。
+    social_briefing: bool = Field(default=True, alias="A2A_SOCIAL_BRIEFING")
+    # --- 自主交友（§6）---
+    #: 社交巡航总开关。**默认关**：开了才会有后台的网络请求/申请动作。
+    autonomy_enabled: bool = Field(default=False, alias="A2A_AUTONOMY_ENABLED")
+    #: 巡航轮询间隔（秒）。
+    autonomy_interval: float = Field(default=300.0, alias="A2A_AUTONOMY_INTERVAL")
+    #: 每轮最多发起的自主申请数。
+    autonomy_per_round: int = Field(default=2, alias="A2A_AUTONOMY_PER_ROUND")
+    #: 每天最多发起的自主申请数（巡航侧硬预算）。
+    autonomy_daily: int = Field(default=6, alias="A2A_AUTONOMY_DAILY")
 
     def agents_path(self) -> Path:
         p = Path(self.agents_file)
+        return p if p.is_absolute() else (ROOT / p).resolve()
+
+    def members_path(self) -> Path:
+        p = Path(self.members_file)
+        return p if p.is_absolute() else (ROOT / p).resolve()
+
+    def relations_path(self) -> Path:
+        p = Path(self.relations_file)
         return p if p.is_absolute() else (ROOT / p).resolve()
 
 

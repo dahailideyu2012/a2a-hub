@@ -51,14 +51,24 @@ class TaskContext:
     adapter: "BaseAdapter"
     bus: Optional[EventBus] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: 社交简报（registry 在执行前生成）。空串 = 不注入，prompt 逐字节不变。
+    briefing: str = ""
 
     # 流式 artifact 的累计缓冲：artifactName -> Artifact
     _artifacts: dict[str, Artifact] = field(default_factory=dict, init=False)
 
     @property
     def prompt(self) -> str:
-        """调用方输入文本（多模态时取所有 part 的文本拼接）。"""
-        return self.message.text()
+        """调用方输入文本（多模态时取所有 part 的文本拼接）。
+
+        社交简报作为**前缀**注入——所有 adapter 都从这里取输入，
+        所以 WorkBuddy / Codex / Claude Code 等 prompt 型 agent
+        零改动获得社交感知。
+        """
+        text = self.message.text()
+        if self.briefing:
+            return f"{self.briefing}\n\n---\n\n{text}"
+        return text
 
     # --------------------------- 事件工坊 --------------------------- #
 
