@@ -41,8 +41,11 @@ agents:
           - 用 OCR 技能识别这批证件的字段
       - id: long-task
         name: 长任务执行
-        description: 适合多步骤、需要中途读写文件的工程类长任务
-        tags: [长任务, 多步骤, pipeline, 工程]
+        description: 适合多步骤、需要中途反复读写文件的工程类长任务
+        tags: [长任务, 多步骤, 批量, pipeline, 工程]
+        examples:
+          - 把整个仓库的 import 路径统一改成新的别名
+          - 逐条处理这 200 个文件并生成汇总报告
     config:
       command: "${WORKBUDDY_CLI:-workbuddy} -p {prompt} --output-format stream-json"
       parser: jsonl
@@ -73,8 +76,11 @@ agents:
           - 实现一个带重试的 HTTP 客户端
       - id: repo-understanding
         name: 仓库理解
-        description: 阅读大型代码库并回答架构与调用链问题
-        tags: [架构, architecture, 代码库, repo, 调用链, 分析]
+        description: 阅读大型代码库并回答架构、调用链与依赖关系问题
+        tags: [架构, architecture, 代码库, repo, codebase, 调用链, 依赖, dependency, 分析]
+        examples:
+          - 这个仓库的鉴权流程是怎么串起来的
+          - 找出所有调用了这段代码的上游模块
     config:
       command: "claude -p {prompt} --output-format stream-json --verbose --permission-mode bypassPermissions"
       parser: claude
@@ -102,6 +108,13 @@ agents:
         tags: [迁移, migrate, 重构, refactor, 升级, upgrade, 转换, convert]
         examples:
           - 把 Python 2 脚本迁移到 Python 3.13
+      - id: debug-troubleshoot
+        name: 调试与故障排查
+        description: 定位运行时异常、性能瓶颈与偶发故障，给出复现路径与修复方案
+        tags: [调试, debug, 排错, 报错, error, 异常, exception, 堆栈, traceback, 性能, 超时, timeout, 日志, log]
+        examples:
+          - 这段脚本为什么会超时，怎么定位
+          - 这个偶发的空指针该怎么复现并修掉
     config:
       command: "codex exec --skip-git-repo-check --json {prompt}"
       parser: codex
@@ -132,7 +145,13 @@ agents:
       - id: general-qa
         name: 通用问答与知识解释
         description: 各类知识性问答、概念解释与中文语境理解
-        tags: [问答, qa, 解释, explain, 科普, 知识, knowledge, 是什么, 为什么]
+        # 注意：这里绝不放「是什么 / 为什么 / 怎么样」这类虚词标签。
+        # 分词会产生它们的 2-3gram，等于给任何疑问句都加分——实测会把
+        # 「这段脚本为什么超时」这类调试问题错误地路由到写作 agent。
+        tags: [问答, qa, 解释, explain, 概念, concept, 科普, 知识, knowledge]
+        examples:
+          - 解释一下什么是向量数据库
+          - 用外行能听懂的话说明什么是幂等
     config:
       base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
       api_key: "${DASHSCOPE_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
@@ -160,7 +179,10 @@ agents:
       - id: customer-service
         name: 客服与问答机器人
         description: 面向终端用户的问答、引导与工单处理
-        tags: [客服, service, 问答, faq, 工单, ticket, 引导]
+        tags: [客服, service, 问答, faq, 工单, ticket, 引导, 售后]
+        examples:
+          - 生成一段安抚用户并引导其补充订单号的回复
+          - 把这条投诉归类并拟一份处理工单
     config:
       base_url: "https://api.coze.cn"
       api_token: "${COZE_API_TOKEN}"
@@ -181,11 +203,19 @@ agents:
       - id: deep-reasoning
         name: 复杂推理与数学
         description: 多步推理、数学证明、逻辑分析、算法设计
-        tags: [推理, reasoning, 数学, math, 逻辑, logic, 证明, 分析, 算法]
-      - id: code-generation
-        name: 代码生成
-        description: 各类编程语言代码生成与排错
-        tags: [代码, code, 编程, 实现, implement, 报错, error, 排错]
+        tags: [推理, reasoning, 数学, math, 逻辑, logic, 证明, proof, 分析, 推导]
+        examples:
+          - 推导这个递推式的时间复杂度
+          - 判断这个命题是否成立并给出证明思路
+      # id 不要与 claude-code 的 code-generation 重名：Hub 会把所有 agent 的
+      # skill 聚合进自己的 Agent Card，同名 id 会让它分不清来源。
+      - id: code-synthesis
+        name: 代码生成与优化
+        description: 各类编程语言的代码生成、算法优化与报错修正
+        tags: [代码, code, 编程, 生成, generate, 优化, optimize, 性能, performance, 报错, error, 修改]
+        examples:
+          - 把这段双重循环的查找改成哈希实现
+          - 这个编译报错该怎么修
     config:
       base_url: "https://api.deepseek.com/v1"
       api_key: "${DEEPSEEK_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
@@ -201,8 +231,11 @@ agents:
     skills:
       - id: long-document
         name: 长文档分析
-        description: 处理超长文本、整本书/整套文档的摘要与问答
-        tags: [长文本, 长文档, 摘要, summarize, 分析, 文档, document, 阅读]
+        description: 处理超长文本、整本书/整套文档的摘要、问答与信息抽取
+        tags: [长文本, 长文档, 超长上下文, long-context, 摘要, summarize, 文档, document, 论文, pdf, 全书, 阅读]
+        examples:
+          - 这份 200 页的标书里有哪些交付节点
+          - 把这本技术书按章节做成知识大纲
     config:
       base_url: "https://api.moonshot.cn/v1"
       api_key: "${MOONSHOT_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
@@ -216,10 +249,20 @@ agents:
     priority: 5
     tags: [chinese, zhipu, glm]
     skills:
-      - id: general-qa
-        name: 通用问答
-        description: 中文知识问答、常识解释、内容生成
-        tags: [问答, qa, 解释, explain, 中文, 生成]
+      # id 需与千问的 general-qa 去重：聚合进 Hub 的 Agent Card 时会撞名。
+      - id: chinese-assistant
+        name: 中文通用助手
+        description: 中文知识问答、常识解释与短内容生成
+        tags: [问答, qa, 解释, explain, 中文, chinese, 生成, generate]
+        examples:
+          - 用一句话概括这段政策说了什么
+      - id: tool-calling
+        name: 工具调用与结构化输出
+        description: function calling、插件调用、JSON 结构化输出与意图识别
+        tags: [工具调用, function call, functions, 插件, plugin, json, 结构化, schema, 意图识别, intent]
+        examples:
+          - 把这段话抽成符合给定 JSON schema 的结果
+          - 判断用户这句话是想退款还是想咨询
     config:
       base_url: "https://open.bigmodel.cn/api/paas/v4"
       api_key: "${ZHIPU_API_KEY}"  # gau:allow 环境变量占位符，非真实密钥
@@ -239,8 +282,10 @@ agents:
     skills:
       - id: private-inference
         name: 私有化推理
-        description: 敏感数据场景下的本地推理，不出内网
-        tags: [本地, local, 私有, private, 离线, offline, 敏感, 保密]
+        description: 敏感数据场景下的本地推理，数据不出内网
+        tags: [本地, local, 私有, private, 离线, offline, 敏感, 保密, 内网]
+        examples:
+          - 这份含客户手机号的材料不能出网，帮我脱敏梳理
     config:
       base_url: "${OPENAI_BASE_URL:-http://localhost:11434/v1}"
       api_key: "${OPENAI_API_KEY:-ollama}"  # gau:allow 环境变量占位符，非真实密钥

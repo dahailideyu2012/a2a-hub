@@ -30,7 +30,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **515 项**。
+> 当前测试共 **533 项**。
 
 ---
 
@@ -761,6 +761,22 @@ agents:
 **路由打分**机制：把技能名/描述/标签/ID 与任务文本做关键词匹配并加权求和，
 再叠加 `priority`。简单、可解释、零成本——接口不变，未来可替换为向量检索。
 
+中文没有空格，所以查询按 **2/3-gram** 切词（`#tokenize`），标签要包含用户
+真的会打出的词。由此带来三条写 skills 的纪律：
+
+1. **别把虚词写进 tags。** `是什么` / `为什么` / `怎么样` 这类词会出现在任何
+   疑问句里，等于给该技能加了「万有引力」——实测过千问因此把
+   「这段脚本为什么会超时」从 Codex 手里抢走。
+2. **skill id 跨 agent 唯一。** Hub 会把所有子 agent 的 skill 聚合进自己的
+   Agent Card，同名 id 分不清能力来自谁。
+3. **每条 skill 都要有 `tags` 和 `description`。** 打分只吃
+   `name` / `description` / `tags` / `id`；`examples` 不参与打分（只用于展示），
+   缺了 tags 这条能力在路由上就是隐形的。
+
+路由准确性由 `tests/test_route_accuracy.py` 守着：它加载**真实**的
+`config/agents.yaml`，断言 16 条代表性查询各自的首选 agent，同时校验上述三条纪律。
+改完 skills 跑 `pytest tests/test_route_accuracy.py` 就知道有没有把路由带偏。
+
 ---
 
 ## 部署
@@ -810,7 +826,7 @@ pytest tests/test_rpc.py -v   # 单模块
 SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memory/sqlite 双后端参数化）、
 会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
-自主交友的策略·审批·巡航·信任衰减·社交简报注入）**——当前共 **515 项**。
+自主交友的策略·审批·巡航·信任衰减·社交简报注入）**——当前共 **533 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
