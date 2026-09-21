@@ -792,8 +792,9 @@ sh scripts/install-hooks.sh      # 首次 clone 后执行一次
 
 > 之所以需要这个脚本而不是直接 `git push`：本机代理只放行 `api.github.com`，
 > `github.com` 的 git 传输协议必然超时，所以走 `github-auto-upload` 的
-> **Git Data API** 模式。hook 后台执行（一次上传约 40~60 秒，不阻塞提交），
-> 推送日志在 `.workbuddy/auto-push.log`。
+> **Git Data API** 模式。hook **同步执行**（一次上传约 40~60 秒，commit 会等它
+> 跑完）—— 试过后台执行，但 hook 一退出 git 就清理进程组、把 push 进程杀掉，
+> `nohup` 挡不住。推送日志在 `.workbuddy/auto-push.log`。
 > `.git/hooks/` 不被 git 跟踪，因此 hook 本体放在 `scripts/post-commit`
 > 并纳入仓库，换机器 clone 后重跑一次安装脚本即可。
 

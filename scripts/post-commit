@@ -8,15 +8,19 @@
 # 为什么不用 git push：本机代理只放行 api.github.com，github.com 的 git
 # 传输协议必然超时。所以走 github-auto-upload 的 Git Data API 模式。
 #
-# 为什么放后台：一次 API 上传要 40~60 秒，同步执行会把每次 commit 卡住。
-# 结果写在 .workbuddy/auto-push.log；git 忽略 post-commit 的退出码，
-# 所以推送失败也不会让提交失败。
+# 为什么**必须同步执行**（不要改成 nohup ... &）：
+# 实测过后台写法——hook 一退出，git 就把它的进程组清理掉，后台 push 进程
+# 被杀，表现是日志里只剩一行时间戳、没有任何输出、远程纹丝不动。
+# nohup 只忽略 SIGHUP，挡不住进程组终止。
+# 所以这里老实同步跑：一次 API 上传 40~60 秒，commit 会等它跑完。
+# git 忽略 post-commit 的退出码，推送失败也不会让提交失败（只会记进日志）。
 
 PY="${A2A_PUSH_PYTHON:-C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python.exe}"
 SK="${A2A_PUSH_SKILL:-C:/Users/Administrator/.workbuddy/skills/github-auto-upload/scripts/auto_upload.py}"
 LOG="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.workbuddy/auto-push.log"
 
 echo "----- $(date '+%Y-%m-%d %H:%M:%S') auto push -----" >> "$LOG"
-nohup "$PY" "$SK" push --api >> "$LOG" 2>&1 &
+"$PY" "$SK" push --api >> "$LOG" 2>&1
+echo "exit=$?" >> "$LOG"
 
 exit 0
