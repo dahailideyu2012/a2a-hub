@@ -30,7 +30,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **533 项**。
+> 当前测试共 **541 项**。
 
 ---
 
@@ -826,7 +826,8 @@ pytest tests/test_rpc.py -v   # 单模块
 SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memory/sqlite 双后端参数化）、
 会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
-自主交友的策略·审批·巡航·信任衰减·社交简报注入）**——当前共 **533 项**。
+自主交友的策略·审批·巡航·信任衰减·社交简报注入）+ **MCP stdio 协议**
+（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **541 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
@@ -866,6 +867,62 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 | 方向 | Agent ↔ 工具/资源 | Agent ↔ Agent |
 | 解决的问题 | 怎么调用工具 | 怎么把任务交给别的 agent |
 | 本项目 | WorkBuddy 等 agent 内部可用 MCP | Hub 负责 agent 之间的协作 |
+
+---
+
+## 接入本机 WorkBuddy（MCP）
+
+`mcp_server.py` 把 Hub 暴露成一个 **MCP stdio server**，让本机的 WorkBuddy
+把 Hub 当工具用：**自己不干活时，把活派给 Codex / Claude Code / 千问办公等**，
+并参与 Hub 的社交网络。
+
+```powershell
+$py = 'C:\Users\Administrator\.workbuddy\binaries\python\envs\default\Scripts\python.exe'
+& $py -c "import json,os,shutil,time; p=r'C:\Users\Administrator\.workbuddy\mcp.json'; shutil.copy2(p,p+'.bak.'+time.strftime('%Y%m%d_%H%M%S')); c=json.load(open(p,encoding='utf-8')); c.setdefault('mcpServers',{})['a2a-hub']={'command':r'C:\Users\Administrator\.workbuddy\binaries\python\envs\default\Scripts\python.exe','args':[r'C:\soft\ai-A2A\mcp_server.py']}; json.dump(c,open(p,'w',encoding='utf-8'),ensure_ascii=False,indent=2)"
+```
+
+写入 `~/.workbuddy/mcp.json`（**不是** `.mcp.json`）后，MCP 不会自动生效——
+需到连接器管理页右上角「自定义连接器」入口点一次「信任」。
+
+> 必须用**装了项目依赖的解释器**（venv 的 python）拉起：MCP server 是
+> **进程内**复用 `Hub` 实例，不是打 HTTP。好处是不用先 `serve`、不用配 token，
+> 且社交门禁与简报注入都是同一套实例，不会出现状态不一致。
+
+提供的工具：
+
+| 工具 | 作用 | 副作用 |
+| --- | --- | --- |
+| `a2a_agents` | 列出 agent 与能力、是否可用 | 只读 |
+| `a2a_route` | 这段任务该派给谁（只打分） | 只读 |
+| `a2a_delegate` | 派活并等待结果（可指定或自动路由） | **真执行**：耗时、可能计费 |
+| `a2a_collab` | 多 agent 协同（pipeline/parallel/debate/router） | **真执行** |
+| `a2a_task` | 查任务状态、取回产出 | 只读 |
+| `a2a_social` | 社交只读：me / discover / requests / pending… | 只读 |
+| `a2a_social_act` | 社交写：申请 / 同意 / 授权 / 拉黑 | **带 confirm 闸门** |
+
+写操作的安全设计：`a2a_social_act` 不带 `confirm=true` 时**不落任何变更**，
+只回显「将要做什么」；确认后再带 `confirm=true` 调用一次。
+`a2a_delegate` 的 description 已注明需先向用户说明派给谁。
+
+社交工具默认不可用（返回 `-32008 社交层未启用`），开启方法：
+
+```bash
+cp config/members.example.yaml config/members.yaml
+```
+
+### 已知限制：反向方向（Hub → WorkBuddy）暂不通
+
+`config/agents.yaml` 里的 `workbuddy` 条目依赖 **WorkBuddy 的 headless CLI**
+（`workbuddy -p {prompt}`），但本机安装的 WorkBuddy 是纯桌面应用，
+PATH 里没有 `workbuddy` 命令，因此 Hub **无法主动唤起** WorkBuddy。
+若要启用，需官方提供 CLI，再设置环境变量指向它：
+
+```bash
+WORKBUDDY_CLI=/path/to/workbuddy
+```
+
+在此之前，两个方向的接入能力是：**WorkBuddy → Hub（可用，走 MCP）**，
+**Hub → WorkBuddy（待 CLI）**。
 
 ---
 
