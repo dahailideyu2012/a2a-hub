@@ -10,6 +10,14 @@
     a2a-hub collab MODE "任务"            发起多 agent 协同
     a2a-hub modes                         查看协同模式
     a2a-hub health                        探测所有 agent 健康
+
+会话层（像微信一样和 agent 聊，会话内上下文自动延续）：
+    a2a-hub im contacts                   通讯录
+    a2a-hub im open echo                  打开/复用单聊，打印会话 id
+    a2a-hub im chat echo "你好"           单聊一步到位：发消息 → 等回复 → 打印
+    a2a-hub im group --members a,b "问题"  建群并发问，等所有人回完
+    a2a-hub im say -c CONV "追加一句"      继续已有的会话
+    a2a-hub im log -c CONV                查看聊天记录与投递回执
 """
 
 from __future__ import annotations
@@ -20,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any, Optional
 
 from .config import get_settings
@@ -108,6 +117,92 @@ def print_agents(agents: list[dict[str, Any]]) -> None:
             print(f"    ├ {s['name']}  {c(tags, 'cyan')}")
         if len(a.get("skills", [])) > 3:
             print(f"    └ ... 另有 {len(a['skills']) - 3} 项能力")
+
+
+# --------------------------------------------------------------------------- #
+# 会话层（IM）的终端渲染
+# --------------------------------------------------------------------------- #
+
+DELIVERY_STYLE = {
+    "pending": ("○", "dim"),
+    "delivered": ("◔", "cyan"),
+    "read": ("◑", "cyan"),
+    "replied": ("●", "green"),
+    "failed": ("✗", "red"),
+}
+
+
+def _local_hms(ts: str) -> str:
+    """把 A2A 的 UTC 时间戳转成本地 ``HH:MM:SS``。
+
+    直接截取字符串会显示 UTC 时刻，用户看到的"发送时间"会比手表慢 8 小时，
+    这种细节最容易让人觉得东西是坏的。
+    """
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(ts).astimezone().strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return str(ts)[11:19]
+
+
+def print_im_contacts(items: list[dict[str, Any]]) -> None:
+    """打印通讯录。"""
+    if not items:
+        print("（通讯录为空）")
+        return
+    width = max(len(i["id"]) for i in items)
+    for i in items:
+        dot = c("●", "green" if i["online"] else "dim")
+        print(f"{dot} {c(i['id'].ljust(width), 'bold')}  {i['name']:<10}"
+              f"  {c('[' + i['type'] + ']', 'dim')}")
+        if not i["online"]:
+            print(f"    {c(i['detail'] or '离线', 'dim')}")
+
+
+def print_im_transcript(conversation: dict[str, Any], messages: list[dict[str, Any]],
+                        deliveries: list[dict[str, Any]]) -> None:
+    """按聊天窗口的样子打印会话内容（含每条消息的投递回执）。
+
+    形参名刻意与 ``SocialHub.history()`` 的返回键对齐，
+    这样调用处可以直接 ``print_im_transcript(**history(...))``。
+    """
+    who_all = "、".join(m["name"] for m in conversation.get("members", []))
+    head = ("与 " + who_all + " 的单聊") if conversation.get("kind") == "direct" \
+        else f"群聊「{conversation.get('title')}」"
+    print(c(f"── {head} ──", "bold"))
+    print(c(f"   会话 {conversation['id']}   上下文 {conversation['contextId']}", "dim"))
+    print()
+
+    by_msg: dict[str, list[dict[str, Any]]] = {}
+    for d in deliveries:
+        by_msg.setdefault(d["messageId"], []).append(d)
+
+    if not messages:
+        print(c("   （还没有消息）", "dim"))
+        print()
+        return
+
+    for m in messages:
+        ts = _local_hms(m.get("ts", ""))
+        if m.get("kind") == "system":
+            print(c(f"           {ts}  {m['text']}", "dim"))
+            continue
+        mine = m.get("sender") == "user"
+        name = m.get("senderName") or m.get("sender", "?")
+        label = c(name.ljust(12), "cyan" if mine else "magenta")
+        lines = (m.get("text") or "").splitlines() or [""]
+        for i, line in enumerate(lines):
+            if i == 0:
+                print(f"{label}  {c(ts, 'dim')}  {line}")
+            else:
+                print(f"{' ' * 12}            {line}")
+        for d in by_msg.get(m["id"], []):
+            icon, color = DELIVERY_STYLE.get(d.get("state", ""), ("·", "dim"))
+            note = f"  {c(d['error'], 'dim')}" if d.get("error") else ""
+            print(f"{' ' * 12}  └ {c(icon, color)} {c(d.get('agentName', ''), 'dim')}"
+                  f" {c(d.get('state', ''), color)}{note}")
+    print()
 
 
 # --------------------------------------------------------------------------- #
@@ -218,6 +313,124 @@ async def _inproc_collab(args: argparse.Namespace) -> int:
     return 0 if run.status == "completed" else 1
 
 
+def _fix_positional(args: argparse.Namespace, sub: str) -> None:
+    """把落进 ``agent`` 槽里的消息文本挪回 ``text``。
+
+    argparse 只给了两个位置参数槽（agent / text）：``im chat <agent> "文本"``
+    正好用满，但 ``im group --members a,b "文本"`` 和 ``im say -c CONV "文本"``
+    的正文会落进 ``agent`` 槽。这里统一归一化，免得调用方得记住几个子命令的
+    位置参数含义各不相同。
+    """
+    if sub in ("group", "say") and args.agent is not None and args.text is None:
+        args.text, args.agent = args.agent, None
+
+
+async def _inproc_im(args: argparse.Namespace) -> int:
+    """会话层的进程内执行。
+
+    注意：进程内模式下会话只活在本次命令里。所以 ``chat`` / ``group`` 这类
+    「建会话 + 发消息 + 等回复 + 打印」一步到位的用法才是主角——
+    想连续对话请起服务再用 ``--url`` 连过去。
+    """
+    from .registry import bootstrap
+    from .social import SocialHub
+
+    reg = bootstrap(get_settings())
+    hub = SocialHub(reg, reg.bus)
+    sub = args.im_cmd
+    _fix_positional(args, sub)
+
+    # 通讯录与「群里自动挑人接话」都依赖健康状态。不先探一次的话，
+    # health 还是 unknown，自动路由就会挑中一个根本跑不起来的 agent。
+    # （走 registry 的 TTL 缓存，重复调用不会真的重复打网络。）
+    if sub != "log":
+        await reg.check_health(force=bool(args.refresh))
+
+    def _members() -> list[str]:
+        return [m.strip() for m in (args.members or "").split(",") if m.strip()]
+
+    if sub == "contacts":
+        print_im_contacts(hub.contacts())
+        return 0
+
+    if sub == "open":
+        if not reg.has(args.agent):
+            print(c(f"未找到 agent `{args.agent}`", "red"), file=sys.stderr)
+            return 2
+        conv = hub.open_direct(args.agent)
+        print(hub.summary(conv)["id"])
+        return 0
+
+    if sub == "group":
+        members = _members()
+        if not members:
+            print(c("建群需要 --members，例如 --members echo,static", "red"), file=sys.stderr)
+            return 2
+        try:
+            conv = hub.create_group(members, args.title or "")
+        except Exception as exc:  # noqa: BLE001
+            print(c(f"建群失败：{exc}", "red"), file=sys.stderr)
+            return 2
+        if not args.text:
+            print(hub.summary(conv)["id"])
+            return 0
+        return await _im_converse(hub, conv, args)
+
+    if sub == "say":
+        if not args.conversation:
+            print(c("发消息需要 -c/--conversation", "red"), file=sys.stderr)
+            return 2
+        try:
+            res = await hub.send(args.conversation, args.text or "")
+        except Exception as exc:  # noqa: BLE001
+            print(c(f"发送失败：{exc}", "red"), file=sys.stderr)
+            return 2
+        woke = res["woke"]
+        print(c(f"已发送 · 唤醒 {', '.join(woke) if woke else '（无人，仅存档）'}", "dim"))
+        if args.wait and woke:
+            await hub.wait_idle(args.conversation, timeout=args.timeout)
+            print_im_transcript(**hub.history(args.conversation, limit=args.limit))
+        return 0
+
+    if sub == "log":
+        if not args.conversation:
+            print(c("查看记录需要 -c/--conversation", "red"), file=sys.stderr)
+            return 2
+        try:
+            print_im_transcript(**hub.history(args.conversation, limit=args.limit))
+        except KeyError as exc:
+            print(c(str(exc), "red"), file=sys.stderr)
+            return 2
+        return 0
+
+    if sub == "chat":
+        if not args.agent or not args.text:
+            print(c("用法：im chat <agent> \"消息内容\"", "red"), file=sys.stderr)
+            return 2
+        if not reg.has(args.agent):
+            print(c(f"未找到 agent `{args.agent}`", "red"), file=sys.stderr)
+            return 2
+        return await _im_converse(hub, hub.open_direct(args.agent), args)
+
+    print(c(f"未知子命令 `{sub}`", "red"), file=sys.stderr)
+    return 2
+
+
+async def _im_converse(hub: Any, conv: Any, args: argparse.Namespace) -> int:
+    """建好会话后：发一条消息 → 等所有 agent 回完 → 打印整段对话。"""
+    res = await hub.send(conv.id, args.text or "")
+    woke = res["woke"]
+    if not woke:
+        print_im_transcript(**hub.history(conv.id, limit=args.limit))
+        print(c("没有人被唤醒——群里没人被 @，自动路由也没命中。", "yellow"))
+        return 1
+    print(c(f"已发送，等待 {len(woke)} 位回复：{', '.join(woke)}", "dim"))
+    await hub.wait_idle(conv.id, timeout=args.timeout)
+    print_im_transcript(**hub.history(conv.id, limit=args.limit))
+    failed = [d for d in hub.get(conv.id).deliveries if not d.is_terminal or d.error]
+    return 1 if failed else 0
+
+
 async def _inproc_main(args: argparse.Namespace) -> int:
     from .registry import bootstrap
 
@@ -262,6 +475,9 @@ async def _inproc_main(args: argparse.Namespace) -> int:
 
     if args.cmd == "collab":
         return await _inproc_collab(args)
+
+    if args.cmd == "im":
+        return await _inproc_im(args)
 
     return 0
 
@@ -386,7 +602,160 @@ async def _remote_main(args: argparse.Namespace) -> int:
             print(run.get("result") or "(无产出)")
             return 0 if run.get("status") == "completed" else 1
 
+        if args.cmd == "im":
+            return await _remote_im(client, base, args)
+
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# 会话层的远端执行（CLI 只当客户端，会话状态全在服务端）
+# --------------------------------------------------------------------------- #
+
+
+async def _remote_im(client: Any, base: str, args: argparse.Namespace) -> int:
+    sub = args.im_cmd
+    _fix_positional(args, sub)
+
+    async def fail(resp: Any, what: str) -> int:
+        print(c(f"{what}失败：HTTP {resp.status_code} {resp.text[:300]}", "red"), file=sys.stderr)
+        return 2
+
+    if sub == "contacts":
+        if args.refresh:
+            await client.post(
+                f"{base}/",
+                json={"jsonrpc": "2.0", "id": 1, "method": "agents/health", "params": {"force": True}},
+            )
+        r = await client.get(f"{base}/im/contacts")
+        if r.status_code != 200:
+            return await fail(r, "获取通讯录")
+        print_im_contacts(r.json()["contacts"])
+        return 0
+
+    if sub == "open":
+        r = await client.post(f"{base}/im/conversations", json={"kind": "direct", "agent": args.agent})
+        if r.status_code != 200:
+            return await fail(r, "打开单聊")
+        print(r.json()["id"])
+        return 0
+
+    if sub == "group":
+        members = [m.strip() for m in (args.members or "").split(",") if m.strip()]
+        if not members:
+            print(c("建群需要 --members，例如 --members echo,static", "red"), file=sys.stderr)
+            return 2
+        r = await client.post(
+            f"{base}/im/conversations",
+            json={"kind": "group", "members": members, "title": args.title or ""},
+        )
+        if r.status_code != 200:
+            return await fail(r, "建群")
+        conv_id = r.json()["id"]
+        if not args.text:
+            print(conv_id)
+            return 0
+        return await _remote_converse(client, base, conv_id, args)
+
+    if sub == "say":
+        if not args.conversation:
+            print(c("发消息需要 -c/--conversation", "red"), file=sys.stderr)
+            return 2
+        r = await client.post(
+            f"{base}/im/conversations/{args.conversation}/messages", json={"text": args.text or ""}
+        )
+        if r.status_code != 200:
+            return await fail(r, "发送")
+        woke = r.json().get("woke") or []
+        print(c(f"已发送 · 唤醒 {', '.join(woke) if woke else '（无人，仅存档）'}", "dim"))
+        if args.wait and woke:
+            await _remote_wait(client, base, args.conversation, args)
+        return 0
+
+    if sub == "log":
+        if not args.conversation:
+            print(c("查看记录需要 -c/--conversation", "red"), file=sys.stderr)
+            return 2
+        r = await client.get(
+            f"{base}/im/conversations/{args.conversation}", params={"limit": args.limit}
+        )
+        if r.status_code != 200:
+            return await fail(r, "拉取记录")
+        print_im_transcript(**r.json())
+        return 0
+
+    if sub == "chat":
+        if not args.agent or not args.text:
+            print(c('用法：im chat <agent> "消息内容"', "red"), file=sys.stderr)
+            return 2
+        r = await client.post(f"{base}/im/conversations", json={"kind": "direct", "agent": args.agent})
+        if r.status_code != 200:
+            return await fail(r, "打开单聊")
+        return await _remote_converse(client, base, r.json()["id"], args)
+
+    print(c(f"未知子命令 `{sub}`", "red"), file=sys.stderr)
+    return 2
+
+
+async def _remote_converse(client: Any, base: str, conv_id: str, args: argparse.Namespace) -> int:
+    """远端版「发消息 → 靠 SSE 等回复 → 打印对话」。"""
+    r = await client.post(f"{base}/im/conversations/{conv_id}/messages", json={"text": args.text or ""})
+    if r.status_code != 200:
+        print(c(f"发送失败：HTTP {r.status_code} {r.text[:300]}", "red"), file=sys.stderr)
+        return 2
+
+    payload = r.json()
+    woke = payload.get("woke") or []
+    if not woke:
+        h = (await client.get(f"{base}/im/conversations/{conv_id}")).json()
+        print_im_transcript(**h)
+        print(c("没有人被唤醒——群里没人被 @，自动路由也没命中。", "yellow"))
+        return 1
+
+    print(c(f"已发送，等待 {len(woke)} 位回复：{', '.join(woke)}", "dim"))
+    pending = {d["id"] for d in payload.get("deliveries", [])}
+    deadline = time.monotonic() + args.timeout
+    try:
+        async with client.stream("GET", f"{base}/im/conversations/{conv_id}/events") as resp:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    ev = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                kind = ev.get("event")
+                if kind == "snapshot":
+                    for d in ev.get("deliveries", []):
+                        if d["id"] in pending and d["state"] in ("replied", "failed"):
+                            pending.discard(d["id"])
+                elif kind == "delivery":
+                    d = ev["delivery"]
+                    icon, color = DELIVERY_STYLE.get(d["state"], ("·", "dim"))
+                    print(f"  {c(icon, color)} {d['agentName']} {c(d['state'], color)}")
+                    if d["id"] in pending and d["state"] in ("replied", "failed"):
+                        pending.discard(d["id"])
+                if not pending or time.monotonic() > deadline:
+                    break
+    except KeyboardInterrupt:
+        print(c("\n已中断等待，下面显示当前进度。", "dim"))
+
+    h = (await client.get(f"{base}/im/conversations/{conv_id}")).json()
+    print_im_transcript(**h)
+    return 1 if any(d["state"] == "failed" for d in h.get("deliveries", [])) else 0
+
+
+async def _remote_wait(client: Any, base: str, conv_id: str, args: argparse.Namespace) -> None:
+    """等待远端会话把所有在途投递跑完，然后打印记录。"""
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        h = (await client.get(f"{base}/im/conversations/{conv_id}")).json()
+        if all(d["state"] in ("replied", "failed") for d in h.get("deliveries", [])):
+            print_im_transcript(**h)
+            return
+        await asyncio.sleep(0.25)
+    h = (await client.get(f"{base}/im/conversations/{conv_id}")).json()
+    print_im_transcript(**h)
 
 
 # --------------------------------------------------------------------------- #
@@ -454,7 +823,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     p.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
-    p.add_argument("--version", action="version", version="a2a-hub 0.2.0")
+    p.add_argument("--version", action="version", version="a2a-hub 0.3.0")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -496,8 +865,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--synthesizer", default=None, help="结果综合者 agent id")
     sp.add_argument("--reviewer", default=None, help="委派模式下的评审 agent id")
 
+    # im —— 会话层（像微信一样聊）
+    sp = sub.add_parser("im", help="会话层：像微信一样与 agent 聊天与协同")
+    sp.add_argument(
+        "im_cmd",
+        choices=["contacts", "open", "group", "say", "log", "chat"],
+        help="contacts=通讯录 · open=打开单聊 · group=建群 · say=发消息 · log=看记录 · chat=单聊一步到位",
+    )
+    sp.add_argument("agent", nargs="?", default=None, help="open / chat 的目标 agent")
+    sp.add_argument("text", nargs="?", default=None, help="消息内容")
+    sp.add_argument("--members", default=None, help="群成员，逗号分隔（group 用）")
+    sp.add_argument("--title", default=None, help="群名称")
+    sp.add_argument("-c", "--conversation", dest="conversation", default=None,
+                    help="会话 id（say / log 用）")
+    sp.add_argument("--wait", action="store_true", help="发完等所有回复再退出")
+    sp.add_argument("--refresh", action="store_true", help="先刷新 agent 健康状态")
+    sp.add_argument("--timeout", type=float, default=120.0, help="等待回复的超时秒数")
+    sp.add_argument("--limit", type=int, default=200, help="打印的消息条数上限")
+
     for sub_p in (sub.choices["agents"], sub.choices["health"], sub.choices["card"],
-                  sub.choices["modes"], sub.choices["ask"], sub.choices["collab"]):
+                  sub.choices["modes"], sub.choices["ask"], sub.choices["collab"],
+                  sub.choices["im"]):
         sub_p.add_argument("--url", default=None, help="远端 Hub 地址（不给则进程内执行）")
         sub_p.add_argument("--token", default=None, help="Bearer Token")
         # 只有 agents 子命令声明了 --json，其余仅设置默认值避免 args.json 缺失

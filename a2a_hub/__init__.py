@@ -5,5 +5,5 @@ Codex、Claude Code 等异构 agent 统一封装为符合 A2A 规范的 Agent，
 实现「能力发现 -> 任务委派 -> 状态流式回传 -> 结果聚合」的完整协作链路。
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["__version__"]

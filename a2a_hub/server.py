@@ -24,6 +24,17 @@ A2A 协议层（JSON-RPC 2.0）
   GET  /collab/{run_id}/events                协同过程 SSE
   DELETE /collab/{run_id}                     取消协同
 
+会话层（IM）—— 把 agent 当"好友"聊，而非一次性 RPC
+  GET    /im/contacts                          通讯录（agent 列表 + 在线状态）
+  GET    /im/conversations                     会话列表（含最后消息与未读数）
+  POST   /im/conversations                     新建单聊 / 群聊
+  GET    /im/conversations/{id}                聊天记录 + 投递回执
+  POST   /im/conversations/{id}/messages       发消息（立即返回，后台回话）
+  POST   /im/conversations/{id}/read           清未读
+  PATCH  /im/conversations/{id}                群聊拉人 / 踢人
+  DELETE /im/conversations/{id}                解散会话
+  GET    /im/conversations/{id}/events         会话事件 SSE
+
 控制台
   GET  /console                                Web 控制台
 """
@@ -43,10 +54,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .models import JsonRpcError, JsonRpcErrorCodes, JsonRpcResponse
+from .models import A2AError, JsonRpcError, JsonRpcErrorCodes, JsonRpcResponse
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry, bootstrap
 from .rpc import JsonRpcDispatcher
+from .social import SocialHub, USER
 from .store import task_to_wire
 
 log = logging.getLogger("a2a_hub.server")
@@ -82,7 +94,8 @@ class Hub:
         self.settings = get_settings()
         self.registry: AgentRegistry = bootstrap(self.settings)
         self.orchestrator = Orchestrator(self.registry, self.registry.bus)
-        self.dispatcher = JsonRpcDispatcher(self.registry, self.orchestrator)
+        self.social = SocialHub(self.registry, self.registry.bus)
+        self.dispatcher = JsonRpcDispatcher(self.registry, self.orchestrator, self.social)
 
 
 hub = Hub()
@@ -114,13 +127,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 启动时做一次非阻塞健康探测，让控制台一打开就有状态
     asyncio.create_task(hub.registry.check_health(force=True))
     yield
+    await hub.social.aclose()
     await hub.registry.aclose()
 
 
 app = FastAPI(
     title="A2A Hub",
     description="异构 AI Agent 互联互通与多智能体协同网关",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -476,6 +490,156 @@ async def collab_events(request: Request, run_id: str) -> StreamingResponse:
             raise
         finally:
             yield sse_format({"kind": "done"}, event="done")
+
+    return StreamingResponse(source(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# --------------------------------------------------------------------------- #
+# 会话层（IM）—— 把 agent 当"好友"聊
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/im/contacts", tags=["会话"])
+async def im_contacts(auth: None = Depends(require_auth)) -> dict[str, Any]:
+    """通讯录：可聊的 agent 列表 + 在线状态。"""
+    items = hub.social.contacts()
+    return {"count": len(items), "contacts": items}
+
+
+@app.get("/im/conversations", tags=["会话"])
+async def im_list_conversations(auth: None = Depends(require_auth)) -> dict[str, Any]:
+    """会话列表（带最后一条消息与未读数）——相当于微信首页。"""
+    items = hub.social.list_conversations()
+    return {"count": len(items), "conversations": items}
+
+
+@app.post("/im/conversations", tags=["会话"])
+async def im_create_conversation(
+    payload: dict[str, Any] = Body(...), auth: None = Depends(require_auth)
+) -> dict[str, Any]:
+    """新建会话。
+
+    单聊：``{"kind": "direct", "agent": "echo"}``（幂等，重复调用返回同一个会话）
+    群聊：``{"kind": "group", "members": ["echo","static"], "title": "架构组"}``
+    """
+    kind = str(payload.get("kind") or "direct").lower()
+    try:
+        if kind == "direct":
+            agent_id = payload.get("agent") or payload.get("agentId")
+            if not agent_id:
+                raise HTTPException(status_code=422, detail="单聊需要 `agent` 参数")
+            conv = hub.social.open_direct(str(agent_id))
+        elif kind == "group":
+            members = payload.get("members") or payload.get("agentIds") or []
+            if not members:
+                raise HTTPException(status_code=422, detail="群聊需要 `members` 参数")
+            conv = hub.social.create_group(
+                [str(m) for m in members],
+                str(payload.get("title") or ""),
+                bool(payload.get("autoRoute", True)),
+            )
+        else:
+            raise HTTPException(status_code=422, detail=f"未知会话类型 `{kind}`")
+    except A2AError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return hub.social.summary(conv)
+
+
+@app.get("/im/conversations/{conv_id}", tags=["会话"])
+async def im_get_conversation(
+    conv_id: str,
+    limit: int = Query(default=200, ge=1, le=2000),
+    auth: None = Depends(require_auth),
+) -> dict[str, Any]:
+    """拉取聊天记录（含每条消息的投递回执）。"""
+    try:
+        return hub.social.history(conv_id, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/im/conversations/{conv_id}/messages", tags=["会话"])
+async def im_send_message(
+    conv_id: str,
+    payload: dict[str, Any] = Body(...),
+    auth: None = Depends(require_auth),
+) -> dict[str, Any]:
+    """发消息。
+
+    **立即返回**：消息先落库并广播，被唤醒的 agent 在后台跑完再回话——
+    要拿到回复请订阅 ``GET /im/conversations/{id}/events``。
+    """
+    text = payload.get("text") or payload.get("content") or ""
+    try:
+        return await hub.social.send(
+            conv_id,
+            str(text),
+            sender=str(payload.get("sender") or USER),
+            reply_to=payload.get("replyTo"),
+            wake=payload.get("wake"),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/im/conversations/{conv_id}/read", tags=["会话"])
+async def im_mark_read(
+    conv_id: str,
+    payload: Optional[dict[str, Any]] = Body(default=None),
+    auth: None = Depends(require_auth),
+) -> dict[str, Any]:
+    """清空未读红点。"""
+    reader = str((payload or {}).get("reader") or USER)
+    try:
+        conv = hub.social.mark_read(conv_id, reader)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return hub.social.summary(conv)
+
+
+@app.patch("/im/conversations/{conv_id}", tags=["会话"])
+async def im_update_conversation(
+    conv_id: str,
+    payload: dict[str, Any] = Body(...),
+    auth: None = Depends(require_auth),
+) -> dict[str, Any]:
+    """群聊拉人 / 踢人：``{"add": ["echo"], "remove": ["static"]}``。"""
+    try:
+        conv = hub.social.update_group(conv_id, payload.get("add"), payload.get("remove"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, A2AError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return hub.social.summary(conv)
+
+
+@app.delete("/im/conversations/{conv_id}", tags=["会话"])
+async def im_disband(conv_id: str, auth: None = Depends(require_auth)) -> dict[str, Any]:
+    if not hub.social.disband(conv_id):
+        raise HTTPException(status_code=404, detail=f"未找到会话 {conv_id}")
+    return {"disbanded": True, "conversationId": conv_id}
+
+
+@app.get("/im/conversations/{conv_id}/events", tags=["会话"])
+async def im_events(request: Request, conv_id: str) -> StreamingResponse:
+    """会话实时事件流：新消息 / 回执变更 / 心跳。"""
+    if not hub.social.has(conv_id):
+        raise HTTPException(status_code=404, detail=f"未找到会话 {conv_id}")
+
+    async def source() -> AsyncIterator[str]:
+        try:
+            async for event in hub.social.stream(conv_id):
+                if await request.is_disconnected():
+                    return
+                yield sse_format(event, event="im")
+        except asyncio.CancelledError:
+            raise
+        # 正常结束不额外 yield（避免在 finally 里产出）
+        return
 
     return StreamingResponse(source(), media_type="text/event-stream", headers=SSE_HEADERS)
 

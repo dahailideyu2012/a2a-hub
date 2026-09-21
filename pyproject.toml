@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2a-hub"
-version = "0.2.0"
+version = "0.3.0"
 description = "A2A Hub - 异构 AI Agent 互联互通与多智能体协同网关（WorkBuddy / 千问办公 / 扣子 / Codex / Claude Code ...）"
 readme = "README.md"
 requires-python = ">=3.10"

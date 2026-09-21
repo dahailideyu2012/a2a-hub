@@ -116,10 +116,17 @@ def orchestrator(registry):
 
 
 @pytest.fixture
-def dispatcher(registry, orchestrator):
+def social(registry):
+    from a2a_hub.social import SocialHub
+
+    return SocialHub(registry, registry.bus)
+
+
+@pytest.fixture
+def dispatcher(registry, orchestrator, social):
     from a2a_hub.rpc import JsonRpcDispatcher
 
-    return JsonRpcDispatcher(registry, orchestrator)
+    return JsonRpcDispatcher(registry, orchestrator, social)
 
 
 @pytest.fixture

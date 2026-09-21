@@ -19,6 +19,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 - [接入你的 Agent](#接入你的-agent)
 - [A2A 协议接口](#a2a-协议接口)
 - [多智能体协同](#多智能体协同)
+- [会话层：像微信一样与 agent 沟通](#会话层像微信一样与-agent-沟通)
 - [Web 控制台](#web-控制台)
 - [命令行](#命令行)
 - [配置参考](#配置参考)
@@ -68,6 +69,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 | **异构适配** | CLI 型（Claude Code / Codex / WorkBuddy / Gemini）、HTTP 型（OpenAI 兼容 / Coze）、A2A 级联型（远程 agent） |
 | **能力发现** | 每个 agent 发布技能清单；按标签 + 描述关键词自动路由到最合适的 agent |
 | **多智能体协同** | `delegate` 委派 / `broadcast` 广播 / `pipeline` 流水线 / `roundtable` 圆桌 |
+| **会话层（IM）** | 把 agent 当微信好友：单聊 / 群聊 / `@提及` / 已读回执 / 未读红点，**会话内上下文自动延续** |
 | **流式回传** | 所有输出按增量 artifact 事件实时推送，控制台可见"边想边出" |
 | **可观测** | 任务库、协同过程时间线、全局事件流、健康探测 |
 | **可扩展** | 新增 agent 生态 = 写一个 `BaseAdapter` 子类 + 在 YAML 里声明 |
@@ -371,6 +373,130 @@ curl -N http://localhost:8080/collab/{runId}/events
 
 ---
 
+## 会话层：像微信一样与 agent 沟通
+
+### 为什么单有 A2A 不够
+
+A2A 协议里的 `Task` 是**执行单位**：提交一次、跑到终态、结束即亡。
+但人和 agent 的协作其实是**持续会话**，两者语义差着一整层：
+
+| A2A / Task 语义 | 微信 / IM 语义 |
+| --- | --- |
+| 提交请求并等待返回（阻塞） | 消息发出立刻出现在聊天窗，不阻塞 |
+| 返回结果 = 这次请求结束 | 对方回了一条**新消息**，会话仍在继续 |
+| 下次调用是全新请求 | 上文自动延续，agent「记得」聊过什么 |
+| 只有请求方与响应方两方 | 单聊 / 群聊 / `@某人` / 已读回执 / 未读红点 |
+
+会话层（`a2a_hub/social.py`）补的就是这一层：
+
+```
+Conversation ──> contextId ──> 复用为会话内所有 Task 的 contextId
+                               （这是 agent「记得上文」的技术前提）
+ChatMessage  ──> 触发 Task ──> 产出 ──> 追加为新的 ChatMessage
+Delivery     ──> 一条消息在某位 agent 处的投递状态
+```
+
+### 命令行 30 秒上手
+
+```bash
+python run.py im contacts                              # 通讯录
+python run.py im chat echo "你好"                       # 单聊：发 → 等回复 → 打印
+python run.py im group --members echo,codex "谁来接？"   # 建群并等所有人回完
+python run.py im say -c conv-xxx "继续追问"              # 在已有会话里接着说
+python run.py im log -c conv-xxx                        # 看聊天记录与投递回执
+```
+
+终端输出（回执直接挂在每条消息下面）：
+
+```
+── 群聊「回显助手、Codex」 ──
+   会话 conv-77d4d7d7   上下文 ctx-e9c1e93c
+
+我            08:05:24  这个需求谁来接？
+             └ ● 回显助手 replied
+回显助手       08:05:24  [echo] 这个需求谁来接？
+```
+
+> 进程内模式下会话只活在本次命令里，所以 `chat` / `group` 这种「建会话 + 发消息 +
+> 等回复 + 打印」一步到位的用法才是主角。想连续对话请先 `run.py serve`，
+> 再用 `--url http://host:port` 连过去。
+
+### HTTP / JSON-RPC
+
+| 方法 | 端点 | 说明 |
+| --- | --- | --- |
+| GET | `/im/contacts` | 通讯录（含在线状态） |
+| GET | `/im/conversations` | 会话列表（带最后一条消息与未读数） |
+| POST | `/im/conversations` | 新建单聊 / 群聊 |
+| GET | `/im/conversations/{id}` | 聊天记录 + 投递回执 |
+| POST | `/im/conversations/{id}/messages` | 发消息（**立即返回**，不等回复） |
+| POST | `/im/conversations/{id}/read` | 清未读红点 |
+| PATCH | `/im/conversations/{id}` | 群聊拉人 / 踢人 |
+| DELETE | `/im/conversations/{id}` | 解散会话 |
+| GET | `/im/conversations/{id}/events` | **会话事件 SSE**（实时消息与回执） |
+
+同一套能力也可走 JSON-RPC：`im/contacts`、`im/conversations`、`im/open`、`im/group`、
+`im/send`、`im/history`、`im/events`。
+
+```bash
+# 建群
+curl -s localhost:8080/im/conversations -H 'Content-Type: application/json' \
+  -d '{"kind":"group","members":["echo","codex"],"title":"架构组"}' | jq
+
+# 发消息（不等回复）
+curl -s localhost:8080/im/conversations/$CID/messages -H 'Content-Type: application/json' \
+  -d '{"text":"@echo 说说你的想法"}' | jq '.woke'
+
+# 实时看回复
+curl -N localhost:8080/im/conversations/$CID/events
+```
+
+SSE 事件序列（实测）：
+
+```
+snapshot → message(我发的) → delivery(delivered) → delivery(read) → message(agent 回复)
+```
+
+### 投递回执
+
+一条消息对**每一位**被唤醒的 agent 都有独立回执，前端可据此显示「正在输入…」：
+
+```
+pending → delivered → read → replied
+                        └──→ failed
+```
+
+| 状态 | 含义 |
+| --- | --- |
+| `pending` | 已唤醒，排队中 |
+| `delivered` | 任务已创建，对方收到了 |
+| `read` | 对方开始处理（= 正在输入） |
+| `replied` | 对方已回复 |
+| `failed` | 没接住（不可用 / 报错 / 超时），**同时落一条系统消息，绝不静默消失** |
+
+### 群里谁来接话
+
+| 场景 | 行为 |
+| --- | --- |
+| 单聊 | 唤醒对方 |
+| 群里 `@某人` | **只有**被 @ 的人响应（支持 `@echo`，也支持 `@回显` 这类名称前缀匹配） |
+| 群里 `@所有人` | 全员响应 |
+| 群里没人被 @ | 按能力路由挑一个接话；`autoRoute: false` 可关掉，让群保持安静 |
+| 被 @ 的 agent 离线 | 快速失败 + 系统消息说明原因，**不会**偷偷换成别人顶替 |
+
+自动挑人时会先排除明确不可用的成员，再在健康的里面挑——避免把消息丢给一个注定跑不起来的 agent。
+
+### 与「多智能体协同」的区别
+
+| | 协同（`/collab`） | 会话层（`/im`） |
+| --- | --- | --- |
+| 形态 | 一次性的有向流程 | 无限延续的消息流 |
+| 适用 | 明确的「调研 → 实现 → 校核」分工 | 多方持续讨论、追问、追加需求 |
+| 上下文 | 按 run 隔离 | 按会话长期延续 |
+| 谁决定下一步 | 编排器 | 群里被 @ 的人 / 能力自动路由 |
+
+---
+
 ## Web 控制台
 
 访问 `http://localhost:8080/console`：
@@ -397,7 +523,19 @@ python run.py collab broadcast "总结这个话题" --top-k 3 --synthesizer echo
 python run.py modes                              # 查看协同模式
 ```
 
+会话层（像微信一样聊，会话内上下文自动延续）：
+
+```bash
+python run.py im contacts                        # 通讯录
+python run.py im open echo                       # 打开单聊，打印会话 id
+python run.py im chat echo "你好"                 # 单聊一步到位：发 → 等回复 → 打印
+python run.py im group --members echo,codex "谁来接？"   # 建群并发问，等所有人回完
+python run.py im say -c conv-xxx "继续追问" --wait      # 在已有会话里接着说
+python run.py im log -c conv-xxx                 # 查看聊天记录与投递回执
+```
+
 加 `--url http://host:8080` 可操作远端 Hub；加 `--token <TOKEN>` 携带鉴权。
+`im` 系列命令同样支持 `--url`，此时会话状态保存在服务端，命令行只当客户端。
 
 ---
 

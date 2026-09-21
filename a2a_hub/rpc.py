@@ -36,6 +36,7 @@ from .models import (
 )
 from .orchestrator import MODES, Orchestrator
 from .registry import AgentRegistry
+from .social import USER, SocialHub
 
 log = logging.getLogger("a2a_hub.rpc")
 
@@ -71,9 +72,16 @@ def _build_message(raw: Any) -> Message:
 class JsonRpcDispatcher:
     """无状态分发器：路由 + 参数校验 + 异常 -> JSON-RPC 错误映射。"""
 
-    def __init__(self, registry: AgentRegistry, orchestrator: Orchestrator) -> None:
+    def __init__(
+        self,
+        registry: AgentRegistry,
+        orchestrator: Orchestrator,
+        social: Optional[SocialHub] = None,
+    ) -> None:
         self.registry = registry
         self.orchestrator = orchestrator
+        # 会话层可选注入；不传就自带一个，方便单测与嵌入式使用
+        self.social = social or SocialHub(registry, registry.bus)
 
     # ------------------------------------------------------------------ #
     # 入口
@@ -159,6 +167,13 @@ class JsonRpcDispatcher:
             "collab/run",
             "collab/get",
             "collab/modes",
+            "im/contacts",
+            "im/conversations",
+            "im/open",
+            "im/group",
+            "im/send",
+            "im/history",
+            "im/events",
         ]
 
     # ------------------------------------------------------------------ #
@@ -385,6 +400,97 @@ class JsonRpcDispatcher:
         if run is None:
             raise A2AError(JsonRpcErrorCodes.TASK_NOT_FOUND, f"未找到协同运行 `{run_id}`")
         return run.model_dump(mode="json")
+
+    # ------------------------------------------------------------------ #
+    # 会话层（IM）—— 把 agent 当"好友"聊
+    # ------------------------------------------------------------------ #
+
+    def _conv(self, conv_id: str) -> Any:
+        try:
+            return self.social.get(conv_id)
+        except KeyError as exc:
+            raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, str(exc)) from exc
+
+    async def _m_im_contacts(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        items = self.social.contacts()
+        return {"count": len(items), "contacts": items}
+
+    async def _m_im_conversations(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        items = self.social.list_conversations()
+        return {"count": len(items), "conversations": items}
+
+    async def _m_im_open(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """打开（或复用）与某位 agent 的单聊。"""
+        agent_id = _require(params, "agentId")
+        if not self.registry.has(agent_id):
+            raise A2AError(
+                JsonRpcErrorCodes.INVALID_PARAMS,
+                f"未找到 agent `{agent_id}`",
+                {"available": [r.id for r in self.registry.list_records()]},
+            )
+        return self.social.summary(self.social.open_direct(agent_id))
+
+    async def _m_im_group(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """建群。"""
+        members = params.get("members") or params.get("agentIds")
+        if not members:
+            raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, "`im/group` 需要 `members`")
+        for mid in members:
+            if not self.registry.has(mid):
+                raise A2AError(
+                    JsonRpcErrorCodes.INVALID_PARAMS, f"未找到 agent `{mid}`"
+                )
+        try:
+            conv = self.social.create_group(
+                list(members),
+                params.get("title") or "",
+                bool(params.get("autoRoute", True)),
+            )
+        except ValueError as exc:
+            raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, str(exc)) from exc
+        return self.social.summary(conv)
+
+    async def _m_im_send(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """发一条消息，立即返回；对方的回复会作为新消息异步追加。"""
+        conv_id = _require(params, "conversationId")
+        text = _require(params, "text")
+        self._conv(conv_id)
+        try:
+            return await self.social.send(
+                conv_id,
+                str(text),
+                sender=params.get("sender") or USER,
+                reply_to=params.get("replyTo"),
+                wake=params.get("wake"),
+            )
+        except ValueError as exc:
+            raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, str(exc)) from exc
+
+    async def _m_im_history(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        conv_id = _require(params, "conversationId")
+        self._conv(conv_id)
+        return self.social.history(conv_id, int(params.get("limit") or 200))
+
+    async def _m_im_events(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """会话事件流（流式方法，上层会包装成 SSE）。"""
+        conv_id = _require(params, "conversationId")
+        self._conv(conv_id)
+        async for event in self.social.stream(conv_id):
+            yield event
 
 
 # 兼容：JsonRpcError 从 models 引入便于外部使用
