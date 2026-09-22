@@ -2159,6 +2159,30 @@ class SocialGraph:
             out.append(m)
         return out
 
+    # ------------------------------------------------------------------ #
+    # 就地重载 ——「不重启就能启用社交层」的实现基础
+    # ------------------------------------------------------------------ #
+
+    def reload_members(self, members: list[Member]) -> "SocialGraph":
+        """就地替换成员表并重算 :attr:`enabled`，**对象引用保持不变**。
+
+        为什么是「就地改」而不是「重建一个 ``SocialGraph``」：同一个图对象
+        被五处持有——编排器的 delegate 门禁、``SocialHub``、dispatcher、自主
+        交友巡航，以及社交简报 resolver 的闭包。重建就得逐个换引用，漏一处
+        就会出现「调用方看到的状态」与「真实状态」不一致。就地改则所有持有
+        方下一次访问自动生效，「生成配置 → 立刻可用」才成立。
+
+        - 新成员**覆盖同名、不删除旧成员**：不清空是为了避免已建立的关系
+          悬空（旧成员身上可能已经挂着好友边）；
+        - 空 token 在这里同样丢掉，避免 ``${VAR}`` 未设时把部署者锁在门外。
+        """
+        with self._lock:
+            for m in members or []:
+                m.tokens = [t for t in m.tokens if t and t.strip()]
+                self._members[m.id] = m
+            self.enabled = bool(self._members) and self.mode != "off"
+        return self
+
 
 # --------------------------------------------------------------------------- #
 # 社交简报（把社交属性绑定到 prompt 型 agent 的主通道）

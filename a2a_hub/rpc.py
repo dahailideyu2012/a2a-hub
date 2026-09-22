@@ -638,7 +638,13 @@ class JsonRpcDispatcher:
             raise A2AError(
                 JsonRpcErrorCodes.SOCIAL_DENIED,
                 "社交层未启用（未找到 members.yaml，或 A2A_SOCIAL_MODE=off）",
-                {"reason": "social_disabled", "hint": "配置 config/members.yaml 后重启 Hub"},
+                {
+                    "reason": "social_disabled",
+                    "hint": (
+                        "执行 `python run.py social init`（MCP 里调 a2a_social_init）"
+                        "即可一键生成 config/members.yaml 并热启用，无需重启"
+                    ),
+                },
             )
         return self.graph
 

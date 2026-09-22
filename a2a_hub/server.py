@@ -84,6 +84,7 @@ from .relations import (
     social_briefing,
 )
 from .rpc import JsonRpcDispatcher
+from .social_boot import bootstrap_members
 from .social import SocialHub
 from .store import task_to_wire
 
@@ -180,6 +181,80 @@ class Hub:
         else:
             log.info("社交门禁未启用（未找到 %s 或 mode=off）", self.settings.members_file)
         return graph
+
+    # ------------------------------------------------------------------ #
+    # 一键启用社交层（免重启）
+    # ------------------------------------------------------------------ #
+
+    def ensure_social(self, *, auto_init: bool = True) -> dict[str, Any]:
+        """确保社交层可用；未启用时按需生成 ``members.yaml`` 并**热启用**。
+
+        返回 ``{"enabled": bool, "created": bool, "path": str, "members": [...],
+        "reason": str}``，可以直接回显给调用方（MCP 工具 / CLI）。
+
+        为什么能「不重启」：:meth:`SocialGraph.reload_members` 是**就地**改成员
+        表，所以编排器门禁、SocialHub、dispatcher、巡航、简报 resolver 五个
+        持有方拿到的还是同一个对象，下一次访问就看见新状态。
+
+        ``auto_init=False`` 时只做检测，不碰磁盘——留给「我只要看一眼状态」
+        的调用方。
+        """
+        g = self.social_graph
+        state: dict[str, Any] = {
+            "enabled": bool(g is not None and g.enabled),
+            "created": False,
+            "path": self.settings.members_file,
+            "members": [],
+            "reason": "",
+        }
+        if state["enabled"]:
+            state["members"] = [m.id for m in g.all_members()]
+            state["reason"] = "社交层已启用"
+            return state
+        if g is None:
+            state["reason"] = "社交图未装配"
+            return state
+        if self.settings.social_mode == "off":
+            state["reason"] = "A2A_SOCIAL_MODE=off，门禁被显式关闭；改成 soft/strict 后重试"
+            return state
+        if not auto_init:
+            state["reason"] = (
+                f"社交层未启用（缺 {self.settings.members_file}）。"
+                "执行 `social init` 或调用 a2a_social_init 即可一键启用，无需重启。"
+            )
+            return state
+
+        info = bootstrap_members(
+            members_path=self.settings.members_path(),
+            agents_path=self.settings.agents_path(),
+        )
+        state["created"] = bool(info.get("created"))
+        state["reason"] = str(info.get("reason") or "")
+        if not state["created"] and not info.get("members"):
+            # 生成失败（多半是没写权限）——把原因原样带出去，别假装成功
+            return state
+
+        members = SocialGraph.load_members(self.settings.members_path())
+        if not members:
+            state["reason"] = info.get("reason") or "生成的成员表为空，社交层仍关闭"
+            return state
+
+        g.reload_members(members)
+        g.ensure_agents((rec.id, rec.name) for rec in self.registry.list_records())
+        g.set_capability_resolver(self._capabilities)
+        if g.enabled and self.settings.social_briefing:
+            # 闭包里读的是 self.social_graph，所以这里只在「从未装过」时补一次
+            self.registry.set_briefing_resolver(
+                lambda agent_id: social_briefing(self.social_graph, agent_id)
+            )
+        state["enabled"] = bool(g.enabled)
+        state["members"] = [m.id for m in g.all_members()]
+        if state["enabled"]:
+            state["reason"] = (
+                f"{info.get('reason') or '已生成成员表'}；社交层已热启用，无需重启"
+            )
+            log.info("社交门禁已热启用：mode=%s，%d 个成员", g.mode, len(state["members"]))
+        return state
 
     def _capabilities(self, member_id: str) -> dict[str, Any]:
         """给关系层用的能力画像（匹配打分的输入）。

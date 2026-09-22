@@ -53,14 +53,33 @@ Claude Code 叫起来跑任务。
 | **关闭（默认）** | 没有 `config/members.yaml` | 门禁完全不生效，与 v0.3.0 行为**逐字节一致** |
 | **启用** | 存在 `config/members.yaml` 且 `A2A_SOCIAL_MODE != off` | 好友制、权限分档、审计全开 |
 
+**一键启用（推荐）** —— 自动生成一份开箱可用的配置并立即生效，**无需重启**：
+
 ```bash
-# 开
+python run.py social init                 # 命令行
+python run.py social init --json          # 机器可读
+```
+
+WorkBuddy / MCP 里直接调 `a2a_social_init` 工具即可（社交工具报告
+「社交层未启用」时先调它）。
+
+它会按 `config/agents.yaml` 生成「1 个人类 + 所有本地 agent，agent 全部归你名下」
+的成员表：不写任何 token（本地开发模式，**不会把自己锁在门外**），显式声明
+owner（所以你能立刻 delegate，不用先加好友）。**幂等：文件已存在就原样返回，
+绝不覆盖你手改过的配置。** 生成完照着 `members.example.yaml` 加 `tokens` 即可
+对外提供服务。
+
+```bash
+# 想要完整能力模板（自主交友 / max_scopes / 服务账号）就手工复制
 cp config/members.example.yaml config/members.yaml
 
 # 关（二选一）
 rm config/members.yaml                    # 删文件
 export A2A_SOCIAL_MODE=off                # 或改档位
 ```
+
+> `config/members.yaml` 已在 `.gitignore` 里（本机部署配置，可能带 token），
+> 提交到仓库的是模板 `members.example.yaml`。
 
 ### 三档运行模式
 

@@ -790,6 +790,44 @@ def _inproc_graph(reg: Any = None) -> Any:
     return graph
 
 
+def _social_init(args: argparse.Namespace) -> int:
+    """``social init`` —— 一键启用社交层。
+
+    只负责「把 members.yaml 生出来」。进程内 CLI 每次都是新进程，所以生成完
+    下一次调用自然就启用了；HTTP 服务侧则由 ``Hub.ensure_social`` 就地热启用，
+    两边都不需要用户重启任何东西。
+
+    幂等：文件已存在就原样返回，**绝不覆盖**用户手改过的配置。
+    """
+    from .social_boot import bootstrap_members
+
+    s = get_settings()
+    info = bootstrap_members(
+        members_path=s.members_path(), agents_path=s.agents_path()
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return 0
+
+    path = info.get("path")
+    if info.get("created"):
+        print(c(f"已生成 {path}", "green"))
+        print(f"  {info.get('reason')}")
+        print()
+        print("社交门禁已启用。接下来：")
+        print("  python run.py social me           # 看看自己的名片")
+        print("  python run.py social find <关键词>  # 找人")
+        print()
+        print(c("说明：", "yellow") + "生成的配置不写任何 token（本地开发模式，不会把自己"
+              "锁在门外）；要从外部访问再加 tokens。删除该文件即可关闭门禁。")
+        return 0
+
+    print(c(f"{path} 已存在，未做任何改动。", "yellow"))
+    print(f"  {info.get('reason')}")
+    print("  想看完整能力模板：config/members.example.yaml")
+    return 0
+
+
 def _inproc_actor(graph: Any, explicit: Optional[str] = None) -> str:
     """进程内模式的操作者。
 
@@ -825,8 +863,13 @@ async def _inproc_social(args: argparse.Namespace) -> int:
     """
     from .relations import RelationState, SocialError
 
-    graph = _inproc_graph()
     sub = args.social_cmd
+    # init 要在建图之前处理：建图时门禁还是关的，先生成配置再建图才拿得到
+    # 启用后的状态（进程内每次调用都是新进程，所以生成完重新读一次即可）。
+    if sub == "init":
+        return _social_init(args)
+
+    graph = _inproc_graph()
     target = args.target
     # 进程内没有 token：默认以「本机人类成员」身份操作。``--as`` 可切换成别的成员
     # （多租户配置排查时很有用）；对 accept/reject 而言 ``--as`` 表示
@@ -1892,6 +1935,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reviewer", default=None, help="委派模式下的评审 agent id")
     sp.add_argument("--as", dest="as_member", default=None,
                     help="以哪个成员的身份发起（进程内多成员部署时用；门禁开启后需要 delegate）")
+    sp.add_argument("--json", action="store_true", help="机器可读输出")
 
     # im —— 会话层（像微信一样聊）
     sp = sub.add_parser("im", help="会话层：像微信一样与 agent 聊天与协同")
@@ -1922,13 +1966,15 @@ def build_parser() -> argparse.ArgumentParser:
             "accept", "reject", "cancel", "friends", "relations", "grant", "revoke",
             "block", "audit", "introduce", "intro", "introductions",
             "need", "approvals", "approve", "deny",
+            "init",
         ],
         help="me=我的名片 · find=搜人 · profile=看某人的名片（只有共同好友数） · "
              "discover=按匹配度发现值得认识的人 · add=发申请 · inbox/outbox=收发件箱 · "
              "accept/reject/cancel=处理申请 · friends/relations=好友与关系 · "
              "grant=改权限 · revoke=删好友 · block=拉黑 · audit=审计链 · "
              "introduce=引荐 · intro=别人引荐给我的 · "
-             "need=报告能力缺口（自主交友） · approvals/approve/deny=自主待办",
+             "need=报告能力缺口（自主交友） · approvals/approve/deny=自主待办 · "
+             "init=一键启用（生成 config/members.yaml，幂等不覆盖）",
     )
     sp.add_argument("target", nargs="?", default=None,
                     help="对方成员 id（add/accept/reject/cancel/grant/revoke/block/profile/"

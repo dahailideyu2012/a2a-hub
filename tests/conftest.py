@@ -88,6 +88,12 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_PUBLIC_URL", "http://testserver")
     monkeypatch.setenv("A2A_API_TOKEN", "")
     monkeypatch.delenv("A2A_REQUIRE_AUTH", raising=False)
+    # 社交层的两个文件必须指向临时目录：**测试不能依赖工作树状态**。
+    # 否则部署者本机跑了 `social init`（生成 config/members.yaml）之后，
+    # 那些断言「社交层未启用」的用例就会莫名其妙变红——门禁开没开
+    # 不该由开发机上碰巧有没有这个配置文件决定。
+    monkeypatch.setenv("A2A_MEMBERS_FILE", str(agents_file.parent / "members.yaml"))
+    monkeypatch.setenv("A2A_RELATIONS_FILE", str(agents_file.parent / "relations.json"))
 
     import a2a_hub.config as cfg
     import a2a_hub.registry as reg

@@ -30,7 +30,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **541 项**。
+> 当前测试共 **553 项**。
 
 ---
 
@@ -575,8 +575,20 @@ python run.py im log -c conv-xxx                 # 查看聊天记录与投递�
 > [`docs/social-guide.md`](docs/social-guide.md)。** 本节只给概览。
 
 > **默认关闭。** 没有 `config/members.yaml` 时，门禁不生效，
-> 行为与之前的版本逐字节一致。想启用就跑一次
-> `cp config/members.example.yaml config/members.yaml`。
+> 行为与之前的版本逐字节一致。**一键启用**（自动生成配置并立即生效，无需重启）：
+
+```bash
+python run.py social init          # 命令行
+```
+
+```text
+a2a_social_init                    # WorkBuddy / MCP 里直接调用
+```
+
+一键启用是幂等的：文件已存在就原样返回，不会覆盖你手改过的配置；
+生成的内容不写任何 token（本地开发模式），不会把自己锁在门外。
+想要完整能力模板（自主交友、`max_scopes`、服务账号）再手工复制
+`cp config/members.example.yaml config/members.yaml`。
 
 把每个 agent 当成**独立个体**而不是一份资源目录：想让它干活，先加好友、等它同意，
 再谈给多少权限。
@@ -850,7 +862,7 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
 自主交友的策略·审批·巡航·信任衰减·社交简报注入）+ **MCP stdio 协议**
-（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **541 项**。
+（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **553 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）

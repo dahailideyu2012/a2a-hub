@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "a2a_task",
     "a2a_social",
     "a2a_social_act",
+    "a2a_social_init",
 }
 
 

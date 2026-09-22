@@ -11,6 +11,7 @@
     a2a_task         查任务状态、取回结果
     a2a_social       社交只读：我是谁 / 好友 / 发现 / 申请箱 / 待办
     a2a_social_act   社交写操作：申请 / 同意 / 拒绝 / 授权 / 拉黑（需 confirm）
+    a2a_social_init  一键启用社交网络：生成 members.yaml 并热启用（幂等，不覆盖）
 
 设计取舍
 --------
@@ -281,10 +282,77 @@ WRITE_ACTIONS = {
 }
 
 
+def _autoininit_on() -> bool:
+    """社交工具被调用而门禁还没开时，是否自动一键启用（默认开）。
+
+    关掉它就退回「必须先手工准备 members.yaml」的老行为：
+    ``A2A_SOCIAL_AUTOINIT=false``。
+    """
+    return os.getenv("A2A_SOCIAL_AUTOINIT", "true").strip().lower() not in {
+        "0", "false", "no", "off", "",
+    }
+
+
+def _ensure_social() -> tuple[bool, str]:
+    """保证社交层可用，返回 ``(可用?, 说明)``。
+
+    未启用时会**就地热启用**（生成 members.yaml + 重载同一个图对象），
+    所以调用方不用重启 Hub，也不用手工复制配置文件。
+    """
+    try:
+        hub = _get_hub()
+    except Exception as e:  # noqa: BLE001 - Hub 起不来要变成可读错误，不是崩溃
+        return False, f"Hub 装载失败：{type(e).__name__}: {e}"
+    g = getattr(hub, "social_graph", None)
+    if g is not None and g.enabled:
+        return True, ""
+    if not _autoininit_on():
+        return False, (
+            "社交层未启用（缺 config/members.yaml），且 A2A_SOCIAL_AUTOINIT=false。"
+            "执行 `python run.py social init` 或调用 a2a_social_init 后即可使用，无需重启。"
+        )
+    try:
+        state = hub.ensure_social(auto_init=True)
+    except Exception as e:  # noqa: BLE001
+        return False, f"一键启用社交层失败：{type(e).__name__}: {e}"
+    if not state.get("enabled"):
+        return False, state.get("reason") or "一键启用社交层失败"
+    return True, state.get("reason") or "社交层已启用"
+
+
+def tool_social_init(args: dict[str, Any]) -> dict[str, Any]:
+    """一键启用社交层：生成 ``members.yaml`` 并**热启用**，不用重启。
+
+    幂等：文件已存在就原样返回，绝不覆盖用户手改过的配置。
+    """
+    try:
+        hub = _get_hub()
+    except Exception as e:  # noqa: BLE001
+        return _err(f"Hub 装载失败：{type(e).__name__}: {e}")
+    try:
+        state = hub.ensure_social(auto_init=True)
+    except Exception as e:  # noqa: BLE001
+        return _err(f"一键启用失败：{type(e).__name__}: {e}")
+    if not state.get("enabled"):
+        return _err(state.get("reason") or "一键启用失败")
+    members = state.get("members") or []
+    text = (
+        f"社交层已启用（未重启，就地热启用）。\n"
+        f"成员表：{state.get('path')}\n"
+        f"说明：{state.get('reason')}\n"
+        f"成员数：{len(members)}\n"
+        + ("成员：" + ", ".join(str(m) for m in members[:20]) if members else "")
+    )
+    return _ok(text)
+
+
 def tool_social(args: dict[str, Any]) -> dict[str, Any]:
     action = (args.get("action") or "me").strip()
     if action not in READ_ACTIONS:
         return _err(f"未知只读动作 {action!r}，可选：{', '.join(READ_ACTIONS)}")
+    ok, note = _ensure_social()
+    if not ok:
+        return _err(note)
     method, base = READ_ACTIONS[action]
     params = dict(base)
     if args.get("member"):
@@ -296,13 +364,17 @@ def tool_social(args: dict[str, Any]) -> dict[str, Any]:
         result = _unwrap(_run(_dispatch(method, params)))
     except RuntimeError as e:
         return _err(str(e))
-    return _ok(_fmt(result) if result else f"（{action} 无数据；社交层可能未启用：需要 config/members.yaml）")
+    body = _fmt(result) if result else f"（{action} 暂无数据）"
+    return _ok(f"{note}\n\n{body}" if note else body)
 
 
 def tool_social_act(args: dict[str, Any]) -> dict[str, Any]:
     action = (args.get("action") or "").strip()
     if action not in WRITE_ACTIONS:
         return _err(f"未知写动作 {action!r}，可选：{', '.join(WRITE_ACTIONS)}")
+    ok, note = _ensure_social()
+    if not ok:
+        return _err(note)
     member = args.get("member")
     params: dict[str, Any] = {}
     if member:
@@ -318,9 +390,11 @@ def tool_social_act(args: dict[str, Any]) -> dict[str, Any]:
         params["id"] = args["id"]
 
     # 写闸门：不 confirm 就只回「将要做什么」，不落任何变更
+    prefix = f"{note}\n\n" if note else ""
     if not args.get("confirm"):
         return _ok(
-            "未执行（需要 confirm=true 才会真正改动）。\n"
+            prefix
+            + "未执行（需要 confirm=true 才会真正改动）。\n"
             f"将要执行：{action} {member or ''} {json.dumps(params, ensure_ascii=False)}\n"
             "确认无误后，用同样参数并带上 confirm=true 再调用一次。"
         )
@@ -328,7 +402,7 @@ def tool_social_act(args: dict[str, Any]) -> dict[str, Any]:
         result = _unwrap(_run(_dispatch(WRITE_ACTIONS[action], params)))
     except RuntimeError as e:
         return _err(str(e))
-    return _ok(_fmt(result) if result else f"{action} 已执行")
+    return _ok(prefix + (_fmt(result) if result else f"{action} 已执行"))
 
 
 TOOL_FUNCS = {
@@ -339,6 +413,7 @@ TOOL_FUNCS = {
     "a2a_task": tool_task,
     "a2a_social": tool_social,
     "a2a_social_act": tool_social_act,
+    "a2a_social_init": tool_social_init,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -410,6 +485,16 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {"task_id": {"type": "string", "description": "任务 id"}},
             "required": ["task_id"],
         },
+    },
+    {
+        "name": "a2a_social_init",
+        "description": (
+            "一键启用社交网络：自动生成 config/members.yaml（默认人类 + 所有本地 agent，"
+            "均归到你名下）并立即热启用，**不需要手工复制配置文件，也不需要重启服务**。"
+            "幂等——文件已存在时原样返回，绝不覆盖你手改过的配置。"
+            "当 a2a_social / a2a_social_act 报告「社交层未启用」时先调它。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "a2a_social",

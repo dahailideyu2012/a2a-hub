@@ -6,6 +6,8 @@
 *.pem
 secrets/
 config/agents.local.yaml
+# 社交成员表是本机部署配置（可能带 token），模板走 members.example.yaml
+config/members.yaml
 
 # ---- python ----
 __pycache__/
