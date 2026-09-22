@@ -1935,6 +1935,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="HTTP 方式用的对外地址（默认取 A2A_PUBLIC_URL）")
     sp.add_argument("--as", dest="as_member", default=None,
                     help="身份标识，写进 prompt 片段（如 agent:codex）")
+    sp.add_argument("--all", action="store_true",
+                    help="给 agents.yaml 里每个 agent 各出一份接入包（按各自的「手」选通道）")
+    sp.add_argument("--register", action="store_true",
+                    help="MCP 通道：直接把配置合并进 host 的 mcp.json（幂等 + 写前备份）")
+    sp.add_argument("--host", default=None,
+                    help="MCP host：workbuddy（默认）/ claude / cursor / codex")
+
+    # doctor —— 就绪体检（「拿来就能用」的验收）
+    sp = sub.add_parser("doctor", help="体检：能不能调 Hub + 能不能被 Hub 调")
+    sp.add_argument("--json", action="store_true", help="机器可读输出")
+    sp.add_argument("--no-probe", dest="probe", action="store_false", default=True,
+                    help="跳过端到端往返探针（只做静态检查，不启动任何子进程）")
+    sp.add_argument("--host", default=None, help="要检查的 MCP host（默认 workbuddy）")
 
     # ask
     sp = sub.add_parser("ask", help="向 agent 发起一次任务")
@@ -2039,6 +2052,10 @@ _AUTO_TRANSPORT = {
     "workbuddy": "mcp",
     "coze": "http",
     "openai_compat": "http",
+    # 别人的 A2A 服务：它本身就是个 HTTP 端点
+    "remote_a2a": "http",
+    # 回显 agent 没有「手」，但它常被当自检样本跑 shell，给 cli 最合适
+    "echo": "cli",
 }
 _DEFAULT_TRANSPORT = "cli"
 
@@ -2108,18 +2125,96 @@ def _write_marked_block(path: str, text: str) -> None:
     p.write_text(new, encoding="utf-8")
 
 
+def _agent_ids() -> list[str]:
+    """列出 ``agents.yaml`` 里声明的 agent id（读不到就返回空）。"""
+    try:
+        from .config import HubConfig
+
+        cfg = HubConfig.load(get_settings().agents_path())
+    except Exception:  # noqa: BLE001 - 只是列个名单，读不到就算了
+        return []
+    return [a.id for a in cfg.agents]
+
+
+def _register_mcp(args: argparse.Namespace, transport: str) -> int:
+    """把 MCP 配置真正写进 host 的配置文件（幂等 + 写前备份）。
+
+    这一步是「说明」与「装好」的分界线：attach 的其余形态都只是给人看的文本，
+    只有它会让机器状态发生变化。
+    """
+    from . import attach_kit
+
+    if transport != "mcp":
+        print(c(f"--register 只对 MCP 通道有意义（当前推断为 {transport}）；"
+                f"确实要登记 MCP 就显式加 --transport mcp", "yellow"),
+              file=sys.stderr)
+        return 2
+
+    host_key = args.host or attach_kit.DEFAULT_HOST
+    res = attach_kit.register(host_key)
+    if not res.get("ok"):
+        print(c(res.get("error", "登记失败"), "red"), file=sys.stderr)
+        if res.get("path"):
+            print(c(f"  文件：{res['path']}", "dim"), file=sys.stderr)
+        return 1
+
+    if res["changed"]:
+        print(c(f"{'已创建' if res['created'] else '已更新'} {res['path']}", "green"))
+        if res["backup"]:
+            print(c(f"  原文件已备份 → {res['backup']}", "dim"))
+    else:
+        print(c(f"{res['path']} 里已是当前配置，无需改动。", "green"))
+    if res.get("note"):
+        print(c(f"  {res['note']}", "dim"))
+    print(c("  验证：python run.py doctor", "dim"))
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """``doctor`` —— 体检「能不能调 Hub」+「能不能被 Hub 调」。"""
+    from . import attach_kit, doctor
+
+    report = asyncio.run(doctor.run(
+        get_settings(),
+        probe=args.probe,
+        host=args.host or attach_kit.DEFAULT_HOST,
+    ))
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(doctor.render(report))
+    return 0 if report.ok else 1
+
+
 def _cmd_attach(args: argparse.Namespace) -> int:
-    """``attach`` —— 生成某个 agent 的接入包（可直接粘贴或写入文件）。"""
+    """``attach`` —— 生成某个 agent 的接入包（可直接粘贴 / 写入 / 登记）。"""
     from .capabilities import render_attach
+
+    base = args.base_url or get_settings().public_url
+
+    # --all：一次拿到全套——每个 agent 按自己的「手」选通道
+    if args.all:
+        ids = _agent_ids()
+        if not ids:
+            print(c("读不到 agents.yaml，无法 --all", "red"), file=sys.stderr)
+            return 1
+        for i, aid in enumerate(ids):
+            if i:
+                print("\n" + "═" * 64 + "\n")
+            tr = _guess_transport(aid)
+            print(c(f"【{aid}】按 type 推断通道：{tr}", "magenta"))
+            print(render_attach(tr, identity=f"agent:{aid}", base_url=base))
+        return 0
 
     transport = args.transport
     if transport == "auto":
         transport = _guess_transport(args.agent)
-    base_url = args.base_url or get_settings().public_url
     identity = args.as_member or (f"agent:{args.agent}" if args.agent else "")
-    text = render_attach(
-        transport, identity=identity, base_url=base_url
-    )
+    text = render_attach(transport, identity=identity, base_url=base)
+
+    # --register：把「说明」变成「装好」
+    if args.register:
+        return _register_mcp(args, transport)
 
     if args.out:
         try:
@@ -2159,6 +2254,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _cmd_capabilities(args)
     if args.cmd == "attach":
         return _cmd_attach(args)
+    if args.cmd == "doctor":
+        return _cmd_doctor(args)
 
     runner = _remote_main if getattr(args, "url", None) else _inproc_main
     try:

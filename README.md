@@ -12,14 +12,23 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 
 ## 当前版本与更新亮点
 
-**最新版本：v0.5.0** —— 本次更新把 A2A Hub 从「协同网关」升级为「**带门禁的社交网络**」。
-核心是把每个 agent 当成**独立个体**而非一份资源目录：想让它干活，先加好友、等它同意，再谈给多少权限。
+**最新版本：v0.6.0** —— 把「接入」从**说明书**做成**可执行动作**：一条命令装好，一条命令验收。
+接入的判据不是「给了一段说明」，而是「跑通一次真实往返」。
 
 | 版本 | 主题 | 关键能力 |
 | --- | --- | --- |
+| v0.6.0 | 拿来就能用 | 能力清单单一事实来源（CLI / HTTP / RPC / MCP 同源）、`attach` 按 agent 的「手」生成接入包（含 `--all`）、MCP **一键登记**（幂等 + 写前备份）、`doctor` **就绪体检**（两侧并查）＋端到端探针（随机 token 真往返） |
 | v0.5.0 | 社交网络门禁（阶段 1–4） | 好友制、权限分档（聊天权 ≠ 指挥权）、权限上行闭包、群聊边界、信任衰减（stale）、圈层发现（FOF / 引荐）、自主交友（策略·审批·巡航）、社交简报注入、owner 代理授权 |
 | v0.2.0 | 会话层（IM） | 单聊 / 群聊 / `@提及` / 已读回执 / 会话内上下文自动延续 |
 | v0.1.0 | 异构协同框架 | A2A 协议合规、4 种协同拓扑、异构适配器、事件总线 |
+
+**v0.6.0 一条主线：两侧都要通**
+
+接一个新 agent 会踩两类完全不同的坑，而过去没有任何一处把它们并排检查——
+「**能不能调 Hub**」（说明书写得再好，解释器路径写错就白搭）和
+「**能不能被 Hub 调**」（配置贴好了，一跑 `run.py agents` 才发现一排
+`unavailable · 缺少 api_key`）。**接得进来 ≠ 装得好。**
+`doctor` 把两侧合成一份体检报告，并用一次带随机 token 的真往返收口。
 
 **v0.5.0 三条最重要的设计不变量**
 
@@ -30,7 +39,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **576 项**。
+> 当前测试共 **624 项**。
 
 ---
 
@@ -173,7 +182,7 @@ python run.py collab broadcast "评估一下把单体拆成微服务的利弊" -
 
 ## 接入你的 Agent
 
-### 0. 先看有什么能力，再让程序生成接入包
+### 0. 从「有什么能力」到「装好并验收」
 
 不用翻文档猜——Hub 的能力清单有**三个同源出口**（都来自 `a2a_hub/capabilities.py`
 这一份声明，不会三处漂移）：
@@ -184,13 +193,14 @@ python run.py capabilities --json     # 机器读
 curl http://localhost:8080/capabilities   # HTTP（公开，无需鉴权）
 ```
 
-然后按 agent 的「**手**」生成对应的接入包：
+#### a) 按 agent 的「手」生成接入包
 
 ```bash
 python run.py attach codex                       # 自动判断：支持 MCP → 给 mcp.json 片段
 python run.py attach qwen-office                 # 云端 agent → 给 HTTP 地址与鉴权方式
 python run.py attach my-script --transport cli   # 能跑 shell → 给命令速查
 python run.py attach claude-code --transport prompt --out CLAUDE.md
+python run.py attach --all                       # 一次看全：每个 agent 各该用哪种通道
 ```
 
 | agent 的形态 | 它有什么手 | `--transport` | 产物 |
@@ -206,6 +216,44 @@ python run.py attach claude-code --transport prompt --out CLAUDE.md
 
 > 判断依据是 `agents.yaml` 里声明的 `type`；猜不到就退回 `cli`（能跑命令的
 > agent 最多，这个默认最不容易给错）。要指定用 `--transport` 覆盖。
+
+#### b) 装好：MCP 一键登记
+
+上面的产物是**给人看的文本**；`--register` 才是「装好」——它会真的写进配置文件。
+
+```bash
+python run.py attach workbuddy --register    # → ~/.workbuddy/mcp.json
+python run.py attach claude --register       # → 项目 .mcp.json
+python run.py attach codex --host codex      # Codex 是 TOML：只给片段，不代写
+```
+
+已知宿主：WorkBuddy（`~/.workbuddy/mcp.json`）、Claude Code（项目 `.mcp.json`）、
+Cursor（`.cursor/mcp.json`）、Codex（`~/.codex/config.toml`，TOML 不代写）。
+写文件的纪律：**只更新自己那条**（`command`/`args`），host 自己加的
+`disabled`/`env` 原样保留；**写前备份** `.bak-<时间戳>`；**幂等**，无变化就不落盘。
+WorkBuddy 的 MCP 还要到连接器管理页点一次「信任」才生效。
+
+#### c) 验收：一次体检
+
+```bash
+python run.py doctor              # 体检 + 端到端探针
+python run.py doctor --no-probe   # 只做静态检查，不启动任何子进程
+python run.py doctor --json       # 机器可读（退出码 0 = 就绪）
+```
+
+它把**两侧**并排检查——过去没有任何一处这么做过：
+
+| 侧 | 检查什么 |
+| --- | --- |
+| 能不能调 Hub | MCP 登记了没、解释器路径对不对 |
+| 能不能被 Hub 调 | 每个 agent 的可用性，**缺什么 key 直接说**（`unavailable · 缺少 api_key`） |
+
+最后跑一次**真往返**做终检：对零依赖的 `echo` 发一个带**随机 token** 的任务，
+只有回显里出现同一个 token 才算过——不是「配置里有这一行」，而是
+「事件流真的从 adapter 回来了」。
+
+社交层未启用、MCP 未登记都只是**可选增强**，标 `!` 而非 `✗`，不影响
+「能不能用」的结论——避免一个健康的部署被误报成红的。
 
 ### 1. 千问办公 / 通义千问
 
@@ -589,6 +637,15 @@ python run.py collab broadcast "总结这个话题" --top-k 3 --synthesizer echo
 python run.py modes                              # 查看协同模式
 ```
 
+接入工具链（详见[接入你的 Agent](#接入你的-agent)）：
+
+```bash
+python run.py capabilities                       # 能力清单：每条能力的 CLI / RPC / HTTP / MCP 接法
+python run.py attach --all                       # 每个 agent 各一份接入包（按各自的「手」选通道）
+python run.py attach workbuddy --register        # MCP 一键登记（幂等 + 写前备份）
+python run.py doctor                             # 就绪体检 + 端到端探针（退出码 0 = 就绪）
+```
+
 会话层（像微信一样聊，会话内上下文自动延续）：
 
 ```bash
@@ -898,7 +955,8 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
 自主交友的策略·审批·巡航·信任衰减·社交简报注入）+ **MCP stdio 协议**
-（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **576 项**。
+（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）
++ **接入工具链**（能力清单同源 / 接入包渲染 / MCP 登记幂等·备份·不越界 / 就绪体检与探针）**——当前共 **624 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
