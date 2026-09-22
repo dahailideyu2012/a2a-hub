@@ -575,6 +575,18 @@ def _handle(msg: dict[str, Any]) -> None:
                     "protocolVersion": v if v in SUPPORTED else PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": SERVER_INFO,
+                    # 给 host / 模型的「这是什么、怎么用」——接入方不必先读文档。
+                    # 保持简短：这段会进模型上下文。
+                    "instructions": (
+                        "A2A Hub —— 本机多智能体协作网关。"
+                        "先 a2a_agents 看谁在线、会什么（别凭印象点人）；"
+                        "a2a_delegate 派活（不指定 agent 会按能力自动路由）；"
+                        "a2a_collab 做多 agent 协同；a2a_task 查长任务进度；"
+                        "a2a_social / a2a_social_act 管好友与权限（写操作需 confirm）；"
+                        "a2a_social_init 一键启用社交层。"
+                        "注意：派活会真实占用该 agent 的时间与额度，"
+                        "且对方可能需要先授予 delegate 权限。"
+                    ),
                 },
             }
         )

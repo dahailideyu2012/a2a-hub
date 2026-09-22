@@ -30,7 +30,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **553 项**。
+> 当前测试共 **576 项**。
 
 ---
 
@@ -173,6 +173,40 @@ python run.py collab broadcast "评估一下把单体拆成微服务的利弊" -
 
 ## 接入你的 Agent
 
+### 0. 先看有什么能力，再让程序生成接入包
+
+不用翻文档猜——Hub 的能力清单有**三个同源出口**（都来自 `a2a_hub/capabilities.py`
+这一份声明，不会三处漂移）：
+
+```bash
+python run.py capabilities            # 人读表格：每条能力的 CLI / RPC / HTTP / MCP 四种接法
+python run.py capabilities --json     # 机器读
+curl http://localhost:8080/capabilities   # HTTP（公开，无需鉴权）
+```
+
+然后按 agent 的「**手**」生成对应的接入包：
+
+```bash
+python run.py attach codex                       # 自动判断：支持 MCP → 给 mcp.json 片段
+python run.py attach qwen-office                 # 云端 agent → 给 HTTP 地址与鉴权方式
+python run.py attach my-script --transport cli   # 能跑 shell → 给命令速查
+python run.py attach claude-code --transport prompt --out CLAUDE.md
+```
+
+| agent 的形态 | 它有什么手 | `--transport` | 产物 |
+| --- | --- | --- | --- |
+| WorkBuddy / Claude Code / Codex / Cursor | 支持 MCP | `mcp` | 可直接合并的 `mcp.json` 片段（解释器路径已填好） |
+| 任何能跑 shell 的 agent / 脚本 | 命令行 | `cli` | 命令速查 |
+| 云端 agent（千问 / 扣子 / Kimi…） | HTTP | `http` | 地址、端点、鉴权要点 |
+| 纯 prompt 型（不会自己发请求） | 只有上下文 | `prompt` | 系统提示词片段 |
+
+`--out` 会写进指定文件，用标记块包裹（`<!-- A2A-HUB:BEGIN -->`），
+**幂等**：重复执行只更新自己那一块，不动你文件里的其他内容——所以往
+`CLAUDE.md` / `AGENTS.md` 里写是安全的。
+
+> 判断依据是 `agents.yaml` 里声明的 `type`；猜不到就退回 `cli`（能跑命令的
+> agent 最多，这个默认最不容易给错）。要指定用 `--transport` 覆盖。
+
 ### 1. 千问办公 / 通义千问
 
 ```bash
@@ -299,6 +333,7 @@ class MyPlatformAdapter(BaseAdapter):
 | `GET /.well-known/agent.json` | Hub 自身的 Agent Card（聚合所有子 agent 技能） |
 | `GET /agents` | 所有 agent 快照（含健康状态、技能） |
 | `GET /agents/{id}/.well-known/agent.json` | 单个 agent 的 Agent Card |
+| `GET /capabilities` | **能力清单**（机器可读；公开无需鉴权，供新 agent 自助接入） |
 
 ```bash
 curl http://localhost:8080/.well-known/agent.json | jq
@@ -315,6 +350,7 @@ curl http://localhost:8080/.well-known/agent.json | jq
 | `tasks/resubscribe` | 重连任务事件流 |
 | `agents/list` · `agents/card` · `agents/health` | Hub 扩展：名录与健康 |
 | `collab/run` · `collab/get` · `collab/modes` | Hub 扩展：多智能体协同 |
+| `hub/capabilities` | Hub 扩展：能力清单（与 `GET /capabilities` 同源） |
 
 **提交任务**（`agentId` 缺省时按能力自动路由）：
 
@@ -862,7 +898,7 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 会话层（@提及 / 投递回执 / 上下文延续）、**社交图谱（状态机 / 权限档位 / 上行闭包 /
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
 自主交友的策略·审批·巡航·信任衰减·社交简报注入）+ **MCP stdio 协议**
-（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **553 项**。
+（握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）**——当前共 **576 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）

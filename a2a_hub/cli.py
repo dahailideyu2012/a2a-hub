@@ -1917,6 +1917,25 @@ def build_parser() -> argparse.ArgumentParser:
     # modes
     sub.add_parser("modes", help="列出协同模式")
 
+    # capabilities —— 能力清单（「各 agent 怎么套用」的单一事实来源）
+    sp = sub.add_parser("capabilities", help="列出 Hub 的对外能力与三种接法")
+    sp.add_argument("--json", action="store_true", help="机器可读输出")
+
+    # attach —— 生成某个 agent 的接入产物
+    sp = sub.add_parser("attach", help="生成某个 agent 的接入包（可直接粘贴或写入文件）")
+    sp.add_argument("agent", nargs="?", default=None,
+                    help="目标 agent id；--transport auto 时用它判断该给哪种通道")
+    sp.add_argument("--transport", choices=["auto", "mcp", "cli", "http", "prompt"],
+                    default="auto",
+                    help="mcp=贴进 MCP host · cli=能跑 shell 的 agent · "
+                         "http=云端 agent · prompt=写进系统提示词")
+    sp.add_argument("--out", default=None,
+                    help="写入文件（用标记块包裹，幂等：重复执行只更新该块，不动其他内容）")
+    sp.add_argument("--base-url", dest="base_url", default=None,
+                    help="HTTP 方式用的对外地址（默认取 A2A_PUBLIC_URL）")
+    sp.add_argument("--as", dest="as_member", default=None,
+                    help="身份标识，写进 prompt 片段（如 agent:codex）")
+
     # ask
     sp = sub.add_parser("ask", help="向 agent 发起一次任务")
     sp.add_argument("prompt", help="任务内容")
@@ -2007,6 +2026,119 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# --------------------------------------------------------------------------- #
+# 能力清单与接入包（纯本地）
+# --------------------------------------------------------------------------- #
+
+#: 各生态默认套用哪种通道。判断依据是「这个 agent 有什么手」：
+#: 支持 MCP 的走 MCP（一次配置长期有效），云端 agent 只能发 HTTP，
+#: 其余（脚本型 / 本地模型）给命令行。
+_AUTO_TRANSPORT = {
+    "claude_code": "mcp",
+    "codex": "mcp",
+    "workbuddy": "mcp",
+    "coze": "http",
+    "openai_compat": "http",
+}
+_DEFAULT_TRANSPORT = "cli"
+
+
+def _cmd_capabilities(args: argparse.Namespace) -> int:
+    """``capabilities`` —— 打印 Hub 的对外能力与三种接法。"""
+    from .capabilities import manifest, render_table
+
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                manifest(base_url=getattr(args, "base_url", "") or ""),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    print("A2A Hub 能力清单 —— 同一份清单，按 agent 的「手」选一种接法：")
+    print(render_table())
+    print()
+    print("接入某个 agent：python run.py attach <agent-id> [--transport mcp|cli|http|prompt]")
+    return 0
+
+
+def _guess_transport(agent_id: Optional[str]) -> str:
+    """按 ``agents.yaml`` 里声明的 type 猜该给哪种通道。
+
+    猜不到就退回 ``cli``——**能跑命令的 agent 最多**，这个默认最不容易给错。
+    """
+    if not agent_id:
+        return _DEFAULT_TRANSPORT
+    try:
+        from .config import HubConfig
+
+        cfg = HubConfig.load(get_settings().agents_path())
+    except Exception:  # noqa: BLE001 - 只是猜个默认值，读不到就算了
+        return _DEFAULT_TRANSPORT
+    for a in cfg.agents:
+        if a.id == agent_id:
+            return _AUTO_TRANSPORT.get(a.type, _DEFAULT_TRANSPORT)
+    return _DEFAULT_TRANSPORT
+
+
+def _write_marked_block(path: str, text: str) -> None:
+    """把产物写进文件的标记块里。
+
+    **幂等**：重复执行只替换自己那一块，不动用户原有的内容——
+    往 ``CLAUDE.md`` / ``AGENTS.md`` 这种「用户自己的文件」里写东西，
+    必须能反复执行而不堆叠。
+    """
+    from pathlib import Path
+
+    from .capabilities import MARK_BEGIN, MARK_END
+
+    block = f"{MARK_BEGIN}\n{text}\n{MARK_END}"
+    p = Path(path)
+    if p.exists():
+        old = p.read_text(encoding="utf-8")
+        if MARK_BEGIN in old and MARK_END in old:
+            s = old.index(MARK_BEGIN)
+            e = old.index(MARK_END) + len(MARK_END)
+            new = old[:s] + block + old[e:]
+        else:
+            new = old.rstrip("\n") + "\n\n" + block + "\n"
+    else:
+        new = block + "\n"
+    p.write_text(new, encoding="utf-8")
+
+
+def _cmd_attach(args: argparse.Namespace) -> int:
+    """``attach`` —— 生成某个 agent 的接入包（可直接粘贴或写入文件）。"""
+    from .capabilities import render_attach
+
+    transport = args.transport
+    if transport == "auto":
+        transport = _guess_transport(args.agent)
+    base_url = args.base_url or get_settings().public_url
+    identity = args.as_member or (f"agent:{args.agent}" if args.agent else "")
+    text = render_attach(
+        transport, identity=identity, base_url=base_url
+    )
+
+    if args.out:
+        try:
+            _write_marked_block(args.out, text)
+        except OSError as exc:
+            print(c(f"写入 {args.out} 失败：{exc}", "red"), file=sys.stderr)
+            return 1
+        print(c(f"已写入 {args.out}", "green"))
+        head = f"  通道：{transport}"
+        if args.agent:
+            head += f" · 目标：{args.agent}"
+        print(head)
+        print("  重复执行只更新标记块，不会覆盖文件里的其他内容。")
+        return 0
+
+    print(text)
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -2020,6 +2152,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.cmd == "serve":
         return _serve(args)
+
+    # 能力清单与接入包是**纯本地**的：清单就在本仓库里，不需要连 Hub，
+    # 所以不走 async runner（也就不受 --url / --token 影响）。
+    if args.cmd == "capabilities":
+        return _cmd_capabilities(args)
+    if args.cmd == "attach":
+        return _cmd_attach(args)
 
     runner = _remote_main if getattr(args, "url", None) else _inproc_main
     try:

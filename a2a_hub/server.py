@@ -83,6 +83,7 @@ from .relations import (
     SocialGraph,
     social_briefing,
 )
+from .capabilities import manifest
 from .rpc import JsonRpcDispatcher
 from .social_boot import bootstrap_members
 from .social import SocialHub
@@ -437,6 +438,19 @@ async def root_redirect() -> Any:
 @app.get("/.well-known/agent-card.json", tags=["发现"], include_in_schema=False)
 async def hub_agent_card() -> dict[str, Any]:
     return hub.registry.hub_card(social=hub.social_graph)
+
+
+@app.get("/capabilities", tags=["发现"])
+async def capabilities(base_url: str = Query(default="")) -> dict[str, Any]:
+    """本 Hub 的对外能力清单（机器可读）。
+
+    与 CLI ``run.py capabilities``、JSON-RPC ``hub/capabilities`` **同源**。
+
+    刻意**不做鉴权**：新 agent 接进来时要先看到「有什么能力、怎么调」，
+    若连说明书都要 token，就会陷入「要先有 token 才知道怎么拿 token」。
+    清单里只有能力名称与调用方式，不含密钥，也不含成员隐私。
+    """
+    return manifest(base_url=base_url)
 
 
 @app.get("/agents", tags=["发现"])

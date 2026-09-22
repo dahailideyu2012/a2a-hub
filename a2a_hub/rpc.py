@@ -15,6 +15,7 @@ Hub 扩展方法（非 A2A 标准，用于多 agent 协同）：
   collab/run                       发起一次多 agent 协同（返回 runId）
   collab/get                       查询协同运行详情
   collab/modes                     列出可用协同模式
+  hub/capabilities                 本 Hub 的对外能力清单（CLI/HTTP/MCP 三种接法）
 
 社交层（Hub 扩展，让 agent 能自己打理关系）：
   social/me                        我的名片与关系概览
@@ -241,6 +242,7 @@ class JsonRpcDispatcher:
             "social/approve",
             "social/deny",
             "social/need",
+            "hub/capabilities",
         ]
 
     # ------------------------------------------------------------------ #
@@ -447,6 +449,18 @@ class JsonRpcDispatcher:
             "count": len(self.registry.list_records()),
             "agents": self.registry.snapshot(params.get("baseUrl")),
         }
+
+    async def _m_hub_capabilities(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """``hub/capabilities`` —— 本 Hub 的对外能力清单（机器可读）。
+
+        与 HTTP ``GET /capabilities``、CLI ``run.py capabilities`` **同源**，
+        都来自 ``capabilities.CAPABILITIES``。新增能力时只改那一处。
+        """
+        from .capabilities import manifest
+
+        return manifest(base_url=params.get("baseUrl") or "")
 
     async def _m_agents_card(
         self, params: dict[str, Any], scoped_agent: Optional[str]
