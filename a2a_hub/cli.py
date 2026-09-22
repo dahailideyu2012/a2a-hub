@@ -56,6 +56,7 @@ import sys
 import time
 from typing import Any, Optional
 
+from . import __version__ as APP_VERSION
 from .config import get_settings
 
 BANNER = r"""
@@ -1890,7 +1891,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     p.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
-    p.add_argument("--version", action="version", version="a2a-hub 0.5.0")
+    p.add_argument("--version", action="version",
+                   version=f"a2a-hub {APP_VERSION}")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 

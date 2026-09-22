@@ -1,5 +1,9 @@
 # A2A Hub
 
+[![CI](https://github.com/dahailideyu2012/a2a-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/dahailideyu2012/a2a-hub/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 **异构 AI Agent 互联互通与多智能体协同网关**
 
 把 **WorkBuddy、千问办公（通义千问）、扣子 Coze、Codex、Claude Code** 以及其他
@@ -39,7 +43,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **624 项**。
+> 当前测试共 **633 项**。
 
 ---
 
@@ -60,6 +64,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 - [部署](#部署)
 - [开发与测试](#开发与测试)
 - [安全注意事项](#安全注意事项)
+- [License](#license)
 
 > 设计取舍与协议映射细节（为什么这样实现、哪些还没做）见
 > [`docs/protocol-notes.md`](docs/protocol-notes.md)。
@@ -956,7 +961,9 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 群聊边界 / `delegate` 二级门禁 / 隐私 / 四项安全缺口回归 / 发现与引荐 /
 自主交友的策略·审批·巡航·信任衰减·社交简报注入）+ **MCP stdio 协议**
 （握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）
-+ **接入工具链**（能力清单同源 / 接入包渲染 / MCP 登记幂等·备份·不越界 / 就绪体检与探针）**——当前共 **624 项**。
++ **接入工具链**（能力清单同源 / 接入包渲染 / MCP 登记幂等·备份·不越界 / 就绪体检与探针）
++ **打包与许可证不变量**（MIT 正文逐字校验 / `LICENSE` 随产物分发 / 版本号单一来源）
+**——当前共 **633 项**。
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
@@ -1057,4 +1064,63 @@ WORKBUDDY_CLI=/path/to/workbuddy
 
 ## License
 
-MIT
+本项目采用 **MIT License**（SPDX 标识符 `MIT`）。
+
+- 完整协议文本：[`LICENSE`](LICENSE)
+- 版权声明：`Copyright (c) 2026 A2A Hub contributors`
+
+### 你可以做什么
+
+MIT 是宽松许可，对使用方式几乎没有限制：
+
+| 允许 | 说明 |
+| --- | --- |
+| **商用** | 可用于商业产品、公司内部系统、对外 SaaS，无需付费，也无需另行授权 |
+| **修改** | 可自由改写、二次开发，衍生作品可闭源 |
+| **分发** | 可再发布，可打包进你自己的产品 |
+| **私用** | 可自行部署，无需公开任何东西 |
+
+**唯一义务**：分发时保留版权声明与许可声明——把 `LICENSE` 一起带上即可。
+为此 `LICENSE` 会随源码与构建产物一并分发（见 `pyproject.toml` 的 `license-files`）。
+
+**不提供担保**：软件按「现状」提供，作者不对使用后果承担法律责任。
+
+### 适用范围（重要）
+
+MIT 只覆盖**本项目自身的代码**，**不覆盖**你接进来的任何第三方 Agent：
+
+- Hub 与 WorkBuddy / Codex / Claude Code 之间是**子进程调用**，与千问办公 /
+  扣子 / Kimi / GLM / DeepSeek 之间是**网络请求**——本项目既不内嵌也不再分发
+  这些产品的代码，因此不存在许可证混合问题。
+- 每个被接入的 Agent 仍适用**它自己的许可协议与服务条款**（能否自动化调用、
+  额度、商用限制等，以其官方条款为准）。
+- 同理，Hub **转交**给你的、由某个 Agent 产出的内容，其版权与使用条件归该
+  Agent 及其供应商，而非本项目。
+
+一句话：**Hub 本身是 MIT 的，它调用的东西不是。**
+
+### 第三方依赖
+
+运行依赖均为宽松许可（MIT / BSD-3-Clause）。下表许可证取自各包安装后的**真实
+元数据**，而非文档转述：
+
+| 依赖 | 许可证 | 用途 |
+| --- | --- | --- |
+| [fastapi](https://github.com/fastapi/fastapi) | MIT | HTTP 服务与 SSE 流式回传 |
+| [uvicorn](https://github.com/encode/uvicorn) | BSD-3-Clause | ASGI 服务器 |
+| [httpx](https://github.com/encode/httpx) | BSD-3-Clause | 出站 HTTP（云端 agent 适配器） |
+| [pydantic](https://github.com/pydantic/pydantic) | MIT | 数据模型与校验 |
+| [pydantic-settings](https://github.com/pydantic/pydantic-settings) | MIT | 配置加载（`.env`） |
+| [PyYAML](https://github.com/yaml/pyyaml) | MIT | 解析 `agents.yaml` / `members.yaml` |
+
+传递依赖（`starlette`、`anyio`、`h11`、`idna`、`click`、`websockets`、`watchfiles`、
+`httptools`、`python-dotenv`、`colorama` 等）同为 MIT / BSD-3-Clause；其中
+`certifi` 为 **MPL-2.0**——属文件级 copyleft，且本项目不对其做任何修改，
+不会传染到你的代码。
+
+Web 控制台为原生 JavaScript 手写，**未引入任何前端框架或第三方库**，
+无额外署名义务。
+
+### 贡献
+
+提交 Pull Request 即表示你同意：你的贡献以 MIT License 授权给本项目及其他使用者。

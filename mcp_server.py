@@ -43,7 +43,20 @@ PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED = {"2024-11-05", "2025-03-26", "2025-06-18"}
 TERMINAL_STATES = {"completed", "failed", "canceled"}
 
-SERVER_INFO = {"name": "a2a-hub", "version": "0.5.0"}
+
+def _server_info() -> dict[str, str]:
+    """MCP 握手回包里的服务信息。
+
+    版本号取自 ``a2a_hub.__version__``（单一来源），但**延迟导入**：本模块
+    刻意把 a2a_hub 的装载推迟到 ``_get_hub()``，让「hub 装不起来」表现为
+    某个工具的报错，而不是进程一启动就崩、连握手都发不出去。版本号不值得
+    破坏这个前提。
+    """
+    try:
+        from a2a_hub import __version__ as version
+    except Exception:  # noqa: BLE001 - 拿不到版本不该拦住握手
+        version = "unknown"
+    return {"name": "a2a-hub", "version": version}
 
 _hub: Any = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -574,7 +587,7 @@ def _handle(msg: dict[str, Any]) -> None:
                 "result": {
                     "protocolVersion": v if v in SUPPORTED else PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": SERVER_INFO,
+                    "serverInfo": _server_info(),
                     # 给 host / 模型的「这是什么、怎么用」——接入方不必先读文档。
                     # 保持简短：这段会进模型上下文。
                     "instructions": (

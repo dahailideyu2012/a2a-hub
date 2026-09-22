@@ -69,6 +69,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__ as APP_VERSION
 from .autonomy import SocialCruise
 from .config import get_settings
 from .models import A2AError, JsonRpcError, JsonRpcErrorCodes, JsonRpcResponse, utc_now
@@ -379,7 +380,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="A2A Hub",
     description="异构 AI Agent 互联互通与多智能体协同网关",
-    version="0.5.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 

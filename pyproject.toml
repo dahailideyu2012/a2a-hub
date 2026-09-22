@@ -1,19 +1,26 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# >=77：PEP 639（license 表达式 + license-files）需要 setuptools 77 起支持。
+# 低于此版本会忽略 license-files，导致 wheel 里不带 LICENSE —— 那正是
+# MIT 要求「随副本附带版权与许可声明」时最容易踩空的地方。
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2a-hub"
-version = "0.5.0"
+version = "0.6.0"
 description = "A2A Hub - 异构 AI Agent 互联互通与多智能体协同网关（WorkBuddy / 千问办公 / 扣子 / Codex / Claude Code ...）"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "ai-A2A contributors" }]
+# PEP 639：许可证用 SPDX 表达式声明（旧式 { text = "MIT" } 已废弃），
+# 并用 license-files 把 LICENSE 正文打进 wheel / sdist。
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "A2A Hub contributors" }]
 keywords = ["a2a", "agent-to-agent", "multi-agent", "orchestration", "json-rpc", "sse", "llm"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    # PEP 639 起不再重复声明 License:: 分类器（与 license 表达式冲突），
+    # 许可证以 license / license-files 为准。
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [

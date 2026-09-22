@@ -84,6 +84,25 @@ def test_initialize_returns_server_info(handshake):
     assert res.get("protocolVersion") == "2024-11-05"
 
 
+def test_server_info_version_has_single_source(handshake):
+    """握手回包的版本号必须来自 ``a2a_hub.__version__``。
+
+    这个断言防的是一次真实事故：版本号曾被手写在 4 个文件里，结果 README
+    已经 v0.6.0、pyproject 还停在 0.5.0。只断言「有版本号」不够——必须断言
+    它**等于那个唯一来源**，否则下一次漂移照样漏网。
+    """
+    from a2a_hub import __version__
+
+    out, _ = handshake
+    res = _by_id(out, 1).get("result", {})
+    version = res.get("serverInfo", {}).get("version")
+    assert version, "握手回包缺 version"
+    assert version == __version__, (
+        f"握手版本 {version!r} 与包版本 {__version__!r} 不一致 —— 有人又手写了"
+    )
+    assert version != "unknown", "版本解析失败被静默吞掉了"
+
+
 def test_tools_list_matches_registered(handshake):
     out, _ = handshake
     tools = _by_id(out, 2).get("result", {}).get("tools", [])
