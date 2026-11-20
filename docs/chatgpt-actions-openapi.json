@@ -1,0 +1,370 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "NETIVORA A2A Hub — ChatGPT Task API",
+    "version": "1.0.0",
+    "description": "Restricted ChatGPT REST ingress for creating, listing, reading, and canceling tasks owned by this ingress. Use mode=pull when WorkBuddy should claim and execute the task. This is a REST API contract, not a Remote MCP server."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR-HUB-DOMAIN",
+      "description": "Replace with the public HTTPS origin of your secured A2A Hub deployment before importing this schema."
+    }
+  ],
+  "security": [
+    {
+      "ChatGPTIngressToken": []
+    }
+  ],
+  "paths": {
+    "/integrations/chatgpt/v1/tasks": {
+      "post": {
+        "operationId": "submitA2AHubTask",
+        "summary": "Submit a task to A2A Hub",
+        "description": "Create one task through the restricted ChatGPT ingress. Use mode=pull and the configured WorkBuddy agent_id when WorkBuddy AI should claim and execute it. agent_id must be explicitly allowlisted by the Hub operator. Generate a fresh Idempotency-Key for each new user request; reuse the same key only when retrying that exact request.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Unique 8–128 character retry key for this exact request. Reuse only for an identical retry.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task created or an idempotent replay returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitTaskResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ingress token missing."
+          },
+          "403": {
+            "description": "Invalid token, agent not allowlisted, or agent unavailable."
+          },
+          "409": {
+            "description": "Idempotency key conflict or identical request still pending."
+          },
+          "422": {
+            "description": "Invalid request or idempotency key."
+          },
+          "429": {
+            "description": "Rate limit exceeded."
+          },
+          "503": {
+            "description": "Ingress token or agent allowlist is not configured."
+          }
+        }
+      },
+      "get": {
+        "operationId": "listA2AHubTasks",
+        "summary": "List tasks created through ChatGPT ingress",
+        "description": "Return only unexpired tasks owned by this ChatGPT ingress. This does not list unrelated Hub tasks.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ingress-owned tasks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ingress token missing."
+          },
+          "403": {
+            "description": "Invalid ingress token."
+          },
+          "429": {
+            "description": "Rate limit exceeded."
+          }
+        }
+      }
+    },
+    "/integrations/chatgpt/v1/tasks/{task_id}": {
+      "get": {
+        "operationId": "getA2AHubTask",
+        "summary": "Read a task and its current result",
+        "description": "Read a task only if it was created through this ChatGPT ingress. Poll this endpoint to check whether a WorkBuddy pull task is completed, failed, canceled, or still running.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ingress token missing."
+          },
+          "403": {
+            "description": "Invalid ingress token."
+          },
+          "404": {
+            "description": "Task is not owned by this ingress or no longer exists."
+          },
+          "429": {
+            "description": "Rate limit exceeded."
+          }
+        }
+      }
+    },
+    "/integrations/chatgpt/v1/tasks/{task_id}/cancel": {
+      "post": {
+        "operationId": "cancelA2AHubPullTask",
+        "summary": "Cancel a pending or active Pull task",
+        "description": "Cancel only a Pull task owned by this ChatGPT ingress. This operation is not available for non-SQLite stores and may return 409 when the task is not cancellable.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task canceled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ingress token missing."
+          },
+          "403": {
+            "description": "Invalid ingress token."
+          },
+          "404": {
+            "description": "Task is not owned by this ingress or does not exist."
+          },
+          "409": {
+            "description": "Task cannot be canceled or current store does not support Pull cancellation."
+          },
+          "429": {
+            "description": "Rate limit exceeded."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ChatGPTIngressToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-ChatGPT-Ingress-Token",
+        "description": "Configure this as a Custom Header API Key in the GPT Action editor. Store the secret in the editor's authentication settings, never in this schema or repository."
+      }
+    },
+    "schemas": {
+      "SubmitTaskRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent_id",
+          "prompt"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "description": "Exact Hub agent ID. It must be included in A2A_CHATGPT_INGRESS_ALLOWED_AGENTS and be enabled."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000,
+            "description": "Task instructions. Do not include credentials, API keys, passwords, or private user data unless explicitly required and authorized."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hub",
+              "pull"
+            ],
+            "default": "pull",
+            "description": "Use pull to queue a task for WorkBuddy to claim. hub dispatches through the Hub's normal agent execution path."
+          }
+        }
+      },
+      "TaskStatus": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "submitted",
+              "working",
+              "input-required",
+              "completed",
+              "canceled",
+              "failed",
+              "rejected",
+              "auth-required",
+              "unknown"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "message": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contextId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ]
+      },
+      "SubmitTaskResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "$ref": "#/components/schemas/Task"
+          },
+          "idempotent_replay": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TaskListResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "count",
+          "tasks"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            }
+          }
+        }
+      }
+    }
+  }
+}
