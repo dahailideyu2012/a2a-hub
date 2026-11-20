@@ -24,6 +24,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -347,8 +348,12 @@ def main() -> int:
         _, old_claim = http_json(base_url + "/integrations/workbuddy/v1/claim", method="POST",
                                  headers={"X-WorkBuddy-Connector-Token": WORKBUDDY_TOKEN}, payload={})
         old_lease = old_claim["lease"]
-        with sqlite3.connect(db_path) as conn:
-            conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?", (time.time() - 1, fourth_id))
+        # sqlite3.Connection.__exit__ commits/rolls back but does NOT close
+        # the connection. Explicitly close it before TemporaryDirectory cleanup,
+        # otherwise Windows keeps tasks.sqlite3 locked until this function returns.
+        with closing(sqlite3.connect(db_path)) as conn:
+            with conn:
+                conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?", (time.time() - 1, fourth_id))
         _, new_claim = http_json(base_url + "/integrations/workbuddy/v1/claim", method="POST",
                                  headers={"X-WorkBuddy-Connector-Token": WORKBUDDY_TOKEN}, payload={})
         new_lease = new_claim["lease"]
