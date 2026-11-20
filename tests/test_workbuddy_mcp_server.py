@@ -38,7 +38,9 @@ def test_lifecycle_uses_private_lease_and_stable_result_key(monkeypatch):
  assert calls[-1][1]["lease_token"]=="private-lease"
  assert "task-2" not in server.LEASES
 def test_task_lifecycle_rejects_unknown_lease():
- result=server.tool_start({"task_id":"not-claimed"})
+ # Exercise the same wrapper used by the MCP tools/call protocol handler.
+ # Tool functions intentionally raise; call_tool converts exceptions into MCP error envelopes.
+ result=server.call_tool("workbuddy_start_task",{"task_id":"not-claimed"})
  assert result["isError"] is True and "没有该任务" in result["content"][0]["text"]
 def test_no_task_is_a_normal_result(monkeypatch):
  monkeypatch.setattr(server,"_post",lambda path,payload:{"claimed":False})
