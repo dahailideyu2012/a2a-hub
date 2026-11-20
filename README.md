@@ -1187,6 +1187,7 @@ All connector writes require the configured connector identity plus lease token 
 Connector 包位于 `connectors/netivora-a2a-workbuddy/`，包含：
 
 - `connector-meta.json`：Connector 元信息，Token 认证模式。
+- `icon.svg`：Connector 图标。
 - `token-schema.json`：在 WorkBuddy 本机表单收集 Hub 地址、脚本路径和独立 Connector Token。
 - `mcp.json`：stdio 启动配置，凭据通过环境变量注入子进程。
 - `skills/a2a-workbuddy-pull/SKILL.md`：手动领取、执行、续租、进度和结果回传指引。
