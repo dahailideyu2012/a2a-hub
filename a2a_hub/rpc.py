@@ -375,9 +375,9 @@ class JsonRpcDispatcher:
         self, params: dict[str, Any], scoped_agent: Optional[str]
     ) -> dict[str, Any]:
         """Create a durable pull task without starting any Hub adapter."""
-        from .store import SqliteTaskStore
+        from .ports import PullTaskRepository
 
-        if not isinstance(self.registry.store, SqliteTaskStore):
+        if not isinstance(self.registry.store, PullTaskRepository):
             raise A2AError(
                 JsonRpcErrorCodes.INTERNAL_ERROR,
                 "Pull execution requires a persistent SQLite task store",
