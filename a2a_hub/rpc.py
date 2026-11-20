@@ -207,6 +207,7 @@ class JsonRpcDispatcher:
     def supported_methods() -> list[str]:
         return [
             "message/send",
+            "tasks/enqueue",
             "message/stream",
             "tasks/get",
             "tasks/cancel",
@@ -368,6 +369,21 @@ class JsonRpcDispatcher:
 
         asyncio.create_task(drain())
         self.registry.store.save(task)
+        return task.model_dump(mode="json")
+
+    async def _m_tasks_enqueue(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        """Create a durable pull task without starting any Hub adapter."""
+        from .store import SqliteTaskStore
+
+        if not isinstance(self.registry.store, SqliteTaskStore):
+            raise A2AError(
+                JsonRpcErrorCodes.INTERNAL_ERROR,
+                "Pull execution requires a persistent SQLite task store",
+            )
+        task, _message, _agent_id = self._new_task(params, scoped_agent)
+        self.registry.store.enqueue_pull(task)
         return task.model_dump(mode="json")
 
     async def _m_message_stream(

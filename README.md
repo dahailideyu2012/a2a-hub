@@ -1162,3 +1162,19 @@ Web 控制台为原生 JavaScript 手写，**未引入任何前端框架或第�
 ### 贡献
 
 提交 Pull Request 即表示你同意：你的贡献以 MIT License 授权给本项目及其他使用者。
+
+
+### WorkBuddy Personal pull connector (C2-A)
+
+ChatGPT ingress keeps its original behavior by default: omitted `mode` means `hub` and uses the existing Hub adapter execution path. To queue work for an outbound-poll connector, submit `mode: "pull"` to `POST /integrations/chatgpt/v1/tasks`. Pull enqueue persists the task and does **not** start a Hub adapter.
+
+Configure an independent `A2A_WORKBUDDY_CONNECTOR_TOKEN` (at least 32 characters); do not reuse the ChatGPT ingress token. Optional `A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS` narrows which agents this connector may claim. The WorkBuddy connector API is under `/integrations/workbuddy/v1`:
+
+- `POST /claim` — atomically claim one queued task and receive a lease envelope.
+- `POST /tasks/{task_id}/start` — mark the task working.
+- `POST /tasks/{task_id}/renew` — renew the lease.
+- `POST /tasks/{task_id}/progress` — append a sequenced progress update.
+- `POST /tasks/{task_id}/result` — submit a completed/failed result idempotently.
+- `POST /integrations/chatgpt/v1/tasks/{task_id}/cancel` — ChatGPT-side cancellation of a pull task without invoking the Hub adapter.
+
+All connector writes require the configured connector identity plus lease token and monotonically increasing lease version. Lease fencing prevents stale workers from overwriting a newer lease, but lease expiry does not prove the old process or its external side effects have stopped. This implementation targets one Hub host with SQLite; multi-host/distributed locking and durable event replay are out of scope. Configure TLS at the deployment edge.

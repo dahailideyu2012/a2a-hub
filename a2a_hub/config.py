@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     chatgpt_ingress_db_path: str = Field(default="./data/chatgpt_ingress.db", alias="A2A_CHATGPT_INGRESS_DB_PATH")
     chatgpt_ingress_rate_limit: int = Field(default=30, ge=1, le=600, alias="A2A_CHATGPT_INGRESS_RATE_LIMIT")
     chatgpt_ingress_max_body_bytes: int = Field(default=16384, ge=1024, le=1048576, alias="A2A_CHATGPT_INGRESS_MAX_BODY_BYTES")
+    # WorkBuddy pull connector: independent credential; never reuse ChatGPT ingress token.
+    workbuddy_connector_token: str = Field(default="", alias="A2A_WORKBUDDY_CONNECTOR_TOKEN")
+    workbuddy_connector_id: str = Field(default="workbuddy-personal", min_length=1, max_length=64, alias="A2A_WORKBUDDY_CONNECTOR_ID")
+    workbuddy_connector_allowed_agents: str = Field(default="", alias="A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS")
+    workbuddy_connector_lease_seconds: int = Field(default=120, ge=15, le=900, alias="A2A_WORKBUDDY_CONNECTOR_LEASE_SECONDS")
     agents_file: str = Field(default="./config/agents.yaml", alias="A2A_AGENTS_FILE")
     # --- 社交层（见 docs/identity-and-binding.md）---
     #: 成员声明。**文件不存在 = 门禁自动关闭，行为与 v0.3.0 一致。**

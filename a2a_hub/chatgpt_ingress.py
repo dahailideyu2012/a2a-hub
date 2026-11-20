@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio, hashlib, hmac, json, logging, re, sqlite3, time
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -19,6 +19,7 @@ class DelegateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     agent_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     prompt: str = Field(min_length=1, max_length=12000)
+    mode: Literal["hub", "pull"] = "hub"
 
 class IdempotencyConflict(Exception): pass
 class IdempotencyPending(Exception): pass
@@ -167,10 +168,11 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             return {"task": task_to_wire(existing, include_internal=True), "idempotent_replay": True}
         try:
             rpc_result = await hub.dispatcher.handle({
-                "jsonrpc": "2.0", "id": "chatgpt-ingress", "method": "message/send",
+                "jsonrpc": "2.0", "id": "chatgpt-ingress",
+                "method": "tasks/enqueue" if payload.mode == "pull" else "message/send",
                 "params": {"agentId": payload.agent_id, "message": payload.prompt,
                            "configuration": {"blocking": False},
-                           "metadata": {"source": "chatgpt-ingress"}},
+                           "metadata": {"source": "chatgpt-ingress", "mode": payload.mode}},
             }, actor=settings.chatgpt_ingress_actor)
             if "error" in rpc_result:
                 error = rpc_result["error"]
@@ -205,6 +207,25 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not await ledger.owns_task(task_id): raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
         task = hub.registry.store.get(task_id)
         if task is None: raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        return task_to_wire(task, include_internal=True)
+
+    @router.post("/tasks/{task_id}/cancel")
+    async def cancel_task(task_id: str, ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
+        hub, settings, ledger, limiter = runtime()
+        await guard(ingress_token, settings, limiter)
+        if not await ledger.owns_task(task_id):
+            raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
+        from .store import SqliteTaskStore
+        if not isinstance(hub.registry.store, SqliteTaskStore):
+            raise HTTPException(status_code=409, detail="当前存储不支持 Pull 任务取消")
+        try:
+            task = hub.registry.store.cancel_pull_task(task_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        hub.registry.bus.publish(task_id, task)
+        hub.registry.bus.close_task(task_id)
         return task_to_wire(task, include_internal=True)
 
     @router.get("/tasks/{task_id}/events")
