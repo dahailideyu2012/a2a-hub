@@ -1,0 +1,21 @@
+{
+  "name": "NETIVORA A2A Hub",
+  "name_zh": "NETIVORA A2A Hub",
+  "name_en": "NETIVORA A2A Hub",
+  "description": "Receive assigned tasks from A2A Hub, execute them in WorkBuddy, and report progress and results.",
+  "description_zh": "从 A2A Hub 领取任务，在 WorkBuddy 中执行，并回传进度与结果。",
+  "description_en": "Receive assigned tasks from A2A Hub, execute them in WorkBuddy, and report progress and results.",
+  "source": "netivora-a2a-workbuddy",
+  "type": "mcp",
+  "auth_mode": "token",
+  "version": "1.0.0",
+  "minWorkbuddyVersion": "4.23.0",
+  "examples_zh": [
+    "领取一项待办 Hub 任务并执行",
+    "把当前任务执行结果回传给 A2A Hub"
+  ],
+  "examples_en": [
+    "Claim and execute one pending Hub task",
+    "Report the result of the current Hub task"
+  ]
+}
