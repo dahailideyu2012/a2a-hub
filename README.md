@@ -1178,3 +1178,42 @@ Configure an independent `A2A_WORKBUDDY_CONNECTOR_TOKEN` (at least 32 characters
 - `POST /integrations/chatgpt/v1/tasks/{task_id}/cancel` — ChatGPT-side cancellation of a pull task without invoking the Hub adapter.
 
 All connector writes require the configured connector identity plus lease token and monotonically increasing lease version. Lease fencing prevents stale workers from overwriting a newer lease, but lease expiry does not prove the old process or its external side effects have stopped. This implementation targets one Hub host with SQLite; multi-host/distributed locking and durable event replay are out of scope. Configure TLS at the deployment edge.
+
+
+### WorkBuddy Pull Connector（C2-B）
+
+仓库新增独立的 WorkBuddy stdio MCP 客户端：`workbuddy_mcp_server.py`。它不启动本地 Hub，也不暴露入站端口；仅由 WorkBuddy 在用户明确触发时主动请求 Hub 的既有 REST Pull API。
+
+Connector 包位于 `connectors/netivora-a2a-workbuddy/`，包含：
+
+- `connector-meta.json`：Connector 元信息，Token 认证模式。
+- `token-schema.json`：在 WorkBuddy 本机表单收集 Hub 地址、脚本路径和独立 Connector Token。
+- `mcp.json`：stdio 启动配置，凭据通过环境变量注入子进程。
+- `skills/a2a-workbuddy-pull/SKILL.md`：手动领取、执行、续租、进度和结果回传指引。
+
+#### 本机配置
+
+1. 将仓库更新到最新开发分支，并确认 `workbuddy_mcp_server.py` 位于本机仓库根目录。
+2. 在 WorkBuddy 的自定义 Connector 页面导入/配置 `connectors/netivora-a2a-workbuddy/`。
+3. 在连接表单填写本机脚本完整路径、Hub 根 HTTPS 地址和独立的 `A2A_WORKBUDDY_CONNECTOR_TOKEN`。不要与 `A2A_CHATGPT_INGRESS_TOKEN` 共用。
+4. 确认本机可通过 `python` 命令启动 Python 3.10+。若当前 WorkBuddy 环境找不到 Python，先停止并报告，不要自行修改 MCP 配置。
+5. 用户明确触发“领取 Hub 任务”后，Skill 才领取一项任务；不会后台轮询。
+
+#### 安全与限制
+
+- Connector Token 由 WorkBuddy Token 表单本机保存，并注入 stdio 子进程环境；不得写入仓库、Skill、命令行参数或日志。
+- 每个任务的 lease token 只保存在 MCP 子进程内存中，不返回给模型；子进程重启后映射丢失，需等待旧租约过期后重新领取。
+- Hub 地址生产环境必须 HTTPS；客户端拒绝 HTTP 重定向，避免把认证头转发到其他地址。
+- 任务范围仍受 Hub 端独立 agent allowlist 和 lease fencing 保护。
+- 本 Connector 不实现 Hub → WorkBuddy 的公网入站回调；它是 WorkBuddy 主动 Pull，不是 Remote MCP 服务端。
+- WorkBuddy 的脚本/网络确认弹窗由客户端权限策略控制；不要为了无人值守而擅自放宽权限。
+
+#### 测试
+
+```powershell
+& $PY -m pytest -q tests/test_workbuddy_mcp_server.py
+& $PY -m compileall -q a2a_hub tests workbuddy_mcp_server.py
+& $PY -m pytest -q
+```
+
+当前开发版必须先通过本机专项、语法和全量回归，再进行 WorkBuddy Connector 安装与 Hub 联调。

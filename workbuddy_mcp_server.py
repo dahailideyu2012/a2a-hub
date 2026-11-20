@@ -31,11 +31,14 @@ def _config() -> tuple[str,str]:
  if not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment: raise RuntimeError("Hub 地址格式无效")
  if not token or len(token)<32: raise RuntimeError("WorkBuddy Connector Token 未配置或长度不足 32 位")
  return base,token
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+
 def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
  base,token=_config()
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),headers={"Content-Type":"application/json","Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="POST")
  try:
-  with urllib.request.urlopen(request,timeout=30) as response:
+  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=30) as response:
    raw=response.read(256*1024+1)
    if len(raw)>256*1024: raise RuntimeError("Hub 响应超过 256 KiB 限制")
    data=json.loads(raw.decode("utf-8"))
