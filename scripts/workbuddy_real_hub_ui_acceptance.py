@@ -87,6 +87,13 @@ def task_text(task: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
+def proxy_action(path: str) -> str:
+    parts = [part for part in path.strip("/").split("/") if part]
+    if len(parts) >= 4 and parts[:3] == ["integrations", "workbuddy", "v1"]:
+        return parts[3] if parts[3] == "claim" else (parts[5] if len(parts) > 5 else "unknown")
+    return "unknown"
+
+
 class ProxyState:
     def __init__(self, internal_url: str) -> None:
         self.internal_url = internal_url
@@ -131,8 +138,8 @@ class WorkBuddyProxyHandler(BaseHTTPRequestHandler):
                              "upstream": "isolated loopback Hub"})
             return
         if path == "/__test__/report":
-            with self.state.lock:
-                events = list(self.state.events)
+            with self.server.state.lock:
+                events = list(self.server.state.events)
             self._json(200, {"suite": "workbuddy-real-hub-ui", "events": events})
             return
         self._json(404, {"detail": "not found"})
@@ -159,7 +166,7 @@ class WorkBuddyProxyHandler(BaseHTTPRequestHandler):
             # Never forward the user's token. The isolated Hub receives a synthetic
             # test token, while the proxy only checks header presence/length.
             request = urllib.request.Request(
-                self.state.internal_url + path,
+                self.server.state.internal_url + path,
                 data=body,
                 method="POST",
                 headers={
@@ -174,8 +181,8 @@ class WorkBuddyProxyHandler(BaseHTTPRequestHandler):
                     status, raw = response.status, response.read(256 * 1024)
             except urllib.error.HTTPError as exc:
                 status, raw = exc.code, exc.read(256 * 1024)
-            action = path[len(prefix):].split("/", 1)[0]
-            self.state.record(action, status)
+            action = proxy_action(path)
+            self.server.state.record(action, status)
             self._reply(status, raw)
         except (OSError, ValueError, urllib.error.URLError):
             self._json(502, {"detail": "isolated Hub proxy request failed"})
@@ -237,6 +244,7 @@ def main() -> int:
     }
     server: subprocess.Popen | None = None
     proxy_thread: threading.Thread | None = None
+    exit_code = 1
     temp_context = tempfile.TemporaryDirectory(prefix="a2a-workbuddy-real-ui-")
     temp_root = Path(temp_context.name)
     try:
@@ -404,23 +412,21 @@ def main() -> int:
             "calculation_present": EXPECTED_CALCULATION in text,
             "history_text": text[-6000:],
         }
-        print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
-        return 0 if report["result"] == "PASS" else 1
+        exit_code = 0 if report["result"] == "PASS" else 1
     except KeyboardInterrupt:
         report["result"] = "ABORTED"
-        print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
-        return 130
+        exit_code = 130
     except Exception as exc:
         report["result"] = "FAIL"
         report["error_type"] = type(exc).__name__
         report["error"] = str(exc)
-        print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
-        return 1
+        exit_code = 1
     finally:
-        try:
-            proxy.shutdown()
-        except Exception:
-            pass
+        if proxy_thread is not None and proxy_thread.is_alive():
+            try:
+                proxy.shutdown()
+            except Exception:
+                pass
         proxy.server_close()
         if proxy_thread is not None:
             proxy_thread.join(timeout=3)
@@ -428,9 +434,13 @@ def main() -> int:
         report["hub_process_exited"] = hub_stopped
         try:
             temp_context.cleanup()
+            report["temporary_directory_cleanup"] = "PASS"
         except OSError as exc:
             report["temporary_directory_cleanup"] = f"FAIL: {type(exc).__name__}"
-            print(json.dumps(report, ensure_ascii=False), flush=True)
+            report["result"] = "FAIL"
+            exit_code = 1
+        print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    return exit_code
 
 
 if __name__ == "__main__":
