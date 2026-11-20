@@ -1,7 +1,7 @@
 # A2A Hub Storage Contract V1
 
 > Status: design contract for review; no backend selected or implemented.
-> Source-audit baseline: `0296fe8456026fe9242299d5763614ad749c0bb4`; this revision incorporates the fixed-SHA review of `134c1bf9b78b4e473b5079911165d38fd892e164`.
+> Source-audit baseline: `0296fe8456026fe9242299d5763614ad749c0bb4`; this revision incorporates independent fixed-SHA reviews of `134c1bf9b78b4e473b5079911165d38fd892e164`, `cff7bf52f8b8dc14f0630e46b2c09401e06eba97`, and `68341fcc6a4809c57affa3d7a33616667a3e09f6`.
 > Owner: ChatGPT authors all code, tests, migrations and operational scripts. WorkBuddy performs read-only review and fixed-SHA verification only.
 
 ## 1. Purpose and non-goals
@@ -44,7 +44,6 @@ The current ingress flow is:
 3. `IngressLedger.complete(key, request_hash, task_id)` commits the task mapping.
 
 These are separate databases and cannot be assumed atomic. The pending reservation currently expires after 120 seconds; `reserve()` deletes expired rows before checking/reserving the key. A pending reservation causes a 409 while it remains present. If the task was created but `complete()` never committed, a retry after expiry can create a **second task**. There is also an immediate duplicate window: `submit_task` releases a still-uncompleted reservation on an exception before `complete()` commits, such as a post-enqueue `complete()` failure; if task creation already succeeded, that release can allow a retry to reserve the same key and create another task without waiting for the 120-second TTL. A failed post-write task read occurs after `complete()` has committed the task ID, so `release()`'s `task_id IS NULL` guard preserves the reservation and that read failure alone does not open the duplicate window. The new design must explicitly close this crash window. Merely moving both databases to the same vendor does not make two separate transactions atomic.
-
 
 ### 2.3 Repository caller inventory (baseline source)
 
@@ -234,6 +233,7 @@ Rejected as a production task ledger unless a provider-supported persistence and
 13. Backend unavailable/timeout must fail safely without memory fallback.
 14. Multi-instance shared rate-limit behavior.
 15. Credential redaction and proof that no raw tokens are persisted in fixtures or outputs.
+16. Injected post-enqueue `complete()` failure and injected post-write task-read failure: prove that a retry after the former cannot create a second task under the chosen recovery design, and that after the latter the committed task mapping is preserved and retry replays the same task without creating another.
 
 ## 10. Implementation sequence
 
