@@ -994,6 +994,44 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 
 ---
 
+
+### ChatGPT 独立任务入口（C1）
+
+Hub 提供独立 REST 入口 `/integrations/chatgpt/v1`，与现有 A2A Bearer Token、MCP stdio 认证相互隔离。它**不是 Remote MCP**，也不暴露任意 JSON-RPC 方法。
+
+启用前必须显式配置：
+
+- `A2A_CHATGPT_INGRESS_TOKEN`：独立高熵随机令牌；为空时入口返回 503。
+- `A2A_CHATGPT_INGRESS_ALLOWED_AGENTS`：逗号分隔的 agent ID 白名单；为空时拒绝提交。
+- `A2A_CHATGPT_INGRESS_ACTOR`：由服务端指定的 Hub 成员身份，绝不接受客户端自报。
+- `A2A_CHATGPT_INGRESS_DB_PATH`：幂等记录 SQLite 文件，默认 `./data/chatgpt_ingress.db`。
+- `A2A_CHATGPT_INGRESS_RATE_LIMIT`：每个 ingress token 每分钟请求数，默认 30。
+- `A2A_CHATGPT_INGRESS_MAX_BODY_BYTES`：请求体上限，默认 16 KiB。
+
+仅开放以下操作：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/integrations/chatgpt/v1/tasks` | 向白名单 agent 提交非阻塞 delegate 任务 |
+| GET | `/integrations/chatgpt/v1/tasks` | 列出该入口提交的任务 |
+| GET | `/integrations/chatgpt/v1/tasks/{task_id}` | 查询该入口提交的任务 |
+| GET | `/integrations/chatgpt/v1/tasks/{task_id}/events` | SSE 快照与实时任务事件 |
+
+提交示例：
+
+```http
+POST /integrations/chatgpt/v1/tasks
+X-ChatGPT-Ingress-Token: <独立令牌>
+Idempotency-Key: chatgpt-2026-000001
+Content-Type: application/json
+
+{"agent_id":"echo-a","prompt":"请处理这项任务"}
+```
+
+幂等键在 24 小时内有效；相同键与相同请求重放返回原任务，不同请求复用同一键返回 409。任务列表/详情/SSE 仅允许读取该 ingress ledger 登记的任务。SSE 提供当前任务快照与连接期间的事件；断线恢复后可先 GET 任务状态，再重新订阅，当前版本不承诺历史事件重放。
+
+安全边界：仅允许 `delegate` 这一种写操作；不允许调用 social、collab、cancel、任意 JSON-RPC method 或任意 agent。Rate limiter 为单进程滑动窗口；多 worker/多实例部署前需替换为共享限流后端。请在 TLS 反向代理后使用，不要把令牌放进 URL 或日志。
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：

@@ -89,6 +89,7 @@ from .rpc import JsonRpcDispatcher
 from .social_boot import bootstrap_members
 from .social import SocialHub
 from .store import task_to_wire
+from .chatgpt_ingress import build_chatgpt_ingress_router
 
 log = logging.getLogger("a2a_hub.server")
 
@@ -391,6 +392,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 独立 ChatGPT 入口：独立 token、窄白名单与任务级回读，不暴露任意 JSON-RPC。
+app.include_router(build_chatgpt_ingress_router(get_hub))
 
 
 # --------------------------------------------------------------------------- #

@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="A2A_LOG_LEVEL")
     api_token: str = Field(default="", alias="A2A_API_TOKEN")
     require_auth: bool = Field(default=False, alias="A2A_REQUIRE_AUTH")
+    # Dedicated ChatGPT ingress: independent credential and explicit agent allowlist.
+    chatgpt_ingress_token: str = Field(default="", alias="A2A_CHATGPT_INGRESS_TOKEN")
+    chatgpt_ingress_actor: str = Field(default="human:default", alias="A2A_CHATGPT_INGRESS_ACTOR")
+    chatgpt_ingress_allowed_agents: str = Field(default="", alias="A2A_CHATGPT_INGRESS_ALLOWED_AGENTS")
+    chatgpt_ingress_db_path: str = Field(default="./data/chatgpt_ingress.db", alias="A2A_CHATGPT_INGRESS_DB_PATH")
+    chatgpt_ingress_rate_limit: int = Field(default=30, ge=1, le=600, alias="A2A_CHATGPT_INGRESS_RATE_LIMIT")
+    chatgpt_ingress_max_body_bytes: int = Field(default=16384, ge=1024, le=1048576, alias="A2A_CHATGPT_INGRESS_MAX_BODY_BYTES")
     agents_file: str = Field(default="./config/agents.yaml", alias="A2A_AGENTS_FILE")
     # --- 社交层（见 docs/identity-and-binding.md）---
     #: 成员声明。**文件不存在 = 门禁自动关闭，行为与 v0.3.0 一致。**
@@ -76,6 +83,10 @@ class Settings(BaseSettings):
     autonomy_per_round: int = Field(default=2, alias="A2A_AUTONOMY_PER_ROUND")
     #: 每天最多发起的自主申请数（巡航侧硬预算）。
     autonomy_daily: int = Field(default=6, alias="A2A_AUTONOMY_DAILY")
+
+    def chatgpt_ingress_db_path_resolved(self) -> Path:
+        p = Path(self.chatgpt_ingress_db_path)
+        return p if p.is_absolute() else (ROOT / p).resolve()
 
     def agents_path(self) -> Path:
         p = Path(self.agents_file)
