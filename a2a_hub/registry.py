@@ -31,7 +31,7 @@ from .models import (
     TaskState,
     TextPart,
 )
-from .store import TaskStore
+from .ports import TaskRepository
 
 log = logging.getLogger("a2a_hub.registry")
 
@@ -110,7 +110,7 @@ class AgentRegistry:
         self,
         settings: Settings,
         hub_config: HubConfig,
-        store: TaskStore,
+        store: TaskRepository,
         bus: EventBus,
     ) -> None:
         self.settings = settings
