@@ -153,6 +153,14 @@ def task_prompt(round_no: int, dependency: str = "") -> str:
 
 
 def main() -> int:
+    # Force direct local HTTP for the parent process; desktop/system proxy
+    # settings must never forward loopback acceptance traffic externally.
+    for proxy_key in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.pop(proxy_key, None)
+    urllib.request.install_opener(
+        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    )
+
     report: dict[str, Any] = {
         "suite": "workbuddy-loopback-process-acceptance",
         "binding": "127.0.0.1 only",
@@ -186,10 +194,15 @@ def main() -> int:
         ingress_db = data_dir / "ingress.sqlite3"
         env = os.environ.copy()
         for key in list(env):
-            if key.startswith("A2A_"):
+            if key.startswith("A2A_") or key.lower() in {
+                "http_proxy", "https_proxy", "all_proxy", "pythonpath",
+                "pythonhome", "pythonuserbase", "virtual_env",
+            }:
                 env.pop(key, None)
         env.update({
-            "PYTHONPATH": str(isolated) + os.pathsep + env.get("PYTHONPATH", ""),
+            "PYTHONPATH": str(isolated),
+            "NO_PROXY": "*",
+            "no_proxy": "*",
             "A2A_HOST": "127.0.0.1",
             "A2A_PORT": str(port),
             "A2A_PUBLIC_URL": base_url,
