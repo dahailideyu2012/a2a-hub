@@ -32,12 +32,11 @@ def test_openapi_declares_only_supported_chatgpt_ingress_operations() -> None:
 def test_action_uses_custom_header_api_key_authentication() -> None:
     schema = load_schema()
     assert schema["security"] == [{"ChatGPTIngressToken": []}]
-    assert schema["components"]["securitySchemes"]["ChatGPTIngressToken"] == {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-ChatGPT-Ingress-Token",
-        "description": schema["components"]["securitySchemes"]["ChatGPTIngressToken"]["description"],
-    }
+    scheme = schema["components"]["securitySchemes"]["ChatGPTIngressToken"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-ChatGPT-Ingress-Token"
+    assert scheme["description"]
 
 
 def test_submit_requires_idempotency_and_rejects_extra_body_fields() -> None:
