@@ -215,8 +215,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         await guard(ingress_token, settings, limiter)
         if not await ledger.owns_task(task_id):
             raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
-        from .store import SqliteTaskStore
-        if not isinstance(hub.registry.store, SqliteTaskStore):
+        from .ports import PullTaskRepository
+        if not isinstance(hub.registry.store, PullTaskRepository):
             raise HTTPException(status_code=409, detail="当前存储不支持 Pull 任务取消")
         try:
             task = hub.registry.store.cancel_pull_task(task_id)
