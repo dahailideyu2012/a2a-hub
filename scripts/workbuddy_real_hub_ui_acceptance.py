@@ -7,9 +7,9 @@ connects to that proxy. The coordinator creates one synthetic task through the
 ChatGPT REST ingress, waits for WorkBuddy AI to claim and complete it in the
 desktop UI, then reads the result back through ChatGPT REST ingress.
 
-The proxy only checks that WorkBuddy supplied a long token header and replaces
-it with a synthetic test token for the isolated Hub. It never reads/logs/returns
-the incoming token value. This does NOT validate the user's real token.
+The proxy checks only that the WorkBuddy token header name is present (it never
+retrieves or inspects its value), then supplies a synthetic test token to the
+isolated Hub. This does NOT validate the user's real token.
 """
 from __future__ import annotations
 
@@ -153,9 +153,8 @@ class WorkBuddyProxyHandler(BaseHTTPRequestHandler):
         if not path.startswith(prefix):
             self._json(404, {"detail": "only WorkBuddy connector routes are proxied"})
             return
-        incoming_token = self.headers.get("X-WorkBuddy-Connector-Token", "")
-        if len(incoming_token) < 32:
-            self._json(401, {"detail": "missing or invalid test credential header"})
+        if "X-WorkBuddy-Connector-Token" not in self.headers:
+            self._json(401, {"detail": "missing test credential header"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -430,6 +429,10 @@ def main() -> int:
         proxy.server_close()
         if proxy_thread is not None:
             proxy_thread.join(timeout=3)
+        proxy_state = getattr(proxy, "state", None)
+        if proxy_state is not None:
+            with proxy_state.lock:
+                report.setdefault("workbuddy_tool_events", list(proxy_state.events))
         hub_stopped = stop_process(server)
         report["hub_process_exited"] = hub_stopped
         try:
