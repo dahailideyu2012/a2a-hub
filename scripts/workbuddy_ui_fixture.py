@@ -132,6 +132,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.local_only():
             self.send_json(403, {"detail": "loopback only"})
             return
+        path = urlsplit(self.path).path
+        if path == "/__test__/shutdown":
+            self.send_json(200, {"shutdown": "requested"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if not self.authorized_header_present():
             self.send_json(401, {"detail": "missing or invalid test header"})
             return
@@ -139,7 +144,6 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             self.send_json(400, {"detail": "invalid JSON object"})
             return
-        path = urlsplit(self.path).path
 
         with STATE.lock:
             if path == "/integrations/workbuddy/v1/claim":
