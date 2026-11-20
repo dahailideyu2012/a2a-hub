@@ -7,7 +7,8 @@ from typing import Any, Callable, Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .store import SqliteTaskStore, task_to_wire
+from .ports import PullTaskRepository
+from .store import task_to_wire
 
 
 class ClaimRequest(BaseModel):
@@ -50,8 +51,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not hmac.compare_digest(token, settings.workbuddy_connector_token):
             raise HTTPException(status_code=403, detail="WorkBuddy connector token 无效")
 
-    def store_for(hub: Any) -> SqliteTaskStore:
-        if not isinstance(hub.registry.store, SqliteTaskStore):
+    def store_for(hub: Any) -> PullTaskRepository:
+        if not isinstance(hub.registry.store, PullTaskRepository):
             raise HTTPException(status_code=503, detail="Connector claim requires persistent SQLite task storage")
         return hub.registry.store
 
