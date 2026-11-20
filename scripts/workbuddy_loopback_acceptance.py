@@ -14,6 +14,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -233,6 +234,9 @@ def main() -> int:
                 [sys.executable, "-m", "uvicorn", "a2a_hub.server:app",
                  "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
                 cwd=str(isolated), env=env, stdout=log_file, stderr=subprocess.STDOUT,
+                # A separate process group lets the Windows runner send CTRL_BREAK
+                # for a graceful Uvicorn shutdown (FastAPI lifespan must close SQLite).
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
             )
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
@@ -407,12 +411,23 @@ def main() -> int:
         if server is not None:
             try:
                 if server.poll() is None:
-                    server.terminate()
+                    # Ask Uvicorn to perform its lifespan shutdown first. On Windows,
+                    # terminate() is a hard kill and skips lifespan cleanup, leaving
+                    # SQLite handles open and making TemporaryDirectory deletion fail.
                     try:
-                        server.wait(timeout=8)
-                    except subprocess.TimeoutExpired:
-                        server.kill()
-                        server.wait(timeout=5)
+                        if os.name == "nt":
+                            server.send_signal(signal.CTRL_BREAK_EVENT)
+                        else:
+                            server.send_signal(signal.SIGINT)
+                        server.wait(timeout=12)
+                    except (OSError, subprocess.TimeoutExpired):
+                        if server.poll() is None:
+                            server.terminate()
+                            try:
+                                server.wait(timeout=8)
+                            except subprocess.TimeoutExpired:
+                                server.kill()
+                                server.wait(timeout=5)
                 report["checks"]["hub_process_cleanup"] = (
                     "PASS" if server.poll() is not None else "FAIL (process still running)"
                 )
