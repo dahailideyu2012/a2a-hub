@@ -1,0 +1,226 @@
+# A2A Hub Storage Contract V1
+
+> Status: design contract for review; no backend selected or implemented.
+> Baseline: `feature/chatgpt-workbuddy-bridge-v1` at `0296fe8456026fe9242299d5763614ad749c0bb4`.
+> Owner: ChatGPT authors all code, tests, migrations and operational scripts. WorkBuddy performs read-only review and fixed-SHA verification only.
+
+## 1. Purpose and non-goals
+
+This document freezes the persistence guarantees that any production storage backend must provide before the Hub is deployed to a restartable or multi-instance runtime.
+
+It does **not** select D1, Durable Object SQLite, a VPS, or Cloudflare Containers; does not claim that Python `sqlite3` can be transparently replaced by a remote database; and does not authorize deployment, Cloudflare resource creation, Docker/Wrangler installation, network exposure, DNS changes, tunnels, or WorkBuddy configuration changes.
+
+The current SQLite implementation remains the behavioral reference until a replacement passes the contract tests.
+
+## 2. Current source facts and gaps
+
+| Concern | Current implementation | Contract gap |
+|---|---|---|
+| Hub tasks | `TaskStore` exposes synchronous `save/get/list/delete`; `SqliteTaskStore` also implements Pull queue and lease methods | Interface omits Pull operations; SQLite implementation is single-process locked and uses synchronous calls |
+| Pull lease | Claim, renew, start, progress, result, cancel use `BEGIN IMMEDIATE` transactions and lease token + monotonically increasing version | Replacement must preserve atomic compare-and-set/fencing across all instances, not merely use an in-process lock |
+| ChatGPT idempotency | `IngressLedger.reserve/complete/release/owns_task/task_ids` is a separate SQLite database | Task creation and ledger completion are separate commits; process crash between them can orphan a task or leave a pending reservation |
+| Social graph | `SocialGraph.save()` atomically replaces a JSON snapshot containing relations, audit, approvals and quotas | No cross-instance compare-and-set/versioning; concurrent writers can overwrite each other's snapshots |
+| Members | `members.yaml` may be generated at startup; contains member declarations and potentially credential material | Must define whether this is deployment configuration or mutable business data; missing file must not silently reset access policy |
+| Agent declarations | `agents.yaml` is read-only configuration | Remains deployment configuration; not a runtime database |
+| Rate limiter | ChatGPT ingress uses process-local `SlidingWindowLimiter` | Not globally consistent across workers/instances |
+| Event bus | In-process task event bus | Ephemeral notification channel only; persisted task state remains authoritative |
+
+### 2.1 Additional ingress dependency
+
+The ChatGPT cancel endpoint is also SQLite-specific: it checks `SqliteTaskStore` and returns HTTP 409 for other store types before calling `cancel_pull_task`. A replacement must support cancellation through the repository contract; it must not leave a hidden SQLite type check in the route.
+
+### 2.2 Existing transaction boundaries
+
+The current ingress flow is:
+
+1. `IngressLedger.reserve(key, request_hash)` commits a pending reservation.
+2. Hub dispatcher creates a task in the task store.
+3. `IngressLedger.complete(key, request_hash, task_id)` commits the task mapping.
+
+These are separate databases and cannot be assumed atomic. The new design must explicitly close this crash window. Merely moving both databases to the same vendor does not make two separate transactions atomic.
+
+## 3. Required logical ports
+
+The implementation may use different class names, but callers must depend on protocol/port interfaces rather than concrete SQLite classes.
+
+### 3.1 Task repository
+
+The task repository must provide the existing task operations and Pull-specific operations as one explicit contract:
+
+- create or enqueue a task with a stable task ID;
+- get a task by ID;
+- list tasks with bounded pagination and deterministic ordering;
+- save/update a task with optimistic version checking where concurrent updates are possible;
+- delete/expire a task only under explicit retention rules;
+- atomically claim the oldest eligible Pull task;
+- renew a lease only when connector ID, lease token, lease version and unexpired lease all match;
+- start a task under the same lease fence;
+- append progress with monotonic sequence and same-sequence/same-payload idempotent replay;
+- finish with a stable result key and exact-result idempotent replay;
+- cancel a Pull task and invalidate its active lease atomically;
+- close/release local resources when the backend requires it.
+
+The API must define typed outcomes for not-found, conflict, expired lease, terminal task, duplicate replay, and transient backend failure. HTTP routes translate these outcomes; repositories must not depend on FastAPI.
+
+### 3.2 Ingress idempotency repository
+
+Required operations:
+
+- reserve an idempotency key with canonical request hash;
+- return replay for the same key and same hash when a task has already been committed;
+- reject same key with a different hash;
+- represent an in-flight reservation with a bounded expiry;
+- associate the reservation with exactly one task ID;
+- release only the matching uncompleted reservation;
+- check ownership and list task IDs under the current visibility/retention policy.
+
+The key uniqueness constraint must be enforced by the authoritative backend, not only an application lock.
+
+### 3.3 Social graph repository
+
+Persist and update these existing logical collections:
+
+- relationship edges;
+- audit history;
+- approval requests;
+- quota/counter state.
+
+Mutations must be atomic at the business-operation boundary. Concurrent updates must not replace an entire stale JSON snapshot. Use row/document-level conditional writes, transaction boundaries, or revision/CAS semantics. Keep schema versioning and deterministic migrations.
+
+### 3.4 Configuration and secrets
+
+- `agents.yaml` remains read-only deployment configuration.
+- Member identity/role/policy may be provisioned as configuration or modeled as mutable repository data, but the choice must be explicit.
+- Raw member tokens and connector/API credentials must remain in a secret manager or runtime secret injection; never copy them into ordinary task/social records, logs, exports or migration fixtures.
+- Missing member configuration must fail closed or follow an explicitly approved bootstrap policy. It must not silently recreate a privileged/default membership state.
+- Runtime-generated `members.yaml` must be removed as an implicit source of truth once a durable provisioning model is selected.
+
+### 3.5 Shared rate limiting
+
+If the service runs more than one worker or instance, ingress rate limits must be enforced by a shared atomic counter/window or edge-level limiter. A process-local deque is acceptable only for explicitly single-instance development mode.
+
+### 3.6 Event delivery
+
+The in-process event bus and SSE stream are notifications, not durable event storage. After restart, clients must be able to recover the current task from the task repository. If resumable event history is later required, it needs a separate persisted event-log contract and retention policy.
+
+## 4. Non-negotiable consistency invariants
+
+1. **Single task claim:** concurrent connectors cannot claim the same eligible task.
+2. **Lease fencing:** every mutating Pull operation validates connector ID, secret lease token, monotonically increasing lease version, and expiry within the same atomic transaction as the mutation.
+3. **Stale worker rejection:** after lease expiry/reclaim or cancellation, the old lease cannot renew, start, progress, or overwrite the result.
+4. **Progress idempotency:** same sequence + same payload replays; same or lower sequence with different payload conflicts.
+5. **Result idempotency:** only the exact original lease and exact result key/payload may replay a terminal result; all other writes conflict.
+6. **Cancellation:** cancellation and lease invalidation are atomic; cancellation cannot race with a stale result to produce an ambiguous terminal state.
+7. **Ingress idempotency:** one idempotency key maps to at most one accepted task; same key/different request is a conflict.
+8. **Crash recovery:** no accepted request can become permanently invisible because the process died between task creation and ingress-ledger completion.
+9. **Social update integrity:** concurrent relationship/approval/quota mutations cannot silently overwrite each other.
+10. **Fail closed:** storage unavailable, schema incompatible, or required durable backend absent must fail readiness/requests; never silently fall back from durable mode to memory.
+11. **Durability acknowledgement:** a successful write response means the backend has acknowledged the write according to the selected provider's documented durability contract.
+12. **Credential isolation:** tokens are not returned by repository reads, task serialization, progress, result, logs or test output.
+
+## 5. Required transaction design for ingress submission
+
+The current two-database sequence is insufficient for a multi-instance production service. The selected backend must implement one of these patterns and prove it with crash-injection tests:
+
+### Preferred: one authoritative transaction boundary
+
+Store the idempotency reservation and task acceptance record in the same transactional authority. A single transaction must:
+- verify or reserve the idempotency key + request hash;
+- create the accepted task (or durable enqueue/outbox record);
+- bind the key to the task ID;
+- commit both atomically.
+
+External agent execution happens after commit. A dispatcher/outbox worker may retry delivery without creating a second task.
+
+### Acceptable alternative: durable outbox/saga
+
+If task and ledger cannot share a transaction:
+- reserve a durable operation ID;
+- create a task with that operation ID under a unique constraint;
+- complete/reconcile the ledger idempotently;
+- run a recovery worker that repairs pending operations after restart;
+- never release a reservation in a way that permits a duplicate task when task creation may already have succeeded.
+
+The implementation must test process termination after every persistence step and prove that retry/reconciliation converges to one task.
+
+## 6. Backend capability gate
+
+A backend is eligible only if it can demonstrate:
+
+| Capability | Required evidence |
+|---|---|
+| Atomic transaction / conditional update | Concurrent integration tests |
+| Unique idempotency key | Concurrent duplicate submission tests |
+| Lease fencing | Parallel claim, expired lease, reclaim, stale mutation and cancel race tests |
+| Cross-instance visibility | Two independent application processes/instances see the same committed state |
+| Durable acknowledgement | Provider-specific documented guarantee plus restart test |
+| Migration | Repeatable forward migration, compatibility check, and rollback/restore plan |
+| Backup/restore | Real isolated backup and restore drill |
+| Failure behavior | Timeout, unavailable backend, conflict and retry tests |
+| Secret handling | Redaction and non-persistence tests |
+| Operational fit | Supported connection model, limits, latency, cost and recovery procedure documented |
+
+A backend that cannot offer a transaction/CAS boundary suitable for Pull leases is rejected for the task repository.
+
+## 7. Backend options to evaluate (no selection yet)
+
+### A. VPS with persistent disk and current SQLite
+
+Lowest code-change path for the current Python application. Viable only with a single active writer/instance, reliable persistent block storage, backups, tested restore, and a separately approved HTTPS ingress. Multi-host horizontal scaling is not implied by SQLite.
+
+### B. Cloudflare D1
+
+Potentially suitable for relational tasks, idempotency and social data if its transaction, concurrency, request-size, latency and access model satisfy the invariants. The current Python container cannot directly treat D1 as a local SQLite file; a Worker/service API or explicit client protocol is required. Validate transaction scope across all required records before selection.
+
+### C. Durable Object SQLite
+
+Provides transactional storage scoped to a Durable Object. A viable design must define object partitioning, single-writer ownership, routing, hot-object limits, cross-object transaction limitations, and how the Python application calls the DO service. DO SQLite is not a mounted SQLite file and is not a transparent replacement for `sqlite3`.
+
+### D. Container-local SQLite / R2-FUSE SQLite
+
+Rejected as a production task ledger unless a provider-supported persistence and locking model is independently demonstrated. Container-local disk is ephemeral; object storage mounted as a filesystem must not be assumed to provide SQLite locking/transaction semantics.
+
+## 8. Migration and rollout requirements
+
+- Version every schema and data format.
+- Add explicit startup validation: selected durable backend, schema version, required indexes/constraints, and connectivity.
+- Do not auto-fallback to `MemoryTaskStore` in production mode.
+- Migration must be restartable and idempotent; preserve task IDs, states, agent ownership, artifacts, progress sequence/hash, result keys/hashes, lease versions and expiry semantics.
+- Do not copy live lease tokens into logs or reports. Prefer invalidating all active leases during a controlled migration and requiring connectors to reclaim; document this as an explicit migration behavior.
+- Preserve ingress idempotency records for at least the configured retention period or reconcile pending records before cutover.
+- Preserve social edges, audit, approvals and quotas; validate counts and checksums before/after migration.
+- Keep source backend read-only until reconciliation passes; define rollback and backup restore before cutover.
+- No production migration or deployment is authorized by this document.
+
+## 9. Required test matrix before backend acceptance
+
+1. Contract test suite shared by every TaskRepository implementation.
+2. Two independent processes concurrently claiming a queue.
+3. Two concurrent requests with the same idempotency key and same body.
+4. Same key with different body.
+5. Crash after reservation, after task creation, and before idempotency completion.
+6. Retry/reconciliation after each crash point.
+7. Lease expiry and reclaim while old connector attempts renew/progress/result.
+8. Cancel racing with progress/result.
+9. Duplicate progress and duplicate result replay.
+10. Two writers updating different social edges and same quota concurrently.
+11. Restart/redeploy and read-after-restart verification for every durable collection.
+12. Backup/restore drill and schema migration rerun.
+13. Backend unavailable/timeout must fail safely without memory fallback.
+14. Multi-instance shared rate-limit behavior.
+15. Credential redaction and proof that no raw tokens are persisted in fixtures or outputs.
+
+## 10. Implementation sequence
+
+1. Freeze this logical contract after independent source review.
+2. Inventory every caller and make storage dependencies explicit; remove concrete `SqliteTaskStore` checks from HTTP routes.
+3. Select a backend only after a capability spike demonstrates transactions, fencing, cross-instance visibility and operational fit.
+4. Implement the repository ports and shared contract tests.
+5. Implement the selected adapter, migrations, recovery/reconciliation, backups and failure-injection tests.
+6. Run fixed-SHA local acceptance with WorkBuddy.
+7. Conduct a separate security and deployment-readiness review.
+8. Obtain explicit user approval before any external resource creation or deployment.
+
+## 11. Acceptance status
+
+This document records requirements and current gaps only. No storage abstraction, backend adapter, migration, recovery worker, or deployment has been implemented by this document. The current SQLite implementation remains the only verified backend for the existing tests; it is not thereby approved for multi-instance Cloudflare production.
