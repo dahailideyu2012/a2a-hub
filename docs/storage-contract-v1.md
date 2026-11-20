@@ -43,8 +43,7 @@ The current ingress flow is:
 2. Hub dispatcher creates a task in the task store.
 3. `IngressLedger.complete(key, request_hash, task_id)` commits the task mapping.
 
-These are separate databases and cannot be assumed atomic. The pending reservation currently expires after 120 seconds; `reserve()` deletes expired rows before checking/reserving the key. A pending reservation causes a 409 while it remains present. If the task was created but `complete()` never committed, a retry after expiry can create a **second task**. There is also an immediate duplicate window: `submit_task` releases a still-uncompleted reservation on any exception, including a post-enqueue `complete()` failure or a failed post-write task read; a retry can then reserve the same key and create another task without waiting for the 120-second TTL. The new design must explicitly close this crash window. Merely moving both databases to the same vendor does not make two separate transactions atomic.
-
+These are separate databases and cannot be assumed atomic. The pending reservation currently expires after 120 seconds; `reserve()` deletes expired rows before checking/reserving the key. A pending reservation causes a 409 while it remains present. If the task was created but `complete()` never committed, a retry after expiry can create a **second task**. There is also an immediate duplicate window: `submit_task` releases a still-uncompleted reservation on an exception before `complete()` commits, such as a post-enqueue `complete()` failure; if task creation already succeeded, that release can allow a retry to reserve the same key and create another task without waiting for the 120-second TTL. A failed post-write task read occurs after `complete()` has committed the task ID, so `release()`'s `task_id IS NULL` guard preserves the reservation and that read failure alone does not open the duplicate window. The new design must explicitly close this crash window. Merely moving both databases to the same vendor does not make two separate transactions atomic.
 
 
 ### 2.3 Repository caller inventory (baseline source)
@@ -167,7 +166,7 @@ If task and ledger cannot share a transaction:
 - run a recovery worker that repairs pending operations after restart;
 - never release a reservation in a way that permits a duplicate task when task creation may already have succeeded, including the immediate exception path in `chatgpt_ingress.py::submit_task` (not only the 120-second expiry path).
 
-The implementation must test process termination and injected exceptions after every persistence step, including `release()` after a successful enqueue and failed `complete()`/post-write read, and prove that retry/reconciliation converges to one task.
+The implementation must test process termination and injected exceptions after every persistence step. Cover a failed `complete()` after enqueue (where release may delete the still-uncompleted reservation) and a post-write read failure after successful `complete()` (where release must preserve the task mapping); prove that retry/reconciliation converges to one task in both cases.
 
 ## 6. Backend capability gate
 
