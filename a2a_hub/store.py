@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import secrets
+import hashlib
+import time
 from pathlib import Path
 from typing import Optional
 
-from .models import Task
+from .models import Artifact, Message, Task, TaskState
 
 
 def serialize_task(task: Task) -> str:
@@ -106,11 +109,38 @@ class SqliteTaskStore(TaskStore):
                 state     TEXT,
                 created   TEXT,
                 updated   TEXT,
-                payload   TEXT NOT NULL
+                payload   TEXT NOT NULL,
+                execution_mode TEXT NOT NULL DEFAULT 'hub',
+                connector_id TEXT,
+                lease_token TEXT,
+                lease_version INTEGER NOT NULL DEFAULT 0,
+                lease_expires_at REAL,
+                lease_state TEXT,
+                last_progress_seq INTEGER NOT NULL DEFAULT 0,
+                last_progress_hash TEXT,
+                result_key TEXT,
+                result_hash TEXT
             )
             """
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        migrations = {
+            "execution_mode": "TEXT NOT NULL DEFAULT 'hub'",
+            "connector_id": "TEXT",
+            "lease_token": "TEXT",
+            "lease_version": "INTEGER NOT NULL DEFAULT 0",
+            "lease_expires_at": "REAL",
+            "lease_state": "TEXT",
+            "last_progress_seq": "INTEGER NOT NULL DEFAULT 0",
+            "last_progress_hash": "TEXT",
+            "result_key": "TEXT",
+            "result_hash": "TEXT",
+        }
+        for name, definition in migrations.items():
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated DESC)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_pull_queue ON tasks(execution_mode, state, created)")
         self._conn.commit()
 
     def save(self, task: Task) -> None:
@@ -150,6 +180,240 @@ class SqliteTaskStore(TaskStore):
         with self._lock:
             self._conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
             self._conn.commit()
+
+    def enqueue_pull(self, task: Task) -> None:
+        """Persist a pull-mode task before it becomes visible to Connectors."""
+        payload = serialize_task(task)
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "INSERT INTO tasks(id,agent_id,state,created,updated,payload,execution_mode) "
+                    "VALUES(?,?,?,?,?,?, 'pull')",
+                    (task.id, task.agentId or "", task.status.state.value,
+                     task.createdAt, task.updatedAt, payload),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    @staticmethod
+    def _lease_matches(row: tuple, connector_id: str, lease_token: str,
+                       lease_version: int, now: float) -> bool:
+        return bool(row and row[0] == connector_id and row[1] == lease_token
+                    and int(row[2]) == int(lease_version)
+                    and row[3] is not None and float(row[3]) > now
+                    and row[4] == "pull")
+
+    def claim_next(self, connector_id: str, lease_seconds: int = 120,
+                   agent_ids: Optional[list[str]] = None) -> Optional[dict]:
+        """Atomically claim one pull task. Single-host SQLite only."""
+        now = time.time()
+        token = secrets.token_urlsafe(32)
+        expires = now + max(15, min(int(lease_seconds), 900))
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                sql = ("SELECT id FROM tasks WHERE execution_mode='pull' "
+                       "AND state IN ('submitted','working') "
+                       "AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)")
+                args: list = [now]
+                if agent_ids:
+                    sql += " AND agent_id IN (" + ",".join("?" for _ in agent_ids) + ")"
+                    args.extend(agent_ids)
+                sql += " ORDER BY created ASC LIMIT 1"
+                found = conn.execute(sql, args).fetchone()
+                if not found:
+                    conn.commit()
+                    return None
+                task_id = str(found[0])
+                cur = conn.execute(
+                    "UPDATE tasks SET connector_id=?,lease_token=?,lease_version=lease_version+1,"
+                    "lease_expires_at=?,lease_state='claimed' "
+                    "WHERE id=? AND execution_mode='pull' AND state IN ('submitted','working') "
+                    "AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)",
+                    (connector_id, token, expires, task_id, now),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return None
+                row = conn.execute(
+                    "SELECT payload,lease_version FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                conn.commit()
+                return {
+                    "task": deserialize_task(row[0]),
+                    "connector_id": connector_id,
+                    "lease_token": token,
+                    "lease_version": int(row[1]),
+                    "lease_expires_at": expires,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _leased_task(self, task_id: str, connector_id: str, lease_token: str,
+                     lease_version: int, now: float):
+        row = self._conn.execute(
+            "SELECT payload,connector_id,lease_token,lease_version,lease_expires_at,"
+            "execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash "
+            "FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if not row or not self._lease_matches(
+            (row[1], row[2], row[3], row[4], row[5]),
+            connector_id, lease_token, lease_version, now
+        ):
+            raise ValueError("lease_conflict")
+        return deserialize_task(row[0]), row
+
+    def renew_pull_lease(self, task_id: str, connector_id: str, lease_token: str,
+                         lease_version: int, lease_seconds: int = 120) -> float:
+        now = time.time()
+        expires = now + max(15, min(int(lease_seconds), 900))
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                task, _ = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
+                if task.status.is_terminal:
+                    raise ValueError("task_terminal")
+                cur = conn.execute(
+                    "UPDATE tasks SET lease_expires_at=? WHERE id=? AND connector_id=? "
+                    "AND lease_token=? AND lease_version=? AND lease_expires_at>?",
+                    (expires, task_id, connector_id, lease_token, lease_version, now),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("lease_conflict")
+                conn.commit()
+                return expires
+            except Exception:
+                conn.rollback()
+                raise
+
+    def start_pull_task(self, task_id: str, connector_id: str, lease_token: str,
+                        lease_version: int) -> Task:
+        now = time.time()
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                task, _ = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
+                if task.status.is_terminal:
+                    raise ValueError("task_terminal")
+                task.touch(TaskState.WORKING, Message.agent("WorkBuddy 已开始执行"))
+                conn.execute(
+                    "UPDATE tasks SET state=?,updated=?,payload=?,lease_state='running' "
+                    "WHERE id=? AND connector_id=? AND lease_token=? AND lease_version=? AND lease_expires_at>?",
+                    (task.status.state.value, task.updatedAt, serialize_task(task), task_id,
+                     connector_id, lease_token, lease_version, now),
+                )
+                if conn.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise ValueError("lease_conflict")
+                conn.commit()
+                return task
+            except Exception:
+                conn.rollback()
+                raise
+
+    def progress_pull_task(self, task_id: str, connector_id: str, lease_token: str,
+                           lease_version: int, sequence: int, message: str) -> tuple[Task, bool]:
+        now = time.time()
+        digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
+                if task.status.is_terminal:
+                    raise ValueError("task_terminal")
+                previous_seq, previous_hash = int(row[6]), row[7]
+                if sequence == previous_seq and previous_hash == digest:
+                    conn.commit()
+                    return task, True
+                if sequence <= previous_seq:
+                    raise ValueError("progress_sequence_conflict")
+                task.touch(TaskState.WORKING, Message.agent(message))
+                task.history.append(Message.agent(message))
+                cur = conn.execute(
+                    "UPDATE tasks SET state=?,updated=?,payload=?,last_progress_seq=?,last_progress_hash=? "
+                    "WHERE id=? AND connector_id=? AND lease_token=? AND lease_version=? AND lease_expires_at>?",
+                    (task.status.state.value, task.updatedAt, serialize_task(task), sequence, digest,
+                     task_id, connector_id, lease_token, lease_version, now),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("lease_conflict")
+                conn.commit()
+                return task, False
+            except Exception:
+                conn.rollback()
+                raise
+
+    def finish_pull_task(self, task_id: str, connector_id: str, lease_token: str,
+                         lease_version: int, result_key: str, state: str,
+                         output: str) -> tuple[Task, bool]:
+        now = time.time()
+        digest = hashlib.sha256((state + "\0" + output).encode("utf-8")).hexdigest()
+        final_state = TaskState.COMPLETED if state == "completed" else TaskState.FAILED
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
+                if task.status.is_terminal:
+                    if row[8] == result_key and row[9] == digest:
+                        conn.commit()
+                        return task, True
+                    raise ValueError("task_terminal")
+                task.history.append(Message.agent(output))
+                if final_state == TaskState.COMPLETED and output:
+                    task.add_artifact(Artifact.text(output, name="workbuddy-result"))
+                task.touch(final_state, Message.agent(output or ("任务失败" if state == "failed" else "任务完成")))
+                cur = conn.execute(
+                    "UPDATE tasks SET state=?,updated=?,payload=?,lease_state='finished',"
+                    "result_key=?,result_hash=? "
+                    "WHERE id=? AND connector_id=? AND lease_token=? AND lease_version=? AND lease_expires_at>?",
+                    (task.status.state.value, task.updatedAt, serialize_task(task),
+                     result_key, digest, task_id, connector_id, lease_token, lease_version, now),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("lease_conflict")
+                conn.commit()
+                return task, False
+            except Exception:
+                conn.rollback()
+                raise
+
+    def cancel_pull_task(self, task_id: str) -> Task:
+        """Cancel a pull task without invoking an agent adapter."""
+        now = time.time()
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT payload,execution_mode FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                if not row:
+                    raise KeyError("task_not_found")
+                if row[1] != "pull":
+                    raise ValueError("not_pull_task")
+                task = deserialize_task(row[0])
+                if task.status.is_terminal:
+                    raise ValueError("task_terminal")
+                task.history.append(Message.agent("任务已由 ChatGPT 取消"))
+                task.touch(TaskState.CANCELED, Message.agent("任务已由 ChatGPT 取消"))
+                conn.execute(
+                    "UPDATE tasks SET state=?,updated=?,payload=?,lease_state='canceled',"
+                    "lease_expires_at=? WHERE id=? AND execution_mode='pull'",
+                    (task.status.state.value, task.updatedAt, serialize_task(task), now, task_id),
+                )
+                conn.commit()
+                return task
+            except Exception:
+                conn.rollback()
+                raise
 
     def close(self) -> None:
         self._conn.close()
