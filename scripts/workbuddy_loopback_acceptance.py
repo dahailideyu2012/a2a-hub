@@ -393,23 +393,61 @@ def main() -> int:
         report["result"] = "FAIL"
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
+        # Cleanup must never suppress the JSON report. Windows can briefly keep
+        # SQLite files locked after the Uvicorn process exits, so retry removal.
         if mcp is not None:
-            report["checks"]["mcp_process_cleanup"] = "PASS" if mcp.close() else "FAIL"
-        if server is not None and server.poll() is None:
-            server.terminate()
             try:
-                server.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                server.kill()
-                server.wait(timeout=5)
-        report["checks"]["hub_process_cleanup"] = "PASS" if server is None or server.poll() is not None else "FAIL"
-        report["temporary_directory_cleanup"] = "PENDING"
-        temp_context.cleanup()
-        report["temporary_directory_cleanup"] = "PASS (isolated temporary root removed)"
+                mcp_closed = mcp.close()
+                report["checks"]["mcp_process_cleanup"] = "PASS" if mcp_closed else "FAIL"
+            except Exception as exc:
+                report["checks"]["mcp_process_cleanup"] = f"FAIL: {type(exc).__name__}: {exc}"
+        else:
+            report["checks"]["mcp_process_cleanup"] = "PASS (not started)"
+
+        if server is not None:
+            try:
+                if server.poll() is None:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=5)
+                report["checks"]["hub_process_cleanup"] = (
+                    "PASS" if server.poll() is not None else "FAIL (process still running)"
+                )
+            except Exception as exc:
+                report["checks"]["hub_process_cleanup"] = f"FAIL: {type(exc).__name__}: {exc}"
+        else:
+            report["checks"]["hub_process_cleanup"] = "PASS (not started)"
+
+        cleanup_error = None
+        for attempt in range(6):
+            try:
+                temp_context.cleanup()
+                cleanup_error = None
+                break
+            except OSError as exc:
+                cleanup_error = exc
+                # Give Windows file handles a chance to close before retrying.
+                time.sleep(0.25 * (attempt + 1))
+        if cleanup_error is None:
+            report["temporary_directory_cleanup"] = "PASS (isolated temporary root removed)"
+        else:
+            report["temporary_directory_cleanup"] = (
+                f"FAIL: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
+            report["result"] = "FAIL"
+            report["error"] = report.get("error") or "Temporary directory cleanup failed"
+
+        cleanup_failed = any(
+            str(value).startswith("FAIL") for value in report["checks"].values()
+        ) or str(report.get("temporary_directory_cleanup", "")).startswith("FAIL")
+        if cleanup_failed:
+            report["result"] = "FAIL"
+    # Always emit the structured report, including cleanup failures.
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report.get("result") == "PASS" and all(
-        value != "FAIL" for key, value in report["checks"].items()
-    ) else 1
+    return 0 if report.get("result") == "PASS" and not cleanup_failed else 1
 
 
 if __name__ == "__main__":
