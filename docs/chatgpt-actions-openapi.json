@@ -242,7 +242,6 @@
               "hub",
               "pull"
             ],
-            "default": "pull",
             "description": "Use pull to queue a task for WorkBuddy to claim. hub dispatches through the Hub's normal agent execution path."
           }
         }
