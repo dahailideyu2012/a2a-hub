@@ -483,6 +483,12 @@ class AgentRegistry:
     async def aclose(self) -> None:
         for rec in self._records.values():
             await rec.adapter.aclose()
+        # The registry owns the task store lifecycle. Close persistent stores
+        # during FastAPI lifespan shutdown so SQLite releases file handles,
+        # especially on Windows where the DB cannot be unlinked while open.
+        close_store = getattr(self.store, "close", None)
+        if callable(close_store):
+            close_store()
 
 
 # --------------------------------------------------------------------------- #
