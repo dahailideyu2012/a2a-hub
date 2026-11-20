@@ -335,3 +335,25 @@ def test_default_chatgpt_ingress_mode_still_uses_hub_adapter(client, monkeypatch
     )
     assert response.status_code == 200
     assert called and called[0][0] == "echo-a"
+
+
+@pytest.mark.asyncio
+async def test_registry_aclose_closes_persistent_task_store(tmp_path):
+    from a2a_hub.adapters import BaseAdapter
+    from a2a_hub.bus import EventBus
+    from a2a_hub.config import AgentSpec, HubConfig, Settings
+    from a2a_hub.registry import AgentRegistry
+    from a2a_hub.store import SqliteTaskStore
+
+    store = SqliteTaskStore(str(tmp_path / "registry-shutdown.db"))
+    registry = AgentRegistry(
+        Settings(_env_file=None),
+        HubConfig(agents=[]),
+        store,
+        EventBus(),
+    )
+    await registry.aclose()
+
+    # A closed sqlite connection raises ProgrammingError on the next operation.
+    with pytest.raises(Exception):
+        store._conn.execute("SELECT 1")
