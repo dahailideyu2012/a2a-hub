@@ -30,7 +30,7 @@ def test_lifecycle_uses_private_lease_and_stable_result_key(monkeypatch):
  monkeypatch.setattr(server,"_post",lambda path,payload:calls.append((path,payload)) or {"ok":True})
  with server.LEASES_LOCK: server.LEASES["task-2"]={"lease_token":"private-lease","lease_version":3}
  assert not server.tool_start({"task_id":"task-2"})["isError"]
- assert not server.tool_renew({"task_id":"task-2","lease_seconds":180})["isError"]
+ assert not server.tool_renew({"task_id":"task-2"})["isError"]
  assert not server.tool_progress({"task_id":"task-2","sequence":1,"message":"开始检查"})["isError"]
  assert not server.tool_result({"task_id":"task-2","state":"completed","output":"PASS"})["isError"]
  assert [c[0] for c in calls]==["tasks/task-2/start","tasks/task-2/renew","tasks/task-2/progress","tasks/task-2/result"]
