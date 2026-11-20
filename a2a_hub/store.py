@@ -220,7 +220,10 @@ class SqliteTaskStore(TaskStore):
                        "AND state IN ('submitted','working') "
                        "AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)")
                 args: list = [now]
-                if agent_ids:
+                if agent_ids is not None:
+                    if not agent_ids:
+                        conn.commit()
+                        return None
                     sql += " AND agent_id IN (" + ",".join("?" for _ in agent_ids) + ")"
                     args.extend(agent_ids)
                 sql += " ORDER BY created ASC LIMIT 1"
@@ -360,11 +363,28 @@ class SqliteTaskStore(TaskStore):
             conn = self._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # A terminal result replay is idempotent even after lease expiry,
+                # but only for the exact original connector/token/version and payload.
+                # A reclaimed lease has a different token/version and cannot replay.
+                existing = conn.execute(
+                    "SELECT payload,connector_id,lease_token,lease_version,execution_mode,"
+                    "result_key,result_hash FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                if existing and existing[4] == "pull":
+                    existing_task = deserialize_task(existing[0])
+                    if existing_task.status.is_terminal:
+                        same_lease = (
+                            existing[1] == connector_id
+                            and existing[2] == lease_token
+                            and int(existing[3]) == int(lease_version)
+                        )
+                        same_result = existing[5] == result_key and existing[6] == digest
+                        if same_lease and same_result:
+                            conn.commit()
+                            return existing_task, True
+                        raise ValueError("task_terminal")
                 task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
-                    if row[8] == result_key and row[9] == digest:
-                        conn.commit()
-                        return task, True
                     raise ValueError("task_terminal")
                 task.history.append(Message.agent(output))
                 if final_state == TaskState.COMPLETED and output:

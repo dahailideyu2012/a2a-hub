@@ -67,13 +67,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         authenticate(connector_token, settings)
         store = store_for(hub)
         configured = {x.strip() for x in settings.workbuddy_connector_allowed_agents.split(",") if x.strip()}
+        if not configured:
+            raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
         requested = set((body or ClaimRequest()).agent_ids)
-        if configured and requested:
-            allowed = sorted(configured.intersection(requested))
-        elif configured:
-            allowed = sorted(configured)
-        else:
-            allowed = sorted(requested) if requested else None
+        allowed = sorted(configured.intersection(requested)) if requested else sorted(configured)
         seconds = (body.lease_seconds if body and body.lease_seconds else settings.workbuddy_connector_lease_seconds)
         claimed = store.claim_next(settings.workbuddy_connector_id, seconds, allowed)
         if claimed is None:

@@ -186,3 +186,152 @@ def test_chatgpt_pull_to_workbuddy_result_roundtrip(client, tmp_path, monkeypatc
     assert readback.status_code == 200
     assert "WorkBuddy finished" in str(readback.json())
     store.close()
+
+
+def test_result_replay_succeeds_after_original_lease_expiry(tmp_path):
+    import sqlite3
+    import time
+    from a2a_hub.models import Message, Task
+
+    path = str(tmp_path / "expired-replay.db")
+    store = SqliteTaskStore(path)
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("replay"))
+    store.enqueue_pull(task)
+    lease = store.claim_next("workbuddy-personal", 120)
+    assert lease is not None
+    first, replay = store.finish_pull_task(
+        task.id, "workbuddy-personal", lease["lease_token"], lease["lease_version"],
+        "stable-result-key", "completed", "durable result",
+    )
+    assert first.status.state == TaskState.COMPLETED and replay is False
+
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?", (time.time() - 1, task.id))
+    conn.commit()
+    conn.close()
+
+    repeated, replay = store.finish_pull_task(
+        task.id, "workbuddy-personal", lease["lease_token"], lease["lease_version"],
+        "stable-result-key", "completed", "durable result",
+    )
+    assert repeated.id == task.id and replay is True
+    with pytest.raises(ValueError, match="task_terminal"):
+        store.finish_pull_task(
+            task.id, "another-connector", lease["lease_token"], lease["lease_version"],
+            "stable-result-key", "completed", "durable result",
+        )
+    store.close()
+
+
+def test_connector_allowlist_fails_closed_and_requested_scope_cannot_expand(client, tmp_path, monkeypatch):
+    import a2a_hub.server as server
+    from a2a_hub.models import Message, Task
+
+    token = "test-workbuddy-connector-token-0123456789"
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    server.hub.settings.workbuddy_connector_allowed_agents = ""
+    unconfigured = client.post("/integrations/workbuddy/v1/claim", headers=headers, json={})
+    assert unconfigured.status_code == 503
+
+    server.hub.settings.workbuddy_connector_allowed_agents = "echo-a"
+    store = SqliteTaskStore(str(tmp_path / "scope.db"))
+    monkeypatch.setattr(server.hub.registry, "store", store)
+    task = Task(agentId="echo-b")
+    task.history.append(Message.user("out of scope"))
+    store.enqueue_pull(task)
+    outside = client.post(
+        "/integrations/workbuddy/v1/claim", headers=headers, json={"agent_ids": ["echo-b"]}
+    )
+    assert outside.status_code == 200
+    assert outside.json() == {"claimed": False}
+    store.close()
+
+
+def test_connector_renew_endpoint_and_wrong_token(client, tmp_path, monkeypatch):
+    import a2a_hub.server as server
+
+    store = SqliteTaskStore(str(tmp_path / "renew.db"))
+    monkeypatch.setattr(server.hub.registry, "store", store)
+    from a2a_hub.models import Message, Task
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("renew"))
+    store.enqueue_pull(task)
+    token = "test-workbuddy-connector-token-0123456789"
+    wrong = client.post("/integrations/workbuddy/v1/claim",
+        headers={"X-WorkBuddy-Connector-Token": "x" * 40}, json={})
+    assert wrong.status_code == 403
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    claimed = client.post("/integrations/workbuddy/v1/claim", headers=headers, json={}).json()
+    lease = claimed["lease"]
+    renewed = client.post(
+        f"/integrations/workbuddy/v1/tasks/{task.id}/renew", headers=headers,
+        json={"lease_token": lease["lease_token"], "lease_version": lease["lease_version"]},
+    )
+    assert renewed.status_code == 200
+    assert renewed.json()["lease_expires_at"] > lease["lease_expires_at"]
+    store.close()
+
+
+def test_cancel_fences_old_connector_progress_and_result(tmp_path):
+    from a2a_hub.models import Message, Task
+
+    store = SqliteTaskStore(str(tmp_path / "cancel-fence.db"))
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("cancel fence"))
+    store.enqueue_pull(task)
+    lease = store.claim_next("workbuddy-personal", 120)
+    assert lease is not None
+    store.cancel_pull_task(task.id)
+    with pytest.raises(ValueError):
+        store.progress_pull_task(
+            task.id, "workbuddy-personal", lease["lease_token"], lease["lease_version"], 1, "late"
+        )
+    with pytest.raises(ValueError):
+        store.finish_pull_task(
+            task.id, "workbuddy-personal", lease["lease_token"], lease["lease_version"],
+            "late-result-key", "completed", "late result",
+        )
+    store.close()
+
+
+def test_sqlite_reopen_preserves_pending_task_for_claim(tmp_path):
+    from a2a_hub.models import Message, Task
+
+    path = str(tmp_path / "reopen.db")
+    first = SqliteTaskStore(path)
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("survive restart"))
+    first.enqueue_pull(task)
+    first.close()
+
+    second = SqliteTaskStore(path)
+    claimed = second.claim_next("workbuddy-personal", 120)
+    assert claimed is not None
+    assert claimed["task"].id == task.id
+    assert claimed["lease_version"] == 1
+    second.close()
+
+
+def test_default_chatgpt_ingress_mode_still_uses_hub_adapter(client, monkeypatch):
+    import a2a_hub.server as server
+
+    called = []
+    def fake_execute(record, task, message):
+        called.append((record.id, task.id))
+        async def stream():
+            if False:
+                yield None
+        return stream()
+
+    monkeypatch.setattr(server.hub.registry, "execute", fake_execute)
+    response = client.post(
+        "/integrations/chatgpt/v1/tasks",
+        headers={
+            "X-ChatGPT-Ingress-Token": "test-chatgpt-ingress-token-0123456789",
+            "Idempotency-Key": "default-hub-mode-001",
+        },
+        json={"agent_id": "echo-a", "prompt": "default hub mode"},
+    )
+    assert response.status_code == 200
+    assert called and called[0][0] == "echo-a"
