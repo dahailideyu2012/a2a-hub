@@ -110,6 +110,13 @@ def test_sqlite_store_recovers_idempotent_task_mapping_after_reopen(tmp_path):
         assert recovered is not None and recovered.id == task.id
         with pytest.raises(RepositoryConflictError):
             reopened.find_idempotent_task("operation-456", "different-hash")
+        duplicate = Task(metadata={
+            "chatgpt_ingress_operation_id": "operation-456",
+            "chatgpt_ingress_request_hash": "request-hash",
+        })
+        with pytest.raises(RepositoryConflictError):
+            reopened.save(duplicate)
+        assert reopened.get(duplicate.id) is None
     finally:
         reopened.close()
 
