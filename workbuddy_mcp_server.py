@@ -110,7 +110,7 @@ def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
  with LEASES_LOCK: LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"]),"lease_expires_at":expires_at}
  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
+ task_id=str(args.get("task_id") or "").strip(); return _ok(_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
 def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload=_lease(task_id)
  result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload)
