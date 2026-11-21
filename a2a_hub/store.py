@@ -537,7 +537,7 @@ class SqliteTaskStore(TaskStore):
         self._conn.close()
 
 
-def build_store(kind: str, db_path: str) -> TaskRepository:
+def build_store(kind: str, db_path: str, *, postgres_dsn: str = "",\n                postgres_min_size: int = 1, postgres_max_size: int = 8,\n                postgres_timeout: float = 5.0) -> TaskRepository:
     """Build only an explicitly selected backend; never silently downgrade.
 
     A typo such as postgres or sqllite must not create an in-memory store
@@ -549,9 +549,17 @@ def build_store(kind: str, db_path: str) -> TaskRepository:
         return SqliteTaskStore(db_path)
     if normalized == "memory":
         return MemoryTaskStore()
+    if normalized == "postgres":
+        from .postgres_store import PostgresTaskStore
+        if not postgres_dsn.strip():
+            raise ValueError("A2A_POSTGRES_DSN is required when A2A_STORE=postgres")
+        return PostgresTaskStore(
+            postgres_dsn, min_size=postgres_min_size,
+            max_size=postgres_max_size, timeout=postgres_timeout,
+        )
     raise ValueError(
         f"Unsupported A2A_STORE backend: {kind!r}. "
-        "Supported backends are: memory, sqlite."
+        "Supported backends are: memory, sqlite, postgres."
     )
 
 
