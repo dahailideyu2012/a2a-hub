@@ -1,6 +1,6 @@
 # PostgreSQL Task Store V1 — Runtime Adapter
 
-Status: **runtime adapter implemented on an isolated feature branch; fixed-SHA static review and real PostgreSQL 16 CI integration passed, including cancellation fencing, startup outage, and pool shutdown; production readiness remains pending final review and deployment-specific operational checks**.
+Status: **runtime adapter implemented on an isolated feature branch; real PostgreSQL 16 CI integration now covers nine opt-in cases, including cancellation fencing, startup outage, pool shutdown, and idempotent start; latest CI passed, while the newest WorkBuddy fixed-SHA comprehensive review and deployment-specific operational checks remain pending**.
 
 The branch now includes a synchronous `PostgresTaskStore`, bounded psycopg connection pool, startup migration/schema-version check, explicit `A2A_POSTGRES_DSN` configuration, and opt-in integration tests. The adapter is selected only when `A2A_STORE=postgres`; missing DSN, missing optional driver, connection failure, or schema failure must stop startup. No automatic fallback to SQLite or memory is permitted.
 
@@ -15,6 +15,10 @@ WorkBuddy fixed-SHA static review for `3838d30de8bffa81a49ad05f2969ea77e152643e`
 - `a2a_schema_migrations` records schema version 1. The migration is wrapped in a transaction and uses idempotent DDL / version insertion.
 
 ## Implemented adapter transaction patterns
+
+
+
+Latest integration evidence (2026-11-21): GitHub Actions Run `44914275409` executed on fixed code SHA `e9d9bd9b5c446d9ab42b7f56e35fbbf2da7c6896` against an ephemeral PostgreSQL 16 service. Focused PostgreSQL/repository tests: **43 passed**; full suite: **729 passed, 1 warning, 5 subtests passed, 0 failed**; compileall, loopback acceptance, wheel build, and packaged migration verification all passed. The PostgreSQL service log contains no `there is already a transaction in progress` warning. The nine opt-in PostgreSQL tests include same-lease start replay without duplicate task history. The existing pytest warning remains the StarletteDeprecationWarning for httpx with starlette.testclient; Actions also reports Node.js 20 deprecation notices from checkout/setup-python. This is CI evidence for SHA `e9d9bd9`; any later code change requires a fresh run.
 
 The adapter claims work in one database transaction using a CTE + `UPDATE ... RETURNING`; PostgreSQL row locks, not process-local locks, coordinate independent Hub processes. The claim query orders the locking clause after `LIMIT`:
 
@@ -40,10 +44,11 @@ Task creation and idempotency binding must occur in the **same PostgreSQL transa
 ## Acceptance gates and production boundary
 
 - [x] WorkBuddy fixed-SHA source review, archive/blob verification, repository contract tests, full pytest, compileall, and loopback regression (C2-B-13-14 report, Issue #5 comment 7063979180).
-- [x] Disposable PostgreSQL 16 integration suite, migration execution, and schema validation (CI Run 44904518389; code SHA 94d148b7f32eb215fa7075f9a15942d0c306a8b9).
+- [x] Disposable PostgreSQL 16 integration suite, migration execution, and schema validation (latest CI Run 44914275409; code SHA e9d9bd9b5c446d9ab42b7f56e35fbbf2da7c6896).
 - [x] Two independent OS processes race to claim tasks without duplicate delivery.
 - [x] Lease expiry/reclaim fences stale-worker mutations; exact result replay, idempotency conflict handling, cancellation behavior pass.
 - [x] Database outage/startup failure and pool shutdown behavior pass in isolated tests.
+- [x] Repeated `start` on the same active lease is idempotent and does not duplicate task history (SQLite + PostgreSQL integration tests).
 - [x] Store factory remains fail-closed; no fallback to memory or SQLite on PostgreSQL configuration, connection, or schema errors.
 - [ ] Production enablement, production migration, and deployment-specific operational checks — require separate explicit approval and have not been performed.
 
@@ -51,4 +56,4 @@ Task creation and idempotency binding must occur in the **same PostgreSQL transa
 
 The memory and SQLite backends remain supported. PostgreSQL runtime code has passed fixed-SHA WorkBuddy review and real PostgreSQL 16 integration CI; it is **validated for the tested contract but not enabled in production**. Production migration, secrets, backups, monitoring, and deployment require separate review and explicit approval. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
 
-The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. The dedicated GitHub Actions workflow supplies an ephemeral PostgreSQL 16 database through a service container; it does not use production credentials or infrastructure. Run `44904518389` passed on code SHA `94d148b7f32eb215fa7075f9a15942d0c306a8b9`; subsequent source changes require a fresh run.
+The nine integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. The dedicated GitHub Actions workflow supplies an ephemeral PostgreSQL 16 database through a service container; it does not use production credentials or infrastructure. Latest Run `44914275409` passed on code SHA `e9d9bd9b5c446d9ab42b7f56e35fbbf2da7c6896`; subsequent source changes require a fresh run.
