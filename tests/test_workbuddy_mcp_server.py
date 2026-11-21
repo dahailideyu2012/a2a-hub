@@ -92,3 +92,44 @@ def test_renew_updates_local_lease_expiry(monkeypatch):
  result=server.tool_renew({"task_id":"task-renew"})
  assert result["isError"] is False
  assert server.LEASES["task-renew"]["lease_expires_at"]==expected
+
+
+def test_progress_and_result_retry_transient_failures_with_stable_idempotency(monkeypatch):
+ calls=[]
+ with server.LEASES_LOCK:
+  server.LEASES["task-retry"]={"lease_token":"private-lease","lease_version":4,"lease_expires_at":time.time()+120}
+ def flaky_post(path,payload):
+  calls.append((path,payload.copy()))
+  if path.endswith("/progress") and sum(p.endswith("/progress") for p,_ in calls)==1:
+   raise RuntimeError("Hub HTTP 503: temporary")
+  if path.endswith("/result") and sum(p.endswith("/result") for p,_ in calls)==1:
+   raise RuntimeError("无法连接 Hub：TimeoutError")
+  return {"ok":True}
+ monkeypatch.setattr(server,"_post",flaky_post)
+ monkeypatch.setattr(server.time,"sleep",lambda _seconds:None)
+ progress=server.tool_progress({"task_id":"task-retry","sequence":7,"message":"same update"})
+ result=server.tool_result({"task_id":"task-retry","state":"completed","output":"done"})
+ assert progress["isError"] is False and result["isError"] is False
+ progress_calls=[payload for path,payload in calls if path.endswith("/progress")]
+ result_calls=[payload for path,payload in calls if path.endswith("/result")]
+ assert len(progress_calls)==2 and progress_calls[0]==progress_calls[1]
+ assert len(result_calls)==2 and result_calls[0]==result_calls[1]
+ assert result_calls[0]["result_key"]=="task-retry:workbuddy-result-v1"
+ assert "task-retry" not in server.LEASES
+
+
+def test_idempotent_retry_does_not_retry_conflicts_or_claim(monkeypatch):
+ attempts=[]
+ def conflict(_path,_payload):
+  attempts.append("called")
+  raise RuntimeError("Hub HTTP 409: lease conflict")
+ monkeypatch.setattr(server,"_post",conflict)
+ with pytest.raises(RuntimeError,match="409"):
+  server._post_idempotent("tasks/task-1/progress",{"sequence":1,"message":"x"})
+ assert len(attempts)==1
+
+ claim_attempts=[]
+ monkeypatch.setattr(server,"_post",lambda path,payload:claim_attempts.append(path) or (_ for _ in ()).throw(RuntimeError("Hub HTTP 503: unavailable")))
+ result=server.tool_claim({})
+ assert result["isError"] is True
+ assert claim_attempts==["claim"]
