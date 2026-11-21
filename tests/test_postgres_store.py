@@ -6,7 +6,6 @@ The normal test suite skips them without opening any network connection.
 from __future__ import annotations
 
 import os
-import uuid
 
 import pytest
 
