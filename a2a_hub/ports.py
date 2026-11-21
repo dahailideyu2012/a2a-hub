@@ -6,9 +6,38 @@ in-memory task stores) remain responsible for transactions and durability.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from .models import Task
+
+
+class RepositoryErrorCode(str, Enum):
+    """Stable machine-readable outcomes shared by repository adapters."""
+
+    TASK_NOT_FOUND = "task_not_found"
+    LEASE_CONFLICT = "lease_conflict"
+    TASK_TERMINAL = "task_terminal"
+    PROGRESS_SEQUENCE_CONFLICT = "progress_sequence_conflict"
+    NOT_PULL_TASK = "not_pull_task"
+
+
+class RepositoryError:
+    """Mixin carrying a stable repository outcome code."""
+
+    code: RepositoryErrorCode
+
+    def __init__(self, code: RepositoryErrorCode) -> None:
+        self.code = code
+        super().__init__(code.value)
+
+
+class RepositoryConflictError(RepositoryError, ValueError):
+    """A task state, lease, or replay conflict (also a ValueError for compatibility)."""
+
+
+class RepositoryNotFoundError(RepositoryError, KeyError):
+    """A required task does not exist (also a KeyError for compatibility)."""
 
 
 @runtime_checkable
@@ -33,10 +62,11 @@ class PullTaskRepository(TaskRepository, Protocol):
     docs/storage-contract-v1.md. HTTP and RPC layers must depend on this port,
     never on a concrete adapter class.
 
-    Expected domain errors are stable across adapters: ``KeyError`` denotes a
-    missing task where the operation requires one; ``ValueError`` denotes an
-    invalid transition, lease-fencing failure, or conflicting replay. Unexpected
-    adapter/driver exceptions are not silently converted into domain errors.
+    Expected domain errors are stable across adapters: ``RepositoryNotFoundError``
+    carries ``TASK_NOT_FOUND``; ``RepositoryConflictError`` carries one of
+    ``LEASE_CONFLICT``, ``TASK_TERMINAL``, ``PROGRESS_SEQUENCE_CONFLICT``, or
+    ``NOT_PULL_TASK``. Both retain KeyError/ValueError compatibility for existing
+    callers. Unexpected adapter/driver exceptions propagate unchanged.
     """
 
     def enqueue_pull(self, task: Task) -> None: ...
@@ -86,4 +116,12 @@ class ClosableRepository(Protocol):
     def close(self) -> None: ...
 
 
-__all__ = ["TaskRepository", "PullTaskRepository", "ClosableRepository"]
+__all__ = [
+    "RepositoryErrorCode",
+    "RepositoryError",
+    "RepositoryConflictError",
+    "RepositoryNotFoundError",
+    "TaskRepository",
+    "PullTaskRepository",
+    "ClosableRepository",
+]
