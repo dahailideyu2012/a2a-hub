@@ -409,3 +409,28 @@ def test_reclaimed_lease_fences_every_old_worker_operation_after_restart(tmp_pat
     assert completed.status.state == TaskState.COMPLETED
     assert replay is False
     store.close()
+
+@pytest.mark.parametrize(
+    ("operation", "body"),
+    [
+        ("start", {"lease_token": "l" * 32, "lease_version": 1}),
+        ("renew", {"lease_token": "l" * 32, "lease_version": 1}),
+        ("progress", {"lease_token": "l" * 32, "lease_version": 1, "sequence": 1, "message": "still missing"}),
+        ("result", {"lease_token": "l" * 32, "lease_version": 1, "result_key": "missing-result-01", "state": "completed", "output": "done"}),
+    ],
+)
+def test_connector_missing_task_returns_404(client, tmp_path, monkeypatch, operation, body):
+    import a2a_hub.server as server
+
+    store = SqliteTaskStore(str(tmp_path / f"missing-{operation}.db"))
+    monkeypatch.setattr(server.hub.registry, "store", store)
+    server.hub.settings.workbuddy_connector_allowed_agents = "echo-a"
+    response = client.post(
+        f"/integrations/workbuddy/v1/tasks/no-such-task/{operation}",
+        headers={"X-WorkBuddy-Connector-Token": "test-workbuddy-connector-token-0123456789"},
+        json=body,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "任务不存在"
+    store.close()
+
