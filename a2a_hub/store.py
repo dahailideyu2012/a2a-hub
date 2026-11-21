@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Optional
 
 from .models import Artifact, Message, Task, TaskState
-from .ports import TaskRepository
+from .ports import (
+    RepositoryConflictError,
+    RepositoryErrorCode,
+    RepositoryNotFoundError,
+    TaskRepository,
+)
 
 
 def serialize_task(task: Task) -> str:
@@ -269,7 +274,7 @@ class SqliteTaskStore(TaskStore):
             (row[1], row[2], row[3], row[4], row[5]),
             connector_id, lease_token, lease_version, now
         ):
-            raise ValueError("lease_conflict")
+            raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
         return deserialize_task(row[0]), row
 
     def renew_pull_lease(self, task_id: str, connector_id: str, lease_token: str,
@@ -282,14 +287,14 @@ class SqliteTaskStore(TaskStore):
             try:
                 task, _ = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
-                    raise ValueError("task_terminal")
+                    raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 cur = conn.execute(
                     "UPDATE tasks SET lease_expires_at=? WHERE id=? AND connector_id=? "
                     "AND lease_token=? AND lease_version=? AND lease_expires_at>?",
                     (expires, task_id, connector_id, lease_token, lease_version, now),
                 )
                 if cur.rowcount != 1:
-                    raise ValueError("lease_conflict")
+                    raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
                 conn.commit()
                 return expires
             except Exception:
@@ -305,7 +310,7 @@ class SqliteTaskStore(TaskStore):
             try:
                 task, _ = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
-                    raise ValueError("task_terminal")
+                    raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 task.touch(TaskState.WORKING, Message.agent("WorkBuddy 已开始执行"))
                 conn.execute(
                     "UPDATE tasks SET state=?,updated=?,payload=?,lease_state='running' "
@@ -314,7 +319,7 @@ class SqliteTaskStore(TaskStore):
                      connector_id, lease_token, lease_version, now),
                 )
                 if conn.execute("SELECT changes()").fetchone()[0] != 1:
-                    raise ValueError("lease_conflict")
+                    raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
                 conn.commit()
                 return task
             except Exception:
@@ -331,13 +336,13 @@ class SqliteTaskStore(TaskStore):
             try:
                 task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
-                    raise ValueError("task_terminal")
+                    raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 previous_seq, previous_hash = int(row[6]), row[7]
                 if sequence == previous_seq and previous_hash == digest:
                     conn.commit()
                     return task, True
                 if sequence <= previous_seq:
-                    raise ValueError("progress_sequence_conflict")
+                    raise RepositoryConflictError(RepositoryErrorCode.PROGRESS_SEQUENCE_CONFLICT)
                 task.touch(TaskState.WORKING, Message.agent(message))
                 task.history.append(Message.agent(message))
                 cur = conn.execute(
@@ -347,7 +352,7 @@ class SqliteTaskStore(TaskStore):
                      task_id, connector_id, lease_token, lease_version, now),
                 )
                 if cur.rowcount != 1:
-                    raise ValueError("lease_conflict")
+                    raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
                 conn.commit()
                 return task, False
             except Exception:
@@ -383,10 +388,10 @@ class SqliteTaskStore(TaskStore):
                         if same_lease and same_result:
                             conn.commit()
                             return existing_task, True
-                        raise ValueError("task_terminal")
+                        raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
-                    raise ValueError("task_terminal")
+                    raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 task.history.append(Message.agent(output))
                 if final_state == TaskState.COMPLETED and output:
                     task.add_artifact(Artifact.text(output, name="workbuddy-result"))
@@ -399,7 +404,7 @@ class SqliteTaskStore(TaskStore):
                      result_key, digest, task_id, connector_id, lease_token, lease_version, now),
                 )
                 if cur.rowcount != 1:
-                    raise ValueError("lease_conflict")
+                    raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
                 conn.commit()
                 return task, False
             except Exception:
@@ -417,12 +422,12 @@ class SqliteTaskStore(TaskStore):
                     "SELECT payload,execution_mode FROM tasks WHERE id=?", (task_id,)
                 ).fetchone()
                 if not row:
-                    raise KeyError("task_not_found")
+                    raise RepositoryNotFoundError(RepositoryErrorCode.TASK_NOT_FOUND)
                 if row[1] != "pull":
-                    raise ValueError("not_pull_task")
+                    raise RepositoryConflictError(RepositoryErrorCode.NOT_PULL_TASK)
                 task = deserialize_task(row[0])
                 if task.status.is_terminal:
-                    raise ValueError("task_terminal")
+                    raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
                 task.history.append(Message.agent("任务已由 ChatGPT 取消"))
                 task.touch(TaskState.CANCELED, Message.agent("任务已由 ChatGPT 取消"))
                 conn.execute(
