@@ -1091,20 +1091,24 @@ $py = 'C:\Users\Administrator\.workbuddy\binaries\python\envs\default\Scripts\py
 cp config/members.example.yaml config/members.yaml
 ```
 
-### 已知限制：反向方向（Hub → WorkBuddy）暂不通
+### Hub → WorkBuddy：Pull Connector（无需 headless CLI）
 
-`config/agents.yaml` 里的 `workbuddy` 条目依赖 **WorkBuddy 的 headless CLI**
-（`workbuddy -p {prompt}`），但本机安装的 WorkBuddy 是纯桌面应用，
-PATH 里没有 `workbuddy` 命令，因此 Hub **无法主动唤起** WorkBuddy。
-若要启用，需官方提供 CLI，再设置环境变量指向它：
+`config/agents.yaml` 中的 `workbuddy` 子进程适配器仍依赖官方 headless CLI；
+当前 WorkBuddy Personal 桌面版没有可验证的 `workbuddy -p` 命令，因此 Hub
+**不能通过本地子进程直接唤起桌面应用**。
 
-```bash
-WORKBUDDY_CLI=/path/to/workbuddy
-```
+但项目已实现独立的 WorkBuddy Personal Pull Connector：
 
-在此之前，两个方向的接入能力是：**WorkBuddy → Hub（可用，走 MCP）**，
-**Hub → WorkBuddy（待 CLI）**。
+- WorkBuddy 主动通过 MCP/HTTPS 向 Hub 领取一项任务；
+- 通过租约 token + version 完成 start / renew / progress / result；
+- ChatGPT 可从独立 REST ingress 查询任务状态和结果；
+- 真实 WorkBuddy 桌面 UI 的 claim → start → progress → renew → result
+  往返已在隔离环境完成验收（Issue #5 C2-B-13-01）。
 
+该方案是**用户触发的 Pull**，不是 Hub 主动推送/唤醒 WorkBuddy，也不依赖后台常驻轮询。
+因此当前可用方向为：**ChatGPT → Hub（受限 REST ingress）**、
+**WorkBuddy → Hub（MCP Pull）**、**Hub → WorkBuddy（WorkBuddy 主动领取任务）**；
+云端公网部署和 ChatGPT 云端 Action 实际连接仍未完成，不能宣称已上线。
 ---
 
 ## License
