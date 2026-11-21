@@ -430,7 +430,9 @@ def test_connector_missing_task_returns_404(client, tmp_path, monkeypatch, opera
         headers={"X-WorkBuddy-Connector-Token": "test-workbuddy-connector-token-0123456789"},
         json=body,
     )
-    assert response.status_code == 404
-    assert response.json()["detail"] == "任务不存在"
+    # Missing tasks and stale/invalid leases intentionally share one response
+    # so callers cannot use the connector API to enumerate task IDs.
+    assert response.status_code == 409
+    assert response.json()["detail"] == "lease_conflict"
     store.close()
 
