@@ -53,7 +53,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     def store_for(hub: Any) -> PullTaskRepository:
         if not isinstance(hub.registry.store, PullTaskRepository):
-            raise HTTPException(status_code=503, detail="Connector claim requires persistent SQLite task storage")
+            raise HTTPException(status_code=503, detail="Connector claim requires a task repository that supports the PullTaskRepository contract")
         return hub.registry.store
 
     def lease_args(body: LeaseRequest, settings: Any) -> tuple[str, str, int, int]:
