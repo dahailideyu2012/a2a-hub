@@ -226,3 +226,35 @@ def test_postgres_closed_pool_rejects_new_repository_operations():
     with pytest.raises(PoolClosed):
         store.get("closed-pool-probe")
 
+def test_postgres_cancel_fences_the_active_worker():
+    store = PostgresTaskStore(DSN)
+    task = Task(agentId="echo-a")
+    try:
+        store.enqueue_pull(task)
+        claim = store.claim_next("cancel-worker", 60, ["echo-a"])
+        assert claim is not None
+        canceled = store.cancel_pull_task(task.id)
+        assert canceled.status.state == TaskState.CANCELED
+
+        with pytest.raises(RepositoryConflictError):
+            store.renew_pull_lease(
+                task.id, "cancel-worker", claim["lease_token"], claim["lease_version"], 60
+            )
+        with pytest.raises(RepositoryConflictError):
+            store.start_pull_task(
+                task.id, "cancel-worker", claim["lease_token"], claim["lease_version"]
+            )
+        with pytest.raises(RepositoryConflictError):
+            store.progress_pull_task(
+                task.id, "cancel-worker", claim["lease_token"], claim["lease_version"],
+                1, "must be rejected after cancellation",
+            )
+        with pytest.raises(RepositoryConflictError):
+            store.finish_pull_task(
+                task.id, "cancel-worker", claim["lease_token"], claim["lease_version"],
+                "cancelled-result", "completed", "must not overwrite cancellation",
+            )
+    finally:
+        store.delete(task.id)
+        store.close()
+
