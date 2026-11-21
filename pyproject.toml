@@ -42,6 +42,9 @@ a2a-hub = "a2a_hub.cli:main"
 [tool.setuptools.packages.find]
 include = ["a2a_hub*"]
 
+[tool.setuptools.package-data]
+a2a_hub = ["migrations/postgres/*.sql"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
