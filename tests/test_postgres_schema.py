@@ -73,3 +73,15 @@ def test_postgres_schema_migration_is_transactional_and_versioned():
     assert "create table if not exists a2a_schema_migrations" in sql
     assert "values (1)" in sql
     assert "on conflict (version) do nothing" in sql
+
+
+def test_postgres_migration_is_packaged_with_runtime_module():
+    packaged = (
+        Path(__file__).resolve().parents[1]
+        / "a2a_hub"
+        / "migrations"
+        / "postgres"
+        / "001_initial.sql"
+    )
+    assert packaged.is_file()
+    assert packaged.read_text(encoding="utf-8") == SCHEMA.read_text(encoding="utf-8")
