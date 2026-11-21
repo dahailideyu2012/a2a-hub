@@ -38,7 +38,7 @@ class PostgresTaskStore:
         try:
             self._pool.open(wait=True, timeout=timeout)
             with self._pool.connection() as conn:
-                conn.execute("SET statement_timeout = %s", (max(1, int(timeout * 1000)),))
+                conn.execute("SELECT set_config('statement_timeout', %s, false)", (str(max(1, int(timeout * 1000))),))
                 if migrate:
                     sql_path = Path(__file__).resolve().parent.parent / "migrations" / "postgres" / "001_initial.sql"
                     conn.execute(sql_path.read_text(encoding="utf-8"))
