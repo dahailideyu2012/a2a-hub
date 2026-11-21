@@ -40,7 +40,7 @@ class PostgresTaskStore:
             with self._pool.connection() as conn:
                 conn.execute("SELECT set_config('statement_timeout', %s, false)", (str(max(1, int(timeout * 1000))),))
                 if migrate:
-                    sql_path = Path(__file__).resolve().parent.parent / "migrations" / "postgres" / "001_initial.sql"
+                    sql_path = Path(__file__).resolve().parent / "migrations" / "postgres" / "001_initial.sql"
                     conn.execute(sql_path.read_text(encoding="utf-8"))
                 version = conn.execute(
                     "SELECT max(version) AS version FROM a2a_schema_migrations"
