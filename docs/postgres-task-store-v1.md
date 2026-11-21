@@ -14,9 +14,9 @@ The adapter code has not yet passed fixed-SHA WorkBuddy review or execution agai
 - Partial indexes target the Pull queue and active leases; idempotency expiry has its own index.
 - `a2a_schema_migrations` records schema version 1. The migration is wrapped in a transaction and uses idempotent DDL / version insertion.
 
-## Required adapter transaction patterns
+## Implemented adapter transaction patterns
 
-The future adapter must claim work in one database transaction, not with a process lock. The intended pattern is:
+The adapter claims work in one database transaction using a CTE + `UPDATE ... RETURNING`; PostgreSQL row locks, not process-local locks, coordinate independent Hub processes. The claim query orders the locking clause after `LIMIT`:
 
 ```sql
 BEGIN;
@@ -26,29 +26,29 @@ WHERE execution_mode = 'pull'
   AND state IN ('submitted', 'working')
   AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= :now)
 ORDER BY created ASC, id ASC
-FOR UPDATE SKIP LOCKED
-LIMIT 1;
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
 -- Update the selected row's connector_id, fresh lease_token,
 -- lease_version = lease_version + 1, lease_expires_at and lease_state.
 COMMIT;
 ```
 
-The implementation should use a single CTE + `UPDATE ... RETURNING` where practical, so selection and lease assignment are one statement. Every lease mutation must compare connector ID, token, version, and unexpired lease in the update predicate. Result replay must preserve the existing exact-result rule.
+The implementation uses a single CTE + `UPDATE ... RETURNING`, so selection and lease assignment are one statement. Every lease mutation compares connector ID, token, version, and unexpired lease in the update predicate. Result replay preserves the exact-result rule for the original lease and payload.
 
 Task creation and idempotency binding must occur in the **same PostgreSQL transaction**. On an operation ID conflict, compare request hash and task ID; never overwrite a different binding. A retry with the same key and hash must return the original task.
 
-## Acceptance gates before enabling the backend
+## Remaining acceptance gates before enabling the backend
 
-1. Implement a synchronous adapter matching `TaskRepository` and `PullTaskRepository` (the current Hub call sites are synchronous).
-2. Add an optional PostgreSQL driver dependency; importing the application without that extra must continue to work for memory/SQLite users.
-3. Add connection-pool lifecycle, bounded connect/statement timeouts, startup connectivity + schema validation, and deterministic close behavior.
-4. Run the shared repository contract suite against PostgreSQL, including two independent processes racing to claim tasks.
-5. Add failure-injection tests for idempotency, lease expiry/reclaim, stale-worker fencing, cancellation races, and database outages.
+1. WorkBuddy must complete fixed-SHA source review, archive/blob verification, repository contract tests, full pytest, compileall, and loopback regression.
+2. Run the opt-in integration suite against a disposable PostgreSQL instance, including migration execution and schema validation.
+3. Verify two independent OS processes race to claim tasks without duplicate delivery.
+4. Verify lease expiry/reclaim fences every stale-worker mutation, exact result replay, idempotency conflict handling, and cancellation behavior.
+5. Exercise database outage/startup failure and pool shutdown behavior in an isolated environment.
 6. Keep the factory fail-closed: no fallback to memory or SQLite on connection, schema, or configuration errors.
-7. Only after fixed-SHA acceptance may PostgreSQL be described as implemented. Production migration/deployment still requires separate explicit approval.
+7. Only after all acceptance gates pass may PostgreSQL be enabled for production; migration/deployment still requires separate explicit approval.
 
 ## Current status
 
-The memory and SQLite backends remain supported. PostgreSQL runtime code is present on this feature branch but is **provisional** until fixed-SHA acceptance. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
+The memory and SQLite backends remain supported. PostgreSQL runtime code is present on this feature branch but remains **provisional** until fixed-SHA acceptance and real PostgreSQL integration tests pass. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
 
 The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. A real PostgreSQL instance is required to establish SQL/runtime and multi-process concurrency correctness.
