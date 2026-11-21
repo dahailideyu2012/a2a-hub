@@ -224,3 +224,38 @@ class TestChatGPTIngress:
             assert second.status_code == 429
         finally:
             server.hub.settings.chatgpt_ingress_rate_limit = original
+
+    def test_complete_restores_reservation_after_expiry_cleanup(self, tmp_path):
+        import asyncio
+        import sqlite3
+        from a2a_hub.chatgpt_ingress import IdempotencyConflict, IngressLedger
+
+        ledger = IngressLedger(str(tmp_path / "ingress-ledger.db"))
+        key = "expired-reservation-01"
+        request_hash = "a" * 64
+
+        async def scenario():
+            await ledger.reserve(key, request_hash)
+            conn = sqlite3.connect(str(ledger.path))
+            try:
+                conn.execute(
+                    "UPDATE chatgpt_ingress_requests SET expires_at=0 WHERE idempotency_key=?",
+                    (key,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            # A later reservation performs the normal expired-row cleanup.
+            await ledger.reserve("cleanup-trigger-0001", "b" * 64)
+            await ledger.complete(key, request_hash, "task-recovered-01")
+            assert "task-recovered-01" in await ledger.task_ids(10)
+
+            # Completion is idempotent for the same task, but cannot rebind it.
+            await ledger.complete(key, request_hash, "task-recovered-01")
+            with pytest.raises(IdempotencyConflict):
+                await ledger.complete(key, request_hash, "different-task-01")
+            with pytest.raises(IdempotencyConflict):
+                await ledger.complete(key, "c" * 64, "task-recovered-01")
+
+        asyncio.run(scenario())
