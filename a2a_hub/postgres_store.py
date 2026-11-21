@@ -12,6 +12,20 @@ from .ports import RepositoryConflictError, RepositoryErrorCode, RepositoryNotFo
 from .store import _INGRESS_TASK_IDEMPOTENCY_TTL, _ingress_idempotency_values, deserialize_task, serialize_task
 
 
+_CLAIM_NEXT_SQL = """WITH candidate AS (
+    SELECT id FROM tasks
+    WHERE execution_mode='pull' AND state IN ('submitted','working')
+      AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=%s)
+      AND (%s::text[] IS NULL OR agent_id=ANY(%s::text[]))
+    ORDER BY created ASC,id ASC
+    LIMIT 1 FOR UPDATE SKIP LOCKED
+)
+UPDATE tasks t SET connector_id=%s,lease_token=%s,
+    lease_version=t.lease_version+1,lease_expires_at=%s,lease_state='claimed'
+FROM candidate c WHERE t.id=c.id
+RETURNING t.payload,t.lease_version"""
+
+
 class PostgresTaskStore:
     """Multi-process task store backed by PostgreSQL row locks and transactions."""
 
@@ -197,17 +211,7 @@ class PostgresTaskStore:
         with self._conn() as conn:
             with conn.transaction():
                 row = conn.execute(
-                    """WITH candidate AS (
-                         SELECT id FROM tasks
-                         WHERE execution_mode='pull' AND state IN ('submitted','working')
-                           AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=%s)
-                           AND (%s::text[] IS NULL OR agent_id=ANY(%s::text[]))
-                         ORDER BY created ASC,id ASC LIMIT 1 FOR UPDATE SKIP LOCKED
-                       )
-                       UPDATE tasks t SET connector_id=%s,lease_token=%s,
-                         lease_version=t.lease_version+1,lease_expires_at=%s,lease_state='claimed'
-                       FROM candidate c WHERE t.id=c.id
-                       RETURNING t.payload,t.lease_version""",
+                    _CLAIM_NEXT_SQL,
                     (now, agent_ids, agent_ids, connector_id, token, expires),
                 ).fetchone()
                 if not row:
