@@ -57,6 +57,57 @@ class TestChatGPTIngress:
         assert first.json()["task"]["id"] == second.json()["task"]["id"]
         assert second.json()["idempotent_replay"] is True
 
+    def test_complete_failure_retry_recovers_same_task(self, client, monkeypatch):
+        from fastapi import HTTPException
+        from a2a_hub.chatgpt_ingress import IngressLedger
+        import a2a_hub.server as server
+
+        original_complete = IngressLedger.complete
+        calls = 0
+
+        async def fail_once(self, key, request_hash, task_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise HTTPException(status_code=502, detail="injected ledger completion failure")
+            await original_complete(self, key, request_hash, task_id)
+
+        monkeypatch.setattr(IngressLedger, "complete", fail_once)
+        key = "complete-failure-01"
+        first = client.post(f"{BASE}/tasks", headers=headers(key), json=payload())
+        assert first.status_code == 502
+        second = client.post(f"{BASE}/tasks", headers=headers(key), json=payload())
+        assert second.status_code == 200
+        assert second.json()["idempotent_replay"] is True
+        operation_id = __import__("hashlib").sha256(key.encode()).hexdigest()
+        tasks = server.hub.registry.store.list(100)
+        matching = [task for task in tasks if task.metadata.get("chatgpt_ingress_operation_id") == operation_id]
+        assert len(matching) == 1
+        assert second.json()["task"]["id"] == matching[0].id
+
+    def test_postwrite_read_failure_retry_replays_same_task(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        store = server.hub.registry.store
+        original_get = store.get
+        calls = 0
+
+        def fail_first_read(task_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            return original_get(task_id)
+
+        monkeypatch.setattr(store, "get", fail_first_read)
+        key = "postread-failure-01"
+        first = client.post(f"{BASE}/tasks", headers=headers(key), json=payload())
+        assert first.status_code == 502
+        second = client.post(f"{BASE}/tasks", headers=headers(key), json=payload())
+        assert second.status_code == 200
+        assert second.json()["idempotent_replay"] is True
+        assert len(store.list(100)) == 1
+
     def test_reused_key_with_different_payload_conflicts(self, client):
         key = "conflict-001"
         first = client.post(f"{BASE}/tasks", headers=headers(key), json=payload("first"))
