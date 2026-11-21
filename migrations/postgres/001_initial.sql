@@ -1,6 +1,5 @@
 -- PostgreSQL task-store schema v1.
--- This migration is intentionally schema-only. No PostgreSQL adapter or runtime
--- backend is enabled until the adapter passes the repository contract suite.
+-- Runtime adapter is provisional until fixed-SHA review and real PostgreSQL acceptance.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS a2a_schema_migrations (
