@@ -1,8 +1,10 @@
 # PostgreSQL Task Store V1 — Schema Slice
 
-Status: **schema groundwork only; not a usable runtime backend**.
+Status: **runtime adapter implemented on an isolated feature branch; not yet accepted or production-ready**.
 
-This slice adds `migrations/postgres/001_initial.sql` and static guardrail tests. It does not add a driver, connection pool, repository adapter, migration runner, PostgreSQL configuration, or production support. `A2A_STORE=postgres` must continue to fail closed.
+The branch now includes a synchronous `PostgresTaskStore`, bounded psycopg connection pool, startup migration/schema-version check, explicit `A2A_POSTGRES_DSN` configuration, and opt-in integration tests. The adapter is selected only when `A2A_STORE=postgres`; missing DSN, missing optional driver, connection failure, or schema failure must stop startup. No automatic fallback to SQLite or memory is permitted.
+
+The adapter code has not yet passed fixed-SHA WorkBuddy review or execution against a real PostgreSQL instance. Do not enable it in production.
 
 ## Schema contract
 
@@ -47,4 +49,6 @@ Task creation and idempotency binding must occur in the **same PostgreSQL transa
 
 ## Current status
 
-The existing memory and SQLite backends remain the only runtime backends. This schema-only commit is not evidence of PostgreSQL syntax execution or multi-instance correctness; WorkBuddy must report that limitation explicitly.
+The memory and SQLite backends remain supported. PostgreSQL runtime code is present on this feature branch but is **provisional** until fixed-SHA acceptance. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
+
+The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. A real PostgreSQL instance is required to establish SQL/runtime and multi-process concurrency correctness.
