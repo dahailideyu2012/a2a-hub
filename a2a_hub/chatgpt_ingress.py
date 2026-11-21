@@ -79,6 +79,17 @@ class IngressLedger:
             try:
                 return conn.execute("SELECT 1 FROM chatgpt_ingress_requests WHERE task_id=? AND expires_at>=? LIMIT 1", (task_id, time.time())).fetchone() is not None
             finally: conn.close()
+    async def pending_requests(self, limit: int) -> list[tuple[str, str]]:
+        async with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT idempotency_key, request_hash FROM chatgpt_ingress_requests "
+                    "WHERE task_id IS NULL AND expires_at>=? ORDER BY created_at ASC LIMIT ?",
+                    (time.time(), limit),
+                ).fetchall()
+                return [(str(row[0]), str(row[1])) for row in rows]
+            finally: conn.close()
     async def task_ids(self, limit: int) -> list[str]:
         async with self._lock:
             conn = self._connect()
@@ -140,6 +151,17 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
     async def guard(token: str | None, settings: Any, limiter: SlidingWindowLimiter) -> None:
         identity = authenticate(token, settings)
         if not await limiter.allow(identity): raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+
+    async def reconcile_pending(hub: Any, ledger: IngressLedger, limit: int = 100) -> None:
+        """Repair accepted tasks whose separate ingress-ledger completion was interrupted."""
+        for key, request_hash in await ledger.pending_requests(limit):
+            operation_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            try:
+                task = hub.registry.store.find_idempotent_task(operation_id, request_hash)
+            except (RepositoryConflictError, RepositoryNotFoundError):
+                continue
+            if task is not None:
+                await ledger.complete(key, request_hash, task.id)
 
     @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
@@ -211,13 +233,21 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             if task is None: raise HTTPException(status_code=502, detail="任务已提交但无法读取任务状态")
             return {"task": task_to_wire(task, include_internal=True), "idempotent_replay": False}
         except Exception:
-            await ledger.release(idempotency_key, request_hash)
+            # Keep the reservation when the task store proves acceptance may have
+            # committed. A retry or task-list reconciliation can then bind the ledger.
+            try:
+                accepted = find_existing_task()
+            except Exception:
+                accepted = None
+            if accepted is None:
+                await ledger.release(idempotency_key, request_hash)
             raise
 
     @router.get("/tasks")
     async def list_tasks(limit: int = Query(default=20, ge=1, le=100), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
         hub, settings, ledger, limiter = runtime()
         await guard(ingress_token, settings, limiter)
+        await reconcile_pending(hub, ledger, limit)
         tasks = []
         for task_id in await ledger.task_ids(limit):
             task = hub.registry.store.get(task_id)
