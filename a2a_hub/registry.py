@@ -31,7 +31,7 @@ from .models import (
     TaskState,
     TextPart,
 )
-from .ports import TaskRepository
+from .ports import ClosableRepository, TaskRepository
 
 log = logging.getLogger("a2a_hub.registry")
 
@@ -486,9 +486,8 @@ class AgentRegistry:
         # The registry owns the task store lifecycle. Close persistent stores
         # during FastAPI lifespan shutdown so SQLite releases file handles,
         # especially on Windows where the DB cannot be unlinked while open.
-        close_store = getattr(self.store, "close", None)
-        if callable(close_store):
-            close_store()
+        if isinstance(self.store, ClosableRepository):
+            self.store.close()
 
 
 # --------------------------------------------------------------------------- #
