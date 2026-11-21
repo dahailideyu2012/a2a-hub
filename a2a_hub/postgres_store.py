@@ -236,7 +236,7 @@ class PostgresTaskStore:
     def _leased(self, conn, task_id: str, connector: str, token: str, version: int, now: float):
         row = conn.execute(
             """SELECT payload,connector_id,lease_token,lease_version,lease_expires_at,
-                      execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash
+                      execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash,lease_state
                FROM tasks WHERE id=%s FOR UPDATE""", (task_id,)
         ).fetchone()
         if not self._valid_lease(row, connector, token, version, now):
@@ -266,9 +266,11 @@ class PostgresTaskStore:
         now = time.time()
         with self._conn() as conn:
             with conn.transaction():
-                task, _ = self._leased(conn, task_id, connector_id, lease_token, lease_version, now)
+                task, row = self._leased(conn, task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
                     raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
+                if task.status.state == TaskState.WORKING and row["lease_state"] == "running":
+                    return task
                 task.touch(TaskState.WORKING, Message.agent("WorkBuddy 已开始执行"))
                 cur = conn.execute(
                     """UPDATE tasks SET state=%s,updated=%s,payload=%s,lease_state='running'
