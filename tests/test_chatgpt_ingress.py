@@ -47,6 +47,8 @@ class TestChatGPTIngress:
         body = response.json()
         task_id = body["task"]["id"]
         assert body["idempotent_replay"] is False
+        assert "chatgpt_ingress_operation_id" not in body["task"]["metadata"]
+        assert "chatgpt_ingress_request_hash" not in body["task"]["metadata"]
         assert client.get(f"{BASE}/tasks/{task_id}", headers=headers()).status_code == 200
 
     def test_same_idempotency_key_replays_same_task(self, client):
