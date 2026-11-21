@@ -125,7 +125,8 @@ a2a_hub/
 ├── models.py         A2A 数据模型：AgentCard / Message / Part / Task / Artifact / 事件
 ├── config.py         环境变量 + agents.yaml 双来源配置，支持 ${ENV:-default} 展开
 ├── bus.py            事件总线：按 taskId 订阅 + 全局频道（SSE 的底座）
-├── store.py          任务持久化：memory / sqlite
+├── store.py          任务存储工厂与 memory / sqlite 后端
+├── postgres_store.py PostgreSQL 多进程任务存储（可选依赖）
 ├── registry.py       Agent 注册中心：发现、健康检查、打分路由、任务执行
 ├── relations.py      社交图谱：成员 / 关系（双向边）/ 权限分档（单向授予）/ 门禁判定 / 审计 / 圈层发现
 ├── autonomy.py       自主交友策略：§6 判定顺序（纯函数）/ 缺口信号 / 巡航循环
@@ -830,8 +831,11 @@ python run.py social deny ap-xxxx --reason "标签不符"
 | `A2A_HOST` / `A2A_PORT` | `0.0.0.0` / `8080` | 监听地址 |
 | `A2A_PUBLIC_URL` | `http://localhost:8080` | 写进 Agent Card 的对外地址 |
 | `A2A_AGENTS_FILE` | `./config/agents.yaml` | agent 声明文件 |
-| `A2A_STORE` | `memory` | `memory` 或 `sqlite` |
+| `A2A_STORE` | `memory` | `memory`、`sqlite` 或 `postgres`（PostgreSQL 后端为可选功能） |
 | `A2A_DB_PATH` | `./data/a2a_hub.db` | sqlite 路径 |
+| `A2A_POSTGRES_DSN` | 空 | `A2A_STORE=postgres` 时必填；建议使用最小权限专用用户 |
+| `A2A_POSTGRES_POOL_MIN_SIZE` / `MAX_SIZE` | `1` / `8` | PostgreSQL 连接池边界 |
+| `A2A_POSTGRES_CONNECT_TIMEOUT` | `5.0` | PostgreSQL 连接和语句超时（秒） |
 | `A2A_TASK_TIMEOUT` | `300` | 任务超时（秒） |
 | `A2A_API_TOKEN` | 空 | 设置后 `/rpc` 等接口需要 Bearer Token |
 | `A2A_REQUIRE_AUTH` | `false` | `true` 时未设 Token 则拒绝启动 |
