@@ -58,6 +58,10 @@ def task_to_wire(task: Task, include_internal: bool = False) -> dict:
     ``False`` 时是纯净的 A2A 线上格式。
     """
     data = task.model_dump(mode="json")
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        metadata.pop("chatgpt_ingress_operation_id", None)
+        metadata.pop("chatgpt_ingress_request_hash", None)
     if include_internal:
         data["agentId"] = task.agentId
         data["createdAt"] = task.createdAt
