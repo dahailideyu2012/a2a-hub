@@ -114,7 +114,9 @@ class PostgresTaskStore:
 
     def delete(self, task_id: str) -> None:
         with self._conn() as conn:
-            conn.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+            with conn.transaction():
+                conn.execute("DELETE FROM task_idempotency WHERE task_id=%s", (task_id,))
+                conn.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
 
     def enqueue_pull(self, task: Task) -> None:
         now = time.time()
