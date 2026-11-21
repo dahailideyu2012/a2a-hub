@@ -58,7 +58,7 @@ class PostgresTaskStore:
         try:
             self._pool.open(wait=True, timeout=timeout)
             with self._pool.connection() as conn:
-                 if migrate:
+                if migrate:
                     sql_path = Path(__file__).resolve().parent / "migrations" / "postgres" / "001_initial.sql"
                     conn.execute(sql_path.read_text(encoding="utf-8"))
                 version = conn.execute(
