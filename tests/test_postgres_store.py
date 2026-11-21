@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="A2A_TEST_POSTGRES_DSN is not co
 
 def _claim_in_independent_process(dsn: str, connector_id: str) -> str | None:
     """Create a fresh pool in a child process and claim one queued task."""
-    store = PostgresTaskStore(dsn)
+    store = PostgresTaskStore(dsn, migrate=False)
     try:
         claim = store.claim_next(connector_id, 60, ["echo-a"])
         return claim["task"].id if claim else None
@@ -83,7 +83,6 @@ def test_postgres_independent_processes_claim_distinct_tasks_concurrently():
         # Close all parent-side pool threads before the process pool forks/spawns.
         setup.close()
 
-    cleanup = None
     try:
         from concurrent.futures import ProcessPoolExecutor
         # Separate OS processes and pools exercise PostgreSQL row locking rather
@@ -180,4 +179,27 @@ def test_postgres_pull_enqueue_binds_idempotency_atomically():
     finally:
         store.delete(task.id)
         store.delete(duplicate.id)
+        store.close()
+
+
+def test_postgres_core_task_repository_contract():
+    store = PostgresTaskStore(DSN)
+    task = Task(agentId="echo-a")
+    try:
+        assert store.get(task.id) is None
+        store.save(task)
+        loaded = store.get(task.id)
+        assert loaded is not None
+        assert loaded.id == task.id
+        assert loaded.agentId == "echo-a"
+        assert any(item.id == task.id for item in store.list(limit=100))
+
+        task.touch(TaskState.WORKING)
+        store.save(task)
+        assert store.get(task.id).status.state == TaskState.WORKING
+
+        store.delete(task.id)
+        assert store.get(task.id) is None
+    finally:
+        store.delete(task.id)
         store.close()
