@@ -73,13 +73,18 @@ def test_postgres_pull_lifecycle_and_idempotent_replay():
         store.close()
 
 
-def test_postgres_independent_pools_claim_distinct_tasks_concurrently():
-    first = PostgresTaskStore(DSN)
-    second = PostgresTaskStore(DSN)
+def test_postgres_independent_processes_claim_distinct_tasks_concurrently():
+    setup = PostgresTaskStore(DSN)
     tasks = [Task(agentId="echo-a"), Task(agentId="echo-a")]
     try:
         for task in tasks:
-            first.enqueue_pull(task)
+            setup.enqueue_pull(task)
+    finally:
+        # Close all parent-side pool threads before the process pool forks/spawns.
+        setup.close()
+
+    cleanup = None
+    try:
         from concurrent.futures import ProcessPoolExecutor
         # Separate OS processes and pools exercise PostgreSQL row locking rather
         # than relying on a shared Python lock or connection.
@@ -93,11 +98,12 @@ def test_postgres_independent_pools_claim_distinct_tasks_concurrently():
         assert len(claimed_ids) == 2
         assert len(set(claimed_ids)) == 2
     finally:
-        for task in tasks:
-            first.delete(task.id)
-        first.close()
-        second.close()
-
+        cleanup = PostgresTaskStore(DSN)
+        try:
+            for task in tasks:
+                cleanup.delete(task.id)
+        finally:
+            cleanup.close()
 
 def test_postgres_reclaimed_lease_fences_previous_worker():
     first = PostgresTaskStore(DSN)
