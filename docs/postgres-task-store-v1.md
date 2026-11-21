@@ -1,10 +1,10 @@
 # PostgreSQL Task Store V1 — Runtime Adapter
 
-Status: **runtime adapter implemented on an isolated feature branch; not yet accepted or production-ready**.
+Status: **runtime adapter implemented on an isolated feature branch; static acceptance passed; real PostgreSQL CI execution is pending**.
 
 The branch now includes a synchronous `PostgresTaskStore`, bounded psycopg connection pool, startup migration/schema-version check, explicit `A2A_POSTGRES_DSN` configuration, and opt-in integration tests. The adapter is selected only when `A2A_STORE=postgres`; missing DSN, missing optional driver, connection failure, or schema failure must stop startup. No automatic fallback to SQLite or memory is permitted.
 
-The adapter code has not yet passed fixed-SHA WorkBuddy review or execution against a real PostgreSQL instance. Do not enable it in production.
+WorkBuddy fixed-SHA review for `3838d30de8bffa81a49ad05f2969ea77e152643e` passed: 714 passed, 5 PostgreSQL integration tests skipped, 0 failed; compileall and isolated loopback acceptance passed. The real PostgreSQL integration tests were not run in WorkBuddy's local environment because no disposable PostgreSQL instance or driver was available. A dedicated GitHub Actions workflow now provisions an ephemeral PostgreSQL 16 service and runs the opt-in integration suite, full tests, loopback acceptance, and wheel-content check. Its result must be reviewed before treating PostgreSQL runtime behavior as accepted. Do not enable it in production.
 
 ## Schema contract
 
@@ -51,4 +51,4 @@ Task creation and idempotency binding must occur in the **same PostgreSQL transa
 
 The memory and SQLite backends remain supported. PostgreSQL runtime code is present on this feature branch but remains **provisional** until fixed-SHA acceptance and real PostgreSQL integration tests pass. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
 
-The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. A real PostgreSQL instance is required to establish SQL/runtime and multi-process concurrency correctness.
+The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. The dedicated GitHub Actions workflow supplies an ephemeral PostgreSQL 16 database through a service container; it does not use production credentials or infrastructure. A successful run is required to establish SQL/runtime and multi-process concurrency correctness.
