@@ -133,3 +133,34 @@ def test_idempotent_retry_does_not_retry_conflicts_or_claim(monkeypatch):
  result=server.tool_claim({})
  assert result["isError"] is True
  assert claim_attempts==["claim"]
+
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_idempotent_retry_accepts_only_transient_server_statuses(monkeypatch, status):
+ attempts = []
+ def flaky_post(path, payload):
+  attempts.append((path, payload.copy()))
+  if len(attempts) == 1:
+   raise RuntimeError(f"Hub HTTP {status}: temporary")
+  return {"ok": True}
+ monkeypatch.setattr(server, "_post", flaky_post)
+ monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+ payload = {"sequence": 3, "message": "stable"}
+ assert server._post_idempotent("tasks/task-1/progress", payload) == {"ok": True}
+ assert len(attempts) == 2
+ assert attempts[0] == attempts[1] == ("tasks/task-1/progress", payload)
+
+
+def test_idempotent_retry_stops_after_three_total_attempts(monkeypatch):
+ attempts = []
+ def unavailable(path, payload):
+  attempts.append((path, payload.copy()))
+  raise RuntimeError("Hub HTTP 503: still unavailable")
+ monkeypatch.setattr(server, "_post", unavailable)
+ monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+ payload = {"result_key": "task-1:stable-result", "state": "completed", "output": "done"}
+ with pytest.raises(RuntimeError, match="503"):
+  server._post_idempotent("tasks/task-1/result", payload)
+ assert len(attempts) == 3
+ assert attempts[0] == attempts[1] == attempts[2]
