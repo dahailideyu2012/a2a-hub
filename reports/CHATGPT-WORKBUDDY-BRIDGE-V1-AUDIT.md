@@ -5,6 +5,8 @@
 > 每项结论标注 PASS / FAIL / NOT RUN / BLOCKED，PASS 附真实命令、退出码、输出证据。
 > 本报告只陈述事实与证据，不含架构设计结论——设计归 ChatGPT。
 
+> **状态更新（2026-11-21）：** 本报告是 2026-11-20 的历史基线审计快照，不代表当前代码状态。报告中的 R6（`/health` 版本号不一致）已在 `2f088480b7c94b7d2cb6043c4d571ca7d1965555` 修复，并由 `tests/test_server.py::TestDiscovery::test_health` 回归覆盖。后续审查以最新固定 SHA 和 Issue #5 验收报告为准。
+
 ## 1. 基线与环境
 
 | 项 | 值 |
