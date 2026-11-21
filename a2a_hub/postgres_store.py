@@ -31,22 +31,27 @@ class PostgresTaskStore:
             ) from exc
         self._pool = ConnectionPool(
             conninfo=dsn, min_size=min_size, max_size=max_size,
-            timeout=timeout, kwargs={"row_factory": dict_row,
-                                     "connect_timeout": max(1, int(timeout))},
+            timeout=timeout,
+            kwargs={
+                "row_factory": dict_row,
+                "connect_timeout": max(1, int(timeout)),
+                # Apply the statement timeout to every pooled connection, not
+                # only the one borrowed during startup validation.
+                "options": f"-c statement_timeout={max(1, int(timeout * 1000))}",
+            },
             open=False,
         )
         try:
             self._pool.open(wait=True, timeout=timeout)
             with self._pool.connection() as conn:
-                conn.execute("SELECT set_config('statement_timeout', %s, false)", (str(max(1, int(timeout * 1000))),))
-                if migrate:
+                 if migrate:
                     sql_path = Path(__file__).resolve().parent / "migrations" / "postgres" / "001_initial.sql"
                     conn.execute(sql_path.read_text(encoding="utf-8"))
                 version = conn.execute(
                     "SELECT max(version) AS version FROM a2a_schema_migrations"
                 ).fetchone()
-                if not version or version["version"] is None or int(version["version"]) < 1:
-                    raise RuntimeError("PostgreSQL schema version 1 is required")
+                if not version or version["version"] is None or int(version["version"]) != 1:
+                    raise RuntimeError("PostgreSQL schema version 1 is required; unsupported schema version")
                 found = conn.execute(
                     """SELECT table_name,column_name FROM information_schema.columns
                        WHERE table_schema=current_schema()
@@ -94,18 +99,21 @@ class PostgresTaskStore:
                 if values:
                     op, digest = values
                     conn.execute("DELETE FROM task_idempotency WHERE expires_at < %s", (now,))
+                    # INSERT ... ON CONFLICT serializes concurrent first writers.
+                    # A SELECT FOR UPDATE alone cannot lock a missing key/gap in
+                    # PostgreSQL, so two first writers could race into a raw
+                    # unique-violation instead of the repository conflict contract.
+                    conn.execute(
+                        """INSERT INTO task_idempotency(operation_id,request_hash,task_id,created_at,expires_at)
+                           VALUES(%s,%s,%s,%s,%s) ON CONFLICT(operation_id) DO NOTHING""",
+                        (op, digest, task.id, now, now + _INGRESS_TASK_IDEMPOTENCY_TTL),
+                    )
                     row = conn.execute(
                         "SELECT request_hash,task_id FROM task_idempotency WHERE operation_id=%s FOR UPDATE",
                         (op,),
                     ).fetchone()
-                    if row:
-                        if row["request_hash"] != digest or row["task_id"] != task.id:
-                            raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
-                    else:
-                        conn.execute(
-                            "INSERT INTO task_idempotency(operation_id,request_hash,task_id,created_at,expires_at) VALUES(%s,%s,%s,%s,%s)",
-                            (op, digest, task.id, now, now + _INGRESS_TASK_IDEMPOTENCY_TTL),
-                        )
+                    if not row or row["request_hash"] != digest or row["task_id"] != task.id:
+                        raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
 
     def find_idempotent_task(self, operation_id: str, request_hash: str) -> Optional[Task]:
         with self._conn() as conn:
@@ -162,7 +170,7 @@ class PostgresTaskStore:
                         (op, digest, task.id, now, now + _INGRESS_TASK_IDEMPOTENCY_TTL),
                     )
                     row = conn.execute(
-                        "SELECT request_hash,task_id FROM task_idempotency WHERE operation_id=%s", (op,)
+                        "SELECT request_hash,task_id FROM task_idempotency WHERE operation_id=%s FOR UPDATE", (op,)
                     ).fetchone()
                     if not row or row["request_hash"] != digest or row["task_id"] != task.id:
                         raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
@@ -179,6 +187,8 @@ class PostgresTaskStore:
 
     def claim_next(self, connector_id: str, lease_seconds: int = 120,
                    agent_ids: Optional[list[str]] = None) -> Optional[dict[str, Any]]:
+        if not connector_id or not connector_id.strip():
+            raise ValueError("connector_id must not be empty")
         if agent_ids is not None and not agent_ids:
             return None
         now = time.time()
@@ -192,7 +202,7 @@ class PostgresTaskStore:
                          WHERE execution_mode='pull' AND state IN ('submitted','working')
                            AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=%s)
                            AND (%s::text[] IS NULL OR agent_id=ANY(%s::text[]))
-                         ORDER BY created ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
+                         ORDER BY created ASC,id ASC LIMIT 1 FOR UPDATE SKIP LOCKED
                        )
                        UPDATE tasks t SET connector_id=%s,lease_token=%s,
                          lease_version=t.lease_version+1,lease_expires_at=%s,lease_state='claimed'
