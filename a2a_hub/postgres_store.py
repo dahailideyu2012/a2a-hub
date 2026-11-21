@@ -47,6 +47,30 @@ class PostgresTaskStore:
                 ).fetchone()
                 if not version or version["version"] is None or int(version["version"]) < 1:
                     raise RuntimeError("PostgreSQL schema version 1 is required")
+                found = conn.execute(
+                    """SELECT table_name,column_name FROM information_schema.columns
+                       WHERE table_schema=current_schema()
+                         AND table_name IN ('tasks','task_idempotency')"""
+                ).fetchall()
+                columns = {(row["table_name"], row["column_name"]) for row in found}
+                required = {
+                    ("tasks", name) for name in (
+                        "id", "agent_id", "state", "created", "updated", "payload",
+                        "execution_mode", "connector_id", "lease_token", "lease_version",
+                        "lease_expires_at", "lease_state", "last_progress_seq",
+                        "last_progress_hash", "result_key", "result_hash",
+                    )
+                } | {
+                    ("task_idempotency", name) for name in (
+                        "operation_id", "request_hash", "task_id", "created_at", "expires_at",
+                    )
+                }
+                missing = sorted(required - columns)
+                if missing:
+                    raise RuntimeError(
+                        "PostgreSQL schema is incomplete; missing columns: "
+                        + ", ".join(f"{table}.{column}" for table, column in missing)
+                    )
         except Exception:
             self._pool.close()
             raise
