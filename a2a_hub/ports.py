@@ -1,7 +1,7 @@
 """Provider-neutral repository ports used by Hub services and routes.
 
-These protocols describe behavior only. Concrete adapters (currently SQLite and
-in-memory task stores) remain responsible for transactions and durability.
+These protocols describe behavior only. Memory, SQLite, and PostgreSQL adapters
+remain responsible for their own transactions and durability.
 """
 
 from __future__ import annotations
