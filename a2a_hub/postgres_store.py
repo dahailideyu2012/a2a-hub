@@ -131,6 +131,7 @@ class PostgresTaskStore:
                 )
                 if values:
                     op, digest = values
+                    conn.execute("DELETE FROM task_idempotency WHERE expires_at < %s", (now,))
                     conn.execute(
                         """INSERT INTO task_idempotency(operation_id,request_hash,task_id,created_at,expires_at)
                            VALUES(%s,%s,%s,%s,%s) ON CONFLICT(operation_id) DO NOTHING""",
