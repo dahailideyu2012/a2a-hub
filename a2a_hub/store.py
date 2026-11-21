@@ -1,4 +1,4 @@
-"""任务与上下文的存储层 —— memory / sqlite 两种后端。"""
+"""任务存储工厂与 memory / sqlite / PostgreSQL 后端装配。"""
 
 from __future__ import annotations
 
