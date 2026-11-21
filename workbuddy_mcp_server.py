@@ -52,6 +52,23 @@ def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
  except (UnicodeDecodeError,json.JSONDecodeError): raise RuntimeError("Hub 返回了无效 JSON") from None
+def _post_idempotent(path: str, payload: dict[str,Any]) -> dict[str,Any]:
+ """Retry only operations whose server contract is idempotent.
+
+ Progress is keyed by sequence+message and result by a stable result_key, so
+ retrying after a lost response cannot append duplicate progress or results.
+ Claim/start/renew are deliberately excluded because they are not replay-safe.
+ """
+ retryable_prefixes = ("无法连接 Hub：", "Hub HTTP 500:", "Hub HTTP 502:", "Hub HTTP 503:", "Hub HTTP 504:")
+ for attempt in range(3):
+  try:
+   return _post(path, payload)
+  except RuntimeError as exc:
+   if attempt == 2 or not str(exc).startswith(retryable_prefixes):
+    raise
+   time.sleep(0.2 * (attempt + 1))
+ raise RuntimeError("Hub 请求重试失败")
+
 def _ok(data: Any) -> dict[str,Any]:
  return {"content":[{"type":"text","text":json.dumps(data,ensure_ascii=False,indent=2,default=str)}],"isError":False}
 def _err(message: str) -> dict[str,Any]:
@@ -105,10 +122,10 @@ def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
  return _ok(result)
 def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"sequence":args.get("sequence"),"message":args.get("message")}
- return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload))
+ return _ok(_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload))
 def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
- result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
+ result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
  with LEASES_LOCK: LEASES.pop(task_id,None)
  return _ok(result)
 TOOL_FUNCS={"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
