@@ -20,6 +20,19 @@ from .ports import (
 )
 
 
+_INGRESS_TASK_IDEMPOTENCY_TTL = 24 * 60 * 60
+
+
+def _ingress_idempotency_values(task: Task) -> tuple[str, str] | None:
+    operation_id = task.metadata.get("chatgpt_ingress_operation_id")
+    request_hash = task.metadata.get("chatgpt_ingress_request_hash")
+    if operation_id is None and request_hash is None:
+        return None
+    if not isinstance(operation_id, str) or not operation_id or not isinstance(request_hash, str) or not request_hash:
+        raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
+    return operation_id, request_hash
+
+
 def serialize_task(task: Task) -> str:
     """持久化序列化。
 
@@ -74,9 +87,20 @@ class MemoryTaskStore(TaskStore):
         self._order: list[str] = []
         self._max = max_items
         self._lock = threading.Lock()
+        self._idempotency: dict[str, tuple[str, str, float]] = {}
 
     def save(self, task: Task) -> None:
         with self._lock:
+            values = _ingress_idempotency_values(task)
+            if values is not None:
+                operation_id, request_hash = values
+                now = time.time()
+                existing = self._idempotency.get(operation_id)
+                if existing and existing[2] >= now:
+                    if existing[0] != request_hash or existing[1] != task.id:
+                        raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
+                else:
+                    self._idempotency[operation_id] = (request_hash, task.id, now + _INGRESS_TASK_IDEMPOTENCY_TTL)
             if task.id not in self._data:
                 self._order.append(task.id)
             self._data[task.id] = task
@@ -86,6 +110,21 @@ class MemoryTaskStore(TaskStore):
 
     def get(self, task_id: str) -> Optional[Task]:
         return self._data.get(task_id)
+
+    def find_idempotent_task(self, operation_id: str, request_hash: str) -> Optional[Task]:
+        with self._lock:
+            entry = self._idempotency.get(operation_id)
+            if entry is None:
+                return None
+            if entry[2] < time.time():
+                self._idempotency.pop(operation_id, None)
+                return None
+            if entry[0] != request_hash:
+                raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
+            task = self._data.get(entry[1])
+            if task is None:
+                raise RepositoryNotFoundError(RepositoryErrorCode.TASK_NOT_FOUND)
+            return task
 
     def list(self, limit: int = 100) -> list[Task]:
         with self._lock:
@@ -147,26 +186,74 @@ class SqliteTaskStore(TaskStore):
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated DESC)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_pull_queue ON tasks(execution_mode, state, created)")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_idempotency (
+                operation_id TEXT PRIMARY KEY,
+                request_hash TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_task_idempotency_task ON task_idempotency(task_id)")
         self._conn.commit()
+
+    def _remember_idempotency(self, task: Task) -> None:
+        values = _ingress_idempotency_values(task)
+        if values is None:
+            return
+        operation_id, request_hash = values
+        now = time.time()
+        self._conn.execute("DELETE FROM task_idempotency WHERE expires_at < ?", (now,))
+        existing = self._conn.execute(
+            "SELECT request_hash, task_id FROM task_idempotency WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if existing:
+            if existing[0] != request_hash or existing[1] != task.id:
+                raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
+            return
+        self._conn.execute(
+            "INSERT INTO task_idempotency(operation_id,request_hash,task_id,created_at,expires_at) "
+            "VALUES(?,?,?,?,?)",
+            (operation_id, request_hash, task.id, now, now + _INGRESS_TASK_IDEMPOTENCY_TTL),
+        )
 
     def save(self, task: Task) -> None:
         payload = serialize_task(task)
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO tasks(id, agent_id, state, created, updated, payload) "
-                "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                "agent_id=excluded.agent_id, state=excluded.state, "
-                "updated=excluded.updated, payload=excluded.payload",
-                (
-                    task.id,
-                    task.agentId or "",
-                    task.status.state.value,
-                    task.createdAt,
-                    task.updatedAt,
-                    payload,
-                ),
-            )
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "INSERT INTO tasks(id, agent_id, state, created, updated, payload) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "agent_id=excluded.agent_id, state=excluded.state, "
+                    "updated=excluded.updated, payload=excluded.payload",
+                    (task.id, task.agentId or "", task.status.state.value,
+                     task.createdAt, task.updatedAt, payload),
+                )
+                self._remember_idempotency(task)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def find_idempotent_task(self, operation_id: str, request_hash: str) -> Optional[Task]:
+        now = time.time()
+        with self._lock:
+            self._conn.execute("DELETE FROM task_idempotency WHERE expires_at < ?", (now,))
+            row = self._conn.execute(
+                "SELECT i.request_hash, t.payload FROM task_idempotency i "
+                "LEFT JOIN tasks t ON t.id=i.task_id WHERE i.operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[0] != request_hash:
+            raise RepositoryConflictError(RepositoryErrorCode.IDEMPOTENCY_CONFLICT)
+        if row[1] is None:
+            raise RepositoryNotFoundError(RepositoryErrorCode.TASK_NOT_FOUND)
+        return deserialize_task(row[1])
 
     def get(self, task_id: str) -> Optional[Task]:
         with self._lock:
@@ -199,6 +286,7 @@ class SqliteTaskStore(TaskStore):
                     (task.id, task.agentId or "", task.status.state.value,
                      task.createdAt, task.updatedAt, payload),
                 )
+                self._remember_idempotency(task)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
