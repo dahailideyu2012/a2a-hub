@@ -44,7 +44,7 @@ def test_postgres_pull_lifecycle_and_idempotent_replay():
         assert replay is True
         assert replayed_progress.id == progress.id
 
-        result, replay = store.finish_pull_task(
+        _result, replay = store.finish_pull_task(
             task_id, "integration-worker", lease["lease_token"],
             lease["lease_version"], task_id + ":result", "completed", "integration result",
         )
