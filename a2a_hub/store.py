@@ -362,6 +362,9 @@ class SqliteTaskStore(TaskStore):
             "execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash "
             "FROM tasks WHERE id=?", (task_id,)
         ).fetchone()
+        # Deliberately collapse missing tasks and stale/invalid leases into the
+        # same conflict. This prevents the connector API from becoming a task-ID
+        # existence oracle for callers that do not hold the current lease.
         if not row or not self._lease_matches(
             (row[1], row[2], row[3], row[4], row[5]),
             connector_id, lease_token, lease_version, now
