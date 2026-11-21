@@ -45,8 +45,11 @@ class RepositoryNotFoundError(RepositoryError, KeyError):
 class TaskRepository(Protocol):
     """Core task persistence contract shared by Hub callers.
 
-    ``get`` returns ``None`` when a task is absent. Adapter/driver failures
-    propagate unchanged; callers translate them at the transport boundary.
+    ``get`` returns ``None`` when a task is absent. ``find_idempotent_task``
+    returns ``None`` when no unexpired mapping exists and raises
+    ``RepositoryConflictError(IDEMPOTENCY_CONFLICT)`` for a hash mismatch.
+    Adapter/driver failures propagate unchanged; callers translate them at the
+    transport boundary.
     """
 
     def save(self, task: Task) -> None: ...
