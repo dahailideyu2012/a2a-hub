@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .bus import STREAM_END
 from .store import task_to_wire
+from .ports import RepositoryConflictError, RepositoryNotFoundError
 
 log = logging.getLogger("a2a_hub.chatgpt_ingress")
 _IDEMPOTENCY_TTL = 24 * 60 * 60
@@ -159,20 +160,43 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not record.spec.enabled: raise HTTPException(status_code=403, detail="白名单 agent 当前已禁用")
         canonical = json.dumps(payload.model_dump(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        try: state, existing_task_id = await ledger.reserve(idempotency_key, request_hash)
-        except IdempotencyConflict: raise HTTPException(status_code=409, detail="Idempotency-Key 已用于不同请求")
-        except IdempotencyPending: raise HTTPException(status_code=409, detail="相同请求正在处理中，请稍后重试")
+        operation_id = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+
+        def find_existing_task():
+            try:
+                return hub.registry.store.find_idempotent_task(operation_id, request_hash)
+            except RepositoryConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except RepositoryNotFoundError as exc:
+                raise HTTPException(status_code=410, detail="幂等键已关联的任务已不存在") from exc
+
+        try:
+            state, existing_task_id = await ledger.reserve(idempotency_key, request_hash)
+        except IdempotencyConflict:
+            raise HTTPException(status_code=409, detail="Idempotency-Key 已用于不同请求")
+        except IdempotencyPending:
+            recovered = find_existing_task()
+            if recovered is None:
+                raise HTTPException(status_code=409, detail="相同请求正在处理中，请稍后重试")
+            await ledger.complete(idempotency_key, request_hash, recovered.id)
+            return {"task": task_to_wire(recovered, include_internal=True), "idempotent_replay": True}
         if state == "replay" and existing_task_id:
             existing = hub.registry.store.get(existing_task_id)
             if existing is None: raise HTTPException(status_code=410, detail="幂等记录存在，但任务已不在任务存储中")
             return {"task": task_to_wire(existing, include_internal=True), "idempotent_replay": True}
+        recovered = find_existing_task()
+        if recovered is not None:
+            await ledger.complete(idempotency_key, request_hash, recovered.id)
+            return {"task": task_to_wire(recovered, include_internal=True), "idempotent_replay": True}
         try:
             rpc_result = await hub.dispatcher.handle({
                 "jsonrpc": "2.0", "id": "chatgpt-ingress",
                 "method": "tasks/enqueue" if payload.mode == "pull" else "message/send",
                 "params": {"agentId": payload.agent_id, "message": payload.prompt,
                            "configuration": {"blocking": False},
-                           "metadata": {"source": "chatgpt-ingress", "mode": payload.mode}},
+                           "metadata": {"source": "chatgpt-ingress", "mode": payload.mode,
+                                       "chatgpt_ingress_operation_id": operation_id,
+                                       "chatgpt_ingress_request_hash": request_hash}},
             }, actor=settings.chatgpt_ingress_actor)
             if "error" in rpc_result:
                 error = rpc_result["error"]
