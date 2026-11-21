@@ -164,3 +164,20 @@ def test_idempotent_retry_stops_after_three_total_attempts(monkeypatch):
   server._post_idempotent("tasks/task-1/result", payload)
  assert len(attempts) == 3
  assert attempts[0] == attempts[1] == attempts[2]
+
+def test_start_retries_transient_failure_after_idempotent_server_commit(monkeypatch):
+ calls=[]
+ with server.LEASES_LOCK:
+  server.LEASES["task-start-retry"]={"lease_token":"private-lease","lease_version":5,"lease_expires_at":time.time()+120}
+ def flaky_post(path,payload):
+  calls.append((path,payload))
+  if len(calls)==1:
+   raise RuntimeError("无法连接 Hub：TimeoutError")
+  return {"task":{"id":"task-start-retry","status":{"state":"working"}}}
+ monkeypatch.setattr(server,"_post",flaky_post)
+ result=server.tool_start({"task_id":"task-start-retry"})
+ assert result["isError"] is False
+ assert len(calls)==2
+ assert calls[0]==calls[1]
+ assert "task-start-retry" in server.LEASES
+
