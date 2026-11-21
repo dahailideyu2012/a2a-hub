@@ -436,3 +436,29 @@ def test_connector_missing_task_returns_404(client, tmp_path, monkeypatch, opera
     assert response.json()["detail"] == "lease_conflict"
     store.close()
 
+def test_start_is_idempotent_for_the_same_active_lease(tmp_path):
+    from a2a_hub.models import Message, Task
+
+    store = SqliteTaskStore(str(tmp_path / "start-idempotent.db"))
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("start idempotency"))
+    try:
+        store.enqueue_pull(task)
+        claim = store.claim_next("workbuddy-start", 120, ["echo-a"])
+        assert claim is not None
+        first = store.start_pull_task(
+            task.id, "workbuddy-start", claim["lease_token"], claim["lease_version"]
+        )
+        first_history_size = len(first.history)
+        first_updated_at = first.updatedAt
+
+        replay = store.start_pull_task(
+            task.id, "workbuddy-start", claim["lease_token"], claim["lease_version"]
+        )
+        assert len(replay.history) == first_history_size
+        assert replay.updatedAt == first_updated_at
+        assert replay.status.state == TaskState.WORKING
+    finally:
+        store.delete(task.id)
+        store.close()
+
