@@ -359,7 +359,7 @@ class SqliteTaskStore(TaskStore):
                      lease_version: int, now: float):
         row = self._conn.execute(
             "SELECT payload,connector_id,lease_token,lease_version,lease_expires_at,"
-            "execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash "
+            "execution_mode,last_progress_seq,last_progress_hash,result_key,result_hash,lease_state "
             "FROM tasks WHERE id=?", (task_id,)
         ).fetchone()
         # Deliberately collapse missing tasks and stale/invalid leases into the
@@ -403,9 +403,12 @@ class SqliteTaskStore(TaskStore):
             conn = self._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
-                task, _ = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
+                task, row = self._leased_task(task_id, connector_id, lease_token, lease_version, now)
                 if task.status.is_terminal:
                     raise RepositoryConflictError(RepositoryErrorCode.TASK_TERMINAL)
+                if task.status.state == TaskState.WORKING and row[10] == "running":
+                    conn.commit()
+                    return task
                 task.touch(TaskState.WORKING, Message.agent("WorkBuddy 已开始执行"))
                 conn.execute(
                     "UPDATE tasks SET state=?,updated=?,payload=?,lease_state='running' "
