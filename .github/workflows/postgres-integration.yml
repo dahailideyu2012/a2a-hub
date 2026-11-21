@@ -1,0 +1,94 @@
+name: PostgreSQL Integration
+
+on:
+  push:
+    branches:
+      - feature/postgres-task-store-v1
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: a2a_hub_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d a2a_hub_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      A2A_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/a2a_hub_test
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and PostgreSQL test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,postgres]" build
+
+      - name: Run focused PostgreSQL and repository contract tests
+        run: >-
+          python -m pytest -q
+          tests/test_store.py
+          tests/test_repository_ports.py
+          tests/test_postgres_schema.py
+          tests/test_postgres_store.py
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Byte-compile project and tests
+        run: python -m compileall -q a2a_hub workbuddy_mcp_server.py scripts tests
+
+      - name: Run isolated WorkBuddy loopback acceptance
+        run: python scripts/workbuddy_loopback_acceptance.py
+
+      - name: Build wheel and verify packaged PostgreSQL migration
+        run: |
+          python -m build --wheel
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, found {len(wheels)}")
+          migration = "a2a_hub/migrations/postgres/001_initial.sql"
+          with ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+              if migration not in names:
+                  raise SystemExit(f"wheel is missing {migration}")
+              sql = archive.read(migration).decode("utf-8")
+              if "CREATE TABLE IF NOT EXISTS tasks" not in sql:
+                  raise SystemExit("packaged migration content is incomplete")
+          print(f"wheel={wheels[0].name}")
+          print(f"verified_package_file={migration}")
+          PY
