@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from a2a_hub.models import Artifact, Task, TaskState, TextPart
@@ -105,3 +107,15 @@ def test_sqlite_persists_across_instances(tmp_path):
 def test_build_store_requires_explicit_postgres_dsn():
     with pytest.raises(ValueError, match="A2A_POSTGRES_DSN is required"):
         build_store("postgres", "")
+
+
+def test_build_store_fails_closed_when_postgres_driver_is_missing(monkeypatch):
+    # Import failure happens before any connection attempt; postgres selection
+    # must never silently downgrade to an in-memory or SQLite store.
+    monkeypatch.setitem(sys.modules, "psycopg", None)
+    monkeypatch.setitem(sys.modules, "psycopg.rows", None)
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)
+    with pytest.raises(RuntimeError, match="requires psycopg and psycopg-pool"):
+        build_store(
+            "postgres", "", postgres_dsn="postgresql://unused.invalid/a2a_test"
+        )
