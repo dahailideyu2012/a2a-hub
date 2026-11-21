@@ -410,7 +410,7 @@ async def health() -> dict[str, Any]:
         "status": "ok",
         "hub": hub.settings.hub_name,
         "agents": len(hub.registry.list_records()),
-        "version": "0.2.0",
+        "version": APP_VERSION,
     }
 
 
