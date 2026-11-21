@@ -357,3 +357,55 @@ async def test_registry_aclose_closes_persistent_task_store(tmp_path):
     # A closed sqlite connection raises ProgrammingError on the next operation.
     with pytest.raises(sqlite3.ProgrammingError):
         store._conn.execute("SELECT 1")
+
+
+
+def test_reclaimed_lease_fences_every_old_worker_operation_after_restart(tmp_path):
+    """A restarted MCP process has no private lease; after expiry a new worker reclaims,
+    and every mutation from the previous worker must be fenced."""
+    import sqlite3
+    import time
+    from a2a_hub.models import Message, Task
+
+    path = str(tmp_path / "restart-reclaim.db")
+    store = SqliteTaskStore(path)
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user("recover after worker restart"))
+    store.enqueue_pull(task)
+
+    old = store.claim_next("workbuddy-before-restart", 120)
+    assert old is not None
+    old_token, old_version = old["lease_token"], old["lease_version"]
+
+    # Simulate the old worker process disappearing and its lease expiring.
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?", (time.time() - 1, task.id))
+    conn.commit()
+    conn.close()
+
+    # New MCP process claims the same durable task with a fenced lease version.
+    new = store.claim_next("workbuddy-after-restart", 120)
+    assert new is not None
+    assert new["task"].id == task.id
+    assert new["lease_version"] == old_version + 1
+    assert new["lease_token"] != old_token
+
+    stale_calls = [
+        lambda: store.renew_pull_lease(task.id, "workbuddy-before-restart", old_token, old_version, 120),
+        lambda: store.start_pull_task(task.id, "workbuddy-before-restart", old_token, old_version),
+        lambda: store.progress_pull_task(task.id, "workbuddy-before-restart", old_token, old_version, 1, "stale progress"),
+        lambda: store.finish_pull_task(task.id, "workbuddy-before-restart", old_token, old_version, "stale-result-key", "completed", "stale result"),
+    ]
+    for stale_call in stale_calls:
+        with pytest.raises(ValueError, match="lease_conflict"):
+            stale_call()
+
+    store.start_pull_task(task.id, "workbuddy-after-restart", new["lease_token"], new["lease_version"])
+    store.progress_pull_task(task.id, "workbuddy-after-restart", new["lease_token"], new["lease_version"], 1, "recovered worker running")
+    completed, replay = store.finish_pull_task(
+        task.id, "workbuddy-after-restart", new["lease_token"], new["lease_version"],
+        "recovered-result-key", "completed", "recovered after restart",
+    )
+    assert completed.status.state == TaskState.COMPLETED
+    assert replay is False
+    store.close()
