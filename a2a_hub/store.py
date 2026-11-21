@@ -241,11 +241,11 @@ class SqliteTaskStore(TaskStore):
     def find_idempotent_task(self, operation_id: str, request_hash: str) -> Optional[Task]:
         now = time.time()
         with self._lock:
-            self._conn.execute("DELETE FROM task_idempotency WHERE expires_at < ?", (now,))
             row = self._conn.execute(
                 "SELECT i.request_hash, t.payload FROM task_idempotency i "
-                "LEFT JOIN tasks t ON t.id=i.task_id WHERE i.operation_id=?",
-                (operation_id,),
+                "LEFT JOIN tasks t ON t.id=i.task_id "
+                "WHERE i.operation_id=? AND i.expires_at>=?",
+                (operation_id, now),
             ).fetchone()
         if row is None:
             return None
