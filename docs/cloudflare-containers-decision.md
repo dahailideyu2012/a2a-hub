@@ -25,7 +25,7 @@ FastAPI + Dockerfile 在计算层面具备候选可行性，但当前 Hub 的任
 | 成员声明文件 | `a2a_hub/social_boot.py` 的 `bootstrap_members()` | `A2A_MEMBERS_FILE` 默认 `./config/members.yaml` | 文件随容器磁盘重建而丢；启动时可能重新生成，但人工修改内容不会自动恢复 | **未覆盖**；Compose 只挂载单个只读 `agents.yaml`，没有挂载整个 `/app/config` |
 | Agent 声明配置 | `config.py` / `social_boot.py` 读取 | `A2A_AGENTS_FILE` 默认配置路径；Compose 挂载 `/app/config/agents.yaml:ro` | 只读镜像/挂载配置，不是服务端运行时写入点 | 只读单文件挂载 |
 
-WorkBuddy Pull Connector 不维护独立任务数据库。它通过 `workbuddy_connector.py` 的 `store_for()` 复用 `hub.registry.store`；claim/start/renew/progress/result 与 Hub tasks 共用同一 task store。当前实现要求该 store 是 `SqliteTaskStore`，否则返回 503，不会静默降级。
+WorkBuddy Pull Connector 不维护独立任务数据库。它通过 `workbuddy_connector.py` 的 `store_for()` 复用 `hub.registry.store`；claim/start/renew/progress/result 与 Hub tasks 共用同一 task store。当前实现要求该 store 满足 `PullTaskRepository` 端口，否则返回 503，不会静默降级。
 
 ChatGPT ingress ledger 则是独立 SQLite 文件和独立表（`chatgpt_ingress_requests`）。它保存幂等键到 task_id 的映射；任务本体仍写入 Hub task store。因此完整请求闭环至少涉及两份数据库状态。
 
