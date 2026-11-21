@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 from pathlib import Path
 import pytest
 import workbuddy_mcp_server as server
@@ -20,7 +20,7 @@ def test_config_requires_https_and_long_token(monkeypatch):
  with pytest.raises(RuntimeError,match="32"): server._config()
 def test_claim_keeps_lease_secret_out_of_model_result(monkeypatch):
  task={"id":"task-1","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"请审查代码"}]}]}
- monkeypatch.setattr(server,"_post",lambda path,payload:{"claimed":True,"task":task,"lease":{"lease_token":"SECRET-LEASE-MATERIAL","lease_version":2,"lease_expires_at":12345}})
+ monkeypatch.setattr(server,"_post",lambda path,payload:{"claimed":True,"task":task,"lease":{"lease_token":"SECRET-LEASE-MATERIAL","lease_version":2,"lease_expires_at":time.time()+120}})
  result=server.tool_claim({}); text=result["content"][0]["text"]
  assert "请审查代码" in text and "task-1" in text
  assert "SECRET-LEASE-MATERIAL" not in text
@@ -55,3 +55,40 @@ def test_stdio_handshake_and_tools_list():
  tools=replies[1]["result"]["tools"]
  assert {item["name"] for item in tools}==set(server.TOOL_FUNCS)
  assert "SECRET" not in proc.stdout
+
+
+def test_claim_refuses_second_active_task_until_result_is_submitted(monkeypatch):
+ calls=[]
+ task={"id":"task-active","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"do work"}]}]}
+ monkeypatch.setattr(server,"_post",lambda path,payload:calls.append(path) or {
+  "claimed":True,"task":task,"lease":{"lease_token":"private-lease-material","lease_version":1,"lease_expires_at":time.time()+120}
+ })
+ first=server.tool_claim({})
+ second=server.tool_claim({})
+ assert first["isError"] is False
+ assert second["isError"] is True
+ assert len(calls)==1
+ assert "已有未完成任务" in second["content"][0]["text"]
+
+
+def test_expired_local_lease_is_pruned_before_next_claim(monkeypatch):
+ task={"id":"task-next","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"next"}]}]}
+ with server.LEASES_LOCK:
+  server.LEASES["task-expired"]={"lease_token":"old-secret","lease_version":1,"lease_expires_at":time.time()-1}
+ monkeypatch.setattr(server,"_post",lambda path,payload:{
+  "claimed":True,"task":task,"lease":{"lease_token":"new-secret-material","lease_version":1,"lease_expires_at":time.time()+120}
+ })
+ result=server.tool_claim({})
+ assert result["isError"] is False
+ assert "task-expired" not in server.LEASES
+ assert "task-next" in server.LEASES
+
+
+def test_renew_updates_local_lease_expiry(monkeypatch):
+ with server.LEASES_LOCK:
+  server.LEASES["task-renew"]={"lease_token":"private-lease","lease_version":2,"lease_expires_at":time.time()+30}
+ expected=time.time()+300
+ monkeypatch.setattr(server,"_post",lambda path,payload:{"lease_expires_at":expected})
+ result=server.tool_renew({"task_id":"task-renew"})
+ assert result["isError"] is False
+ assert server.LEASES["task-renew"]["lease_expires_at"]==expected
