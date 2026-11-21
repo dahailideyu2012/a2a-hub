@@ -1,4 +1,4 @@
-# PostgreSQL Task Store V1 — Schema Slice
+# PostgreSQL Task Store V1 — Runtime Adapter
 
 Status: **runtime adapter implemented on an isolated feature branch; not yet accepted or production-ready**.
 
