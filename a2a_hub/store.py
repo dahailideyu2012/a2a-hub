@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import Artifact, Message, Task, TaskState
+from .ports import TaskRepository
 
 
 def serialize_task(task: Task) -> str:
@@ -439,7 +440,7 @@ class SqliteTaskStore(TaskStore):
         self._conn.close()
 
 
-def build_store(kind: str, db_path: str) -> TaskStore:
+def build_store(kind: str, db_path: str) -> TaskRepository:
     if kind.lower() == "sqlite":
         return SqliteTaskStore(db_path)
     return MemoryTaskStore()
