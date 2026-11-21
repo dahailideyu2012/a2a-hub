@@ -538,9 +538,21 @@ class SqliteTaskStore(TaskStore):
 
 
 def build_store(kind: str, db_path: str) -> TaskRepository:
-    if kind.lower() == "sqlite":
+    """Build only an explicitly selected backend; never silently downgrade.
+
+    A typo such as postgres or sqllite must not create an in-memory store
+    that loses accepted tasks on restart. Backend selection is a durability
+    boundary, so unsupported values fail during startup.
+    """
+    normalized = kind.strip().lower()
+    if normalized == "sqlite":
         return SqliteTaskStore(db_path)
-    return MemoryTaskStore()
+    if normalized == "memory":
+        return MemoryTaskStore()
+    raise ValueError(
+        f"Unsupported A2A_STORE backend: {kind!r}. "
+        "Supported backends are: memory, sqlite."
+    )
 
 
 __all__ = [
