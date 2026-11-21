@@ -5,7 +5,14 @@ from __future__ import annotations
 from inspect import signature
 from typing import get_type_hints
 
-from a2a_hub.ports import ClosableRepository, PullTaskRepository, TaskRepository
+from a2a_hub.ports import (
+    ClosableRepository,
+    PullTaskRepository,
+    RepositoryConflictError,
+    RepositoryErrorCode,
+    RepositoryNotFoundError,
+    TaskRepository,
+)
 from a2a_hub.store import MemoryTaskStore, SqliteTaskStore, build_store
 
 
@@ -58,3 +65,13 @@ def test_sqlite_store_implements_task_pull_and_lifecycle_ports(tmp_path):
 
 def test_build_store_exposes_the_repository_port_type():
     assert get_type_hints(build_store)["return"] is TaskRepository
+
+
+def test_repository_errors_expose_stable_codes_and_legacy_base_types():
+    assert issubclass(RepositoryConflictError, ValueError)
+    assert issubclass(RepositoryNotFoundError, KeyError)
+    conflict = RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
+    missing = RepositoryNotFoundError(RepositoryErrorCode.TASK_NOT_FOUND)
+    assert conflict.code is RepositoryErrorCode.LEASE_CONFLICT
+    assert str(conflict) == "lease_conflict"
+    assert missing.code is RepositoryErrorCode.TASK_NOT_FOUND
