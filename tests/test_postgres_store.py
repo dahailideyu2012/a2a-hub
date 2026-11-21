@@ -203,3 +203,26 @@ def test_postgres_core_task_repository_contract():
     finally:
         store.delete(task.id)
         store.close()
+
+def test_postgres_startup_fails_closed_when_database_is_unreachable():
+    from psycopg import OperationalError
+    from psycopg.conninfo import make_conninfo
+    from psycopg_pool import PoolTimeout
+
+    # Override the test DSN to loopback port 1 so this test never contacts
+    # the configured database or any external host.
+    unreachable = make_conninfo(
+        DSN, host="127.0.0.1", port=1, connect_timeout=1
+    )
+    with pytest.raises((OperationalError, PoolTimeout)):
+        PostgresTaskStore(unreachable, timeout=0.5)
+
+
+def test_postgres_closed_pool_rejects_new_repository_operations():
+    from psycopg_pool import PoolClosed
+
+    store = PostgresTaskStore(DSN)
+    store.close()
+    with pytest.raises(PoolClosed):
+        store.get("closed-pool-probe")
+
