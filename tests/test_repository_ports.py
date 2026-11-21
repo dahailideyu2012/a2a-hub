@@ -112,3 +112,19 @@ def test_sqlite_store_recovers_idempotent_task_mapping_after_reopen(tmp_path):
             reopened.find_idempotent_task("operation-456", "different-hash")
     finally:
         reopened.close()
+
+
+def test_sqlite_pull_enqueue_records_idempotency_atomically(tmp_path):
+    from a2a_hub.models import Task
+
+    store = SqliteTaskStore(str(tmp_path / "pull-idempotency.db"))
+    task = Task(metadata={
+        "chatgpt_ingress_operation_id": "operation-pull",
+        "chatgpt_ingress_request_hash": "request-hash",
+    })
+    try:
+        store.enqueue_pull(task)
+        recovered = store.find_idempotent_task("operation-pull", "request-hash")
+        assert recovered is not None and recovered.id == task.id
+    finally:
+        store.close()
