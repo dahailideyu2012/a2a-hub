@@ -43,7 +43,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 默认关闭：不配置 `config/members.yaml` 时门禁不生效，行为与旧版逐字节一致。
 > 完整的配置、命令、接口与排障手册见 [`docs/social-guide.md`](docs/social-guide.md)；
 > 设计取舍与协议映射见 [`docs/identity-and-binding.md`](docs/identity-and-binding.md)。
-> 当前测试共 **633 项**。
+> 测试数量与通过情况以最新 GitHub Actions CI 报告为准。
 
 ---
 
@@ -967,7 +967,7 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 （握手 / 通知不回包 / 工具清单 / 真实派活 / 写闸门 / 脏数据容错）
 + **接入工具链**（能力清单同源 / 接入包渲染 / MCP 登记幂等·备份·不越界 / 就绪体检与探针）
 + **打包与许可证不变量**（MIT 正文逐字校验 / `LICENSE` 随产物分发 / 版本号单一来源）
-**——当前共 **633 项**。
+**——测试数量与通过情况以最新 GitHub Actions CI 报告为准。**
 
 新增适配器时，建议至少补三类用例：
 1. `build_argv()` 的注入安全（prompt 必须是独立 argv 元素）
