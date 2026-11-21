@@ -16,6 +16,7 @@ from a2a_hub.ports import (
     TaskRepository,
 )
 from a2a_hub.store import MemoryTaskStore, SqliteTaskStore, build_store
+from a2a_hub.postgres_store import PostgresTaskStore, _CLAIM_NEXT_SQL
 
 
 def _parameter_shape(method):
@@ -135,3 +136,23 @@ def test_sqlite_pull_enqueue_records_idempotency_atomically(tmp_path):
         assert recovered is not None and recovered.id == task.id
     finally:
         store.close()
+
+
+def test_postgres_store_implements_task_pull_and_lifecycle_ports():
+    store = object.__new__(PostgresTaskStore)
+    assert isinstance(store, TaskRepository)
+    assert isinstance(store, PullTaskRepository)
+    assert isinstance(store, ClosableRepository)
+    for method_name in ("save", "get", "list", "delete", "find_idempotent_task"):
+        _assert_signature_matches(TaskRepository, PostgresTaskStore, method_name)
+    for method_name in (
+        "enqueue_pull", "claim_next", "renew_pull_lease", "start_pull_task",
+        "progress_pull_task", "finish_pull_task", "cancel_pull_task",
+    ):
+        _assert_signature_matches(PullTaskRepository, PostgresTaskStore, method_name)
+
+
+def test_postgres_claim_statement_uses_valid_limit_then_skip_locked_order():
+    normalized = " ".join(_CLAIM_NEXT_SQL.lower().split())
+    assert "order by created asc,id asc limit 1 for update skip locked" in normalized
+    assert "update tasks t" in normalized and "returning t.payload,t.lease_version" in normalized
