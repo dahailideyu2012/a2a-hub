@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .ports import PullTaskRepository
+from .ports import PullTaskRepository, RepositoryNotFoundError
 from .store import task_to_wire
 
 
@@ -98,6 +98,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         connector_id, token, version, _ = lease_args(body, settings)
         try:
             task = store_for(hub).start_pull_task(task_id, connector_id, token, version)
+        except RepositoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         hub.registry.bus.publish(task_id, task)
@@ -114,6 +116,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         connector_id, token, version, seconds = lease_args(body, settings)
         try:
             expires = store_for(hub).renew_pull_lease(task_id, connector_id, token, version, seconds)
+        except RepositoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"lease_expires_at": expires}
@@ -131,6 +135,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             task, replay = store_for(hub).progress_pull_task(
                 task_id, connector_id, token, version, body.sequence, body.message
             )
+        except RepositoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if not replay:
@@ -150,6 +156,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             task, replay = store_for(hub).finish_pull_task(
                 task_id, connector_id, token, version, body.result_key, body.state, body.output
             )
+        except RepositoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if not replay:
