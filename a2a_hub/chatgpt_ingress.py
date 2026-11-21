@@ -60,12 +60,41 @@ class IngressLedger:
                 raise
             finally: conn.close()
     async def complete(self, key: str, request_hash: str, task_id: str) -> None:
+        """Bind a committed task even if its short-lived reservation was cleaned up.
+
+        The task repository's idempotency mapping is authoritative for recovery.
+        This ledger write is an idempotent insert-or-bind operation, but it must
+        never overwrite a different request hash or task ID.
+        """
         async with self._lock:
             conn = self._connect()
             try:
-                conn.execute("UPDATE chatgpt_ingress_requests SET task_id=?, expires_at=? WHERE idempotency_key=? AND request_hash=?", (task_id, time.time() + _IDEMPOTENCY_TTL, key, request_hash))
+                now = time.time()
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT request_hash, task_id FROM chatgpt_ingress_requests WHERE idempotency_key=?",
+                    (key,),
+                ).fetchone()
+                if row is not None and row[0] != request_hash:
+                    raise IdempotencyConflict
+                if row is not None and row[1] is not None and str(row[1]) != task_id:
+                    raise IdempotencyConflict
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO chatgpt_ingress_requests(idempotency_key,request_hash,task_id,created_at,expires_at) VALUES(?,?,?,?,?)",
+                        (key, request_hash, task_id, now, now + _IDEMPOTENCY_TTL),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE chatgpt_ingress_requests SET task_id=?, expires_at=? WHERE idempotency_key=? AND request_hash=?",
+                        (task_id, now + _IDEMPOTENCY_TTL, key, request_hash),
+                    )
                 conn.commit()
-            finally: conn.close()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
     async def release(self, key: str, request_hash: str) -> None:
         async with self._lock:
             conn = self._connect()
@@ -192,6 +221,12 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             except RepositoryNotFoundError as exc:
                 raise HTTPException(status_code=410, detail="幂等键已关联的任务已不存在") from exc
 
+        async def complete_ledger(task_id: str) -> None:
+            try:
+                await ledger.complete(idempotency_key, request_hash, task_id)
+            except IdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail="Idempotency-Key 已关联其他请求或任务") from exc
+
         try:
             state, existing_task_id = await ledger.reserve(idempotency_key, request_hash)
         except IdempotencyConflict:
@@ -200,7 +235,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             recovered = find_existing_task()
             if recovered is None:
                 raise HTTPException(status_code=409, detail="相同请求正在处理中，请稍后重试")
-            await ledger.complete(idempotency_key, request_hash, recovered.id)
+            await complete_ledger(recovered.id)
             return {"task": task_to_wire(recovered, include_internal=True), "idempotent_replay": True}
         if state == "replay" and existing_task_id:
             existing = hub.registry.store.get(existing_task_id)
@@ -208,7 +243,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             return {"task": task_to_wire(existing, include_internal=True), "idempotent_replay": True}
         recovered = find_existing_task()
         if recovered is not None:
-            await ledger.complete(idempotency_key, request_hash, recovered.id)
+            await complete_ledger(recovered.id)
             return {"task": task_to_wire(recovered, include_internal=True), "idempotent_replay": True}
         try:
             rpc_result = await hub.dispatcher.handle({
@@ -228,7 +263,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             task_data = rpc_result.get("result")
             task_id = task_data.get("id") if isinstance(task_data, dict) else None
             if not isinstance(task_id, str) or not task_id: raise HTTPException(status_code=502, detail="Hub 未返回有效任务 ID")
-            await ledger.complete(idempotency_key, request_hash, task_id)
+            await complete_ledger(task_id)
             task = hub.registry.store.get(task_id)
             if task is None: raise HTTPException(status_code=502, detail="任务已提交但无法读取任务状态")
             return {"task": task_to_wire(task, include_internal=True), "idempotent_replay": False}
