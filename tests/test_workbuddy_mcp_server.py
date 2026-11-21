@@ -130,7 +130,7 @@ def test_idempotent_retry_does_not_retry_conflicts_or_claim(monkeypatch):
 
  claim_attempts=[]
  monkeypatch.setattr(server,"_post",lambda path,payload:claim_attempts.append(path) or (_ for _ in ()).throw(RuntimeError("Hub HTTP 503: unavailable")))
- result=server.tool_claim({})
+ result=server.call_tool("workbuddy_claim_task",{})
  assert result["isError"] is True
  assert claim_attempts==["claim"]
 
