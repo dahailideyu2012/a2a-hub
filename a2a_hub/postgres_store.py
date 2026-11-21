@@ -59,8 +59,21 @@ class PostgresTaskStore:
             self._pool.open(wait=True, timeout=timeout)
             with self._pool.connection() as conn:
                 if migrate:
+                    from psycopg.pq import TransactionStatus
+
                     sql_path = Path(__file__).resolve().parent / "migrations" / "postgres" / "001_initial.sql"
-                    conn.execute(sql_path.read_text(encoding="utf-8"))
+                    # The migration owns its explicit BEGIN/COMMIT boundaries.
+                    # Run it in autocommit mode so psycopg does not implicitly
+                    # open an outer transaction before the script's BEGIN.
+                    conn.autocommit = True
+                    try:
+                        conn.execute(sql_path.read_text(encoding="utf-8"), prepare=False)
+                    except Exception:
+                        if conn.info.transaction_status != TransactionStatus.IDLE:
+                            conn.execute("ROLLBACK", prepare=False)
+                        raise
+                    finally:
+                        conn.autocommit = False
                 version = conn.execute(
                     "SELECT max(version) AS version FROM a2a_schema_migrations"
                 ).fetchone()
