@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import json, os, sys, threading, urllib.error, urllib.parse, urllib.request
+import json, os, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from typing import Any
 
 PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED = {"2024-11-05", "2025-03-26", "2025-06-18"}
 LEASES: dict[str, dict[str, Any]] = {}
 LEASES_LOCK = threading.Lock()
+MAX_ACTIVE_LEASES = 1
 TOOLS = [
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
@@ -55,10 +56,17 @@ def _ok(data: Any) -> dict[str,Any]:
  return {"content":[{"type":"text","text":json.dumps(data,ensure_ascii=False,indent=2,default=str)}],"isError":False}
 def _err(message: str) -> dict[str,Any]:
  return {"content":[{"type":"text","text":message}],"isError":True}
+def _prune_expired_leases() -> None:
+ now = time.time()
+ with LEASES_LOCK:
+  expired = [task_id for task_id, lease in LEASES.items() if float(lease.get("lease_expires_at", 0)) <= now]
+  for task_id in expired: LEASES.pop(task_id, None)
+
 def _lease(task_id: str) -> dict[str,Any]:
+ _prune_expired_leases()
  with LEASES_LOCK: value=LEASES.get(task_id)
  if not value: raise RuntimeError("当前 MCP 会话没有该任务的有效租约；请等待旧租约到期后重新领取")
- return dict(value)
+ return {"lease_token":value["lease_token"],"lease_version":value["lease_version"]}
 def _task_prompt(task: dict[str,Any]) -> str:
  chunks=[]
  for message in task.get("history") or []:
@@ -68,6 +76,10 @@ def _task_prompt(task: dict[str,Any]) -> str:
     if isinstance(value,str): chunks.append(value)
  return "\n".join(chunks).strip()
 def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
+ _prune_expired_leases()
+ with LEASES_LOCK:
+  if len(LEASES) >= MAX_ACTIVE_LEASES:
+   return _err("当前 MCP 会话已有未完成任务；请先提交该任务结果，再领取下一项")
  payload={}
  if args.get("agent_ids") is not None: payload["agent_ids"]=args["agent_ids"]
  if args.get("lease_seconds") is not None: payload["lease_seconds"]=args["lease_seconds"]
@@ -75,13 +87,22 @@ def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
  if not result.get("claimed"): return _ok({"claimed":False,"message":"当前没有可领取的任务"})
  task=result.get("task") or {}; lease=result.get("lease") or {}; task_id=str(task.get("id") or "")
  if not task_id or not lease.get("lease_token") or not lease.get("lease_version"): raise RuntimeError("Hub claim 响应缺少任务或租约字段")
- with LEASES_LOCK: LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"])}
+ try: expires_at=float(lease["lease_expires_at"])
+ except (KeyError,TypeError,ValueError): raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
+ if expires_at <= time.time(): raise RuntimeError("Hub 返回的任务租约已经过期")
+ with LEASES_LOCK: LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"]),"lease_expires_at":expires_at}
  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
 def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload=_lease(task_id)
- return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload))
+ result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload)
+ try: expires_at=float(result["lease_expires_at"])
+ except (KeyError,TypeError,ValueError): raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
+ if expires_at <= time.time(): raise RuntimeError("Hub renew 返回的租约已经过期")
+ with LEASES_LOCK:
+  if task_id in LEASES: LEASES[task_id]["lease_expires_at"]=expires_at
+ return _ok(result)
 def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"sequence":args.get("sequence"),"message":args.get("message")}
  return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload))
