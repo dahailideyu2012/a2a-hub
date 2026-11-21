@@ -190,7 +190,12 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             except (RepositoryConflictError, RepositoryNotFoundError):
                 continue
             if task is not None:
-                await ledger.complete(key, request_hash, task.id)
+                try:
+                    await ledger.complete(key, request_hash, task.id)
+                except IdempotencyConflict:
+                    # Another request may have reused an expired key while this
+                    # reconciliation pass was in flight. Never overwrite it.
+                    continue
 
     @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
@@ -241,7 +246,13 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             existing = hub.registry.store.get(existing_task_id)
             if existing is None: raise HTTPException(status_code=410, detail="幂等记录存在，但任务已不在任务存储中")
             return {"task": task_to_wire(existing, include_internal=True), "idempotent_replay": True}
-        recovered = find_existing_task()
+        try:
+            recovered = find_existing_task()
+        except HTTPException:
+            # The repository proves this request hash was not accepted. Do not
+            # leave a fresh reservation pending after an idempotency conflict.
+            await ledger.release(idempotency_key, request_hash)
+            raise
         if recovered is not None:
             await complete_ledger(recovered.id)
             return {"task": task_to_wire(recovered, include_internal=True), "idempotent_replay": True}
