@@ -85,6 +85,34 @@ class TestChatGPTIngress:
         assert len(matching) == 1
         assert second.json()["task"]["id"] == matching[0].id
 
+    def test_complete_failure_is_reconciled_by_task_list(self, client, monkeypatch):
+        from fastapi import HTTPException
+        from a2a_hub.chatgpt_ingress import IngressLedger
+        import a2a_hub.server as server
+
+        original_complete = IngressLedger.complete
+        calls = 0
+
+        async def fail_once(self, key, request_hash, task_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise HTTPException(status_code=502, detail="injected ledger completion failure")
+            await original_complete(self, key, request_hash, task_id)
+
+        monkeypatch.setattr(IngressLedger, "complete", fail_once)
+        response = client.post(
+            f"{BASE}/tasks", headers=headers("list-reconcile-001"), json=payload()
+        )
+        assert response.status_code == 502
+        listed = client.get(
+            f"{BASE}/tasks", headers={"X-ChatGPT-Ingress-Token": TOKEN}
+        )
+        assert listed.status_code == 200
+        assert len(listed.json()["tasks"]) == 1
+        assert calls == 2
+        assert len(server.hub.registry.store.list(100)) == 1
+
     def test_postwrite_read_failure_retry_replays_same_task(self, client, monkeypatch):
         import a2a_hub.server as server
 
