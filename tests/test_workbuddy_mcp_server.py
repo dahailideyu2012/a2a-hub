@@ -27,7 +27,7 @@ def test_claim_keeps_lease_secret_out_of_model_result(monkeypatch):
  assert server.LEASES["task-1"]["lease_version"]==2
 def test_lifecycle_uses_private_lease_and_stable_result_key(monkeypatch):
  calls=[]
- monkeypatch.setattr(server,"_post",lambda path,payload:calls.append((path,payload)) or {"ok":True})
+ monkeypatch.setattr(server,"_post",lambda path,payload:calls.append((path,payload)) or ({"lease_expires_at":time.time()+120} if path.endswith("/renew") else {"ok":True}))
  with server.LEASES_LOCK: server.LEASES["task-2"]={"lease_token":"private-lease","lease_version":3,"lease_expires_at":time.time()+120}
  assert not server.tool_start({"task_id":"task-2"})["isError"]
  assert not server.tool_renew({"task_id":"task-2"})["isError"]
