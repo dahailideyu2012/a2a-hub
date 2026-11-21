@@ -13,7 +13,11 @@ from .models import Task
 
 @runtime_checkable
 class TaskRepository(Protocol):
-    """Core task persistence contract shared by Hub callers."""
+    """Core task persistence contract shared by Hub callers.
+
+    ``get`` returns ``None`` when a task is absent. Adapter/driver failures
+    propagate unchanged; callers translate them at the transport boundary.
+    """
 
     def save(self, task: Task) -> None: ...
     def get(self, task_id: str) -> Optional[Task]: ...
@@ -28,6 +32,11 @@ class PullTaskRepository(TaskRepository, Protocol):
     Implementations must preserve the transaction and idempotency invariants in
     docs/storage-contract-v1.md. HTTP and RPC layers must depend on this port,
     never on a concrete adapter class.
+
+    Expected domain errors are stable across adapters: ``KeyError`` denotes a
+    missing task where the operation requires one; ``ValueError`` denotes an
+    invalid transition, lease-fencing failure, or conflicting replay. Unexpected
+    adapter/driver exceptions are not silently converted into domain errors.
     """
 
     def enqueue_pull(self, task: Task) -> None: ...
