@@ -259,3 +259,36 @@ class TestChatGPTIngress:
                 await ledger.complete(key, "c" * 64, "task-recovered-01")
 
         asyncio.run(scenario())
+
+    def test_expired_key_conflict_releases_new_reservation(self, client):
+        import sqlite3
+        import a2a_hub.server as server
+
+        key = "expired-key-conflict-01"
+        first = client.post(f"{BASE}/tasks", headers=headers(key), json=payload("original"))
+        assert first.status_code == 200
+
+        ledger_path = str(server.hub.settings.chatgpt_ingress_db_path_resolved())
+        conn = sqlite3.connect(ledger_path)
+        try:
+            conn.execute(
+                "UPDATE chatgpt_ingress_requests SET expires_at=0 WHERE idempotency_key=?",
+                (key,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        conflicting = client.post(
+            f"{BASE}/tasks", headers=headers(key), json=payload("different")
+        )
+        assert conflicting.status_code == 409
+
+        # The rejected payload must not leave a pending reservation that blocks
+        # the original payload from replaying the already accepted task.
+        replay = client.post(
+            f"{BASE}/tasks", headers=headers(key), json=payload("original")
+        )
+        assert replay.status_code == 200
+        assert replay.json()["idempotent_replay"] is True
+        assert replay.json()["task"]["id"] == first.json()["task"]["id"]
