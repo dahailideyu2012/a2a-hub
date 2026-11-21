@@ -37,18 +37,18 @@ The implementation uses a single CTE + `UPDATE ... RETURNING`, so selection and 
 
 Task creation and idempotency binding must occur in the **same PostgreSQL transaction**. On an operation ID conflict, compare request hash and task ID; never overwrite a different binding. A retry with the same key and hash must return the original task.
 
-## Remaining acceptance gates before enabling the backend
+## Acceptance gates and production boundary
 
-1. WorkBuddy must complete fixed-SHA source review, archive/blob verification, repository contract tests, full pytest, compileall, and loopback regression.
-2. Run the opt-in integration suite against a disposable PostgreSQL instance, including migration execution and schema validation.
-3. Verify two independent OS processes race to claim tasks without duplicate delivery.
-4. Verify lease expiry/reclaim fences every stale-worker mutation, exact result replay, idempotency conflict handling, and cancellation behavior.
-5. Exercise database outage/startup failure and pool shutdown behavior in an isolated environment.
-6. Keep the factory fail-closed: no fallback to memory or SQLite on connection, schema, or configuration errors.
-7. Only after all acceptance gates pass may PostgreSQL be enabled for production; migration/deployment still requires separate explicit approval.
+- [x] WorkBuddy fixed-SHA source review, archive/blob verification, repository contract tests, full pytest, compileall, and loopback regression (C2-B-13-14 report, Issue #5 comment 7063979180).
+- [x] Disposable PostgreSQL 16 integration suite, migration execution, and schema validation (CI Run 44904518389; code SHA 94d148b7f32eb215fa7075f9a15942d0c306a8b9).
+- [x] Two independent OS processes race to claim tasks without duplicate delivery.
+- [x] Lease expiry/reclaim fences stale-worker mutations; exact result replay, idempotency conflict handling, cancellation behavior pass.
+- [x] Database outage/startup failure and pool shutdown behavior pass in isolated tests.
+- [x] Store factory remains fail-closed; no fallback to memory or SQLite on PostgreSQL configuration, connection, or schema errors.
+- [ ] Production enablement, production migration, and deployment-specific operational checks — require separate explicit approval and have not been performed.
 
 ## Current status
 
-The memory and SQLite backends remain supported. PostgreSQL runtime code is present on this feature branch but remains **provisional** until fixed-SHA acceptance and real PostgreSQL integration tests pass. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
+The memory and SQLite backends remain supported. PostgreSQL runtime code has passed fixed-SHA WorkBuddy review and real PostgreSQL 16 integration CI; it is **validated for the tested contract but not enabled in production**. Production migration, secrets, backups, monitoring, and deployment require separate review and explicit approval. Set `A2A_STORE=postgres`, `A2A_POSTGRES_DSN`, and optionally `A2A_POSTGRES_POOL_MIN_SIZE`, `A2A_POSTGRES_POOL_MAX_SIZE`, and `A2A_POSTGRES_CONNECT_TIMEOUT`. Install with `pip install -e ".[postgres,dev]"`.
 
 The integration tests in `tests/test_postgres_store.py` are opt-in via `A2A_TEST_POSTGRES_DSN` and must target a disposable database. Without that variable they skip and do not open network connections. WorkBuddy must report skipped integration tests as skipped, not passed. The dedicated GitHub Actions workflow supplies an ephemeral PostgreSQL 16 database through a service container; it does not use production credentials or infrastructure. Run `44904518389` passed on code SHA `94d148b7f32eb215fa7075f9a15942d0c306a8b9`; subsequent source changes require a fresh run.
