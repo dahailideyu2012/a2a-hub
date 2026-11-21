@@ -537,7 +537,9 @@ class SqliteTaskStore(TaskStore):
         self._conn.close()
 
 
-def build_store(kind: str, db_path: str, *, postgres_dsn: str = "",\n                postgres_min_size: int = 1, postgres_max_size: int = 8,\n                postgres_timeout: float = 5.0) -> TaskRepository:
+def build_store(kind: str, db_path: str, *, postgres_dsn: str = "",
+                postgres_min_size: int = 1, postgres_max_size: int = 8,
+                postgres_timeout: float = 5.0) -> TaskRepository:
     """Build only an explicitly selected backend; never silently downgrade.
 
     A typo such as postgres or sqllite must not create an in-memory store
