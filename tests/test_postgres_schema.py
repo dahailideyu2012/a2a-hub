@@ -15,8 +15,21 @@ SCHEMA = (
 )
 
 
+def _schema_sql() -> str:
+    """Return normalized SQL without full-line comments.
+
+    Keep comments in the migration for maintainers, but do not let a leading
+    comment make transaction-boundary assertions inspect the wrong line.
+    """
+    return "\n".join(
+        line.strip().lower()
+        for line in SCHEMA.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("--")
+    )
+
+
 def test_postgres_schema_contains_task_and_idempotency_records():
-    sql = SCHEMA.read_text(encoding="utf-8").lower()
+    sql = _schema_sql()
     assert "create table if not exists tasks" in sql
     assert "create table if not exists task_idempotency" in sql
     assert "payload text not null" in sql
@@ -26,7 +39,7 @@ def test_postgres_schema_contains_task_and_idempotency_records():
 
 
 def test_postgres_schema_preserves_pull_lease_fencing_fields():
-    sql = SCHEMA.read_text(encoding="utf-8").lower()
+    sql = _schema_sql()
     for field in (
         "execution_mode",
         "connector_id",
@@ -45,7 +58,7 @@ def test_postgres_schema_preserves_pull_lease_fencing_fields():
 
 
 def test_postgres_schema_has_queue_and_expiry_indexes():
-    sql = SCHEMA.read_text(encoding="utf-8").lower()
+    sql = _schema_sql()
     assert "idx_tasks_pull_queue" in sql
     assert "where execution_mode = 'pull'" in sql
     assert "idx_tasks_active_lease" in sql
@@ -53,9 +66,10 @@ def test_postgres_schema_has_queue_and_expiry_indexes():
 
 
 def test_postgres_schema_migration_is_transactional_and_versioned():
-    sql = SCHEMA.read_text(encoding="utf-8").lower()
-    assert sql.strip().startswith("begin;")
-    assert sql.strip().endswith("commit;")
+    sql = _schema_sql()
+    statements = [statement.strip() for statement in sql.splitlines() if statement.strip()]
+    assert statements[0] == "begin;"
+    assert statements[-1] == "commit;"
     assert "create table if not exists a2a_schema_migrations" in sql
     assert "values (1)" in sql
     assert "on conflict (version) do nothing" in sql
