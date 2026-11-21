@@ -13,6 +13,9 @@ class TestDiscovery:
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
         assert r.json()["agents"] == 4
+        from a2a_hub import __version__
+
+        assert r.json()["version"] == __version__
 
     def test_hub_agent_card_at_well_known(self, client):
         r = client.get("/.well-known/agent.json")
