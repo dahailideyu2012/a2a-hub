@@ -380,7 +380,7 @@ class JsonRpcDispatcher:
         if not isinstance(self.registry.store, PullTaskRepository):
             raise A2AError(
                 JsonRpcErrorCodes.INTERNAL_ERROR,
-                "Pull execution requires a persistent SQLite task store",
+                "Pull execution requires a task repository that supports the PullTaskRepository contract",
             )
         task, _message, _agent_id = self._new_task(params, scoped_agent)
         self.registry.store.enqueue_pull(task)
