@@ -20,6 +20,7 @@ class RepositoryErrorCode(str, Enum):
     TASK_TERMINAL = "task_terminal"
     PROGRESS_SEQUENCE_CONFLICT = "progress_sequence_conflict"
     NOT_PULL_TASK = "not_pull_task"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
 
 
 class RepositoryError:
@@ -52,6 +53,7 @@ class TaskRepository(Protocol):
     def get(self, task_id: str) -> Optional[Task]: ...
     def list(self, limit: int = 100) -> list[Task]: ...
     def delete(self, task_id: str) -> None: ...
+    def find_idempotent_task(self, operation_id: str, request_hash: str) -> Optional[Task]: ...
 
 
 @runtime_checkable
@@ -64,8 +66,8 @@ class PullTaskRepository(TaskRepository, Protocol):
 
     Expected domain errors are stable across adapters: ``RepositoryNotFoundError``
     carries ``TASK_NOT_FOUND``; ``RepositoryConflictError`` carries one of
-    ``LEASE_CONFLICT``, ``TASK_TERMINAL``, ``PROGRESS_SEQUENCE_CONFLICT``, or
-    ``NOT_PULL_TASK``. Both retain KeyError/ValueError compatibility for existing
+    ``LEASE_CONFLICT``, ``TASK_TERMINAL``, ``PROGRESS_SEQUENCE_CONFLICT``,
+    ``NOT_PULL_TASK``, or ``IDEMPOTENCY_CONFLICT``. Both retain KeyError/ValueError compatibility for existing
     callers. Unexpected adapter/driver exceptions propagate unchanged.
     """
 
