@@ -87,6 +87,16 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_STORE", "memory")
     monkeypatch.setenv("A2A_PUBLIC_URL", "http://testserver")
     monkeypatch.setenv("A2A_API_TOKEN", "")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_TOKEN", "test-chatgpt-ingress-token-0123456789")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_ALLOWED_AGENTS", "echo-a")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_ACTOR", "human:default")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_DB_PATH", str(agents_file.parent / "chatgpt-ingress.db"))
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_RATE_LIMIT", "30")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_MAX_BODY_BYTES", "16384")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "test-workbuddy-connector-token-0123456789")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS", "echo-a")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_LEASE_SECONDS", "120")
     monkeypatch.delenv("A2A_REQUIRE_AUTH", raising=False)
     # 社交层的两个文件必须指向临时目录：**测试不能依赖工作树状态**。
     # 否则部署者本机跑了 `social init`（生成 config/members.yaml）之后，

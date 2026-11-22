@@ -69,6 +69,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 设计取舍与协议映射细节（为什么这样实现、哪些还没做）见
 > [`docs/protocol-notes.md`](docs/protocol-notes.md)。
 > 社交层的**配置与运维手册**见 [`docs/social-guide.md`](docs/social-guide.md)。
+> ChatGPT Remote MCP 接入、认证与能力边界见 [`docs/chatgpt-remote-mcp-v1.md`](docs/chatgpt-remote-mcp-v1.md)。
 
 ---
 
@@ -994,6 +995,47 @@ SSE 分帧合法性、四种协同拓扑的行为契约、存储层契约（memo
 
 ---
 
+
+### ChatGPT 独立任务入口（C1）
+
+Hub 提供独立 REST 入口 `/integrations/chatgpt/v1`，与现有 A2A Bearer Token、MCP stdio 认证相互隔离。它**不是 Remote MCP**，也不暴露任意 JSON-RPC 方法。
+
+启用前必须显式配置：
+
+- `A2A_CHATGPT_INGRESS_TOKEN`：独立高熵随机令牌；为空时入口返回 503。
+- `A2A_CHATGPT_INGRESS_ALLOWED_AGENTS`：逗号分隔的 agent ID 白名单；为空时拒绝提交。
+- `A2A_CHATGPT_INGRESS_ACTOR`：由服务端指定的 Hub 成员身份，绝不接受客户端自报。
+- `A2A_CHATGPT_INGRESS_DB_PATH`：幂等记录 SQLite 文件，默认 `./data/chatgpt_ingress.db`。
+- `A2A_CHATGPT_INGRESS_RATE_LIMIT`：每个 ingress token 每分钟请求数，默认 30。
+- `A2A_CHATGPT_INGRESS_MAX_BODY_BYTES`：请求体上限，默认 16 KiB。
+
+仅开放以下操作：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/integrations/chatgpt/v1/tasks` | 向白名单 agent 提交任务（`mode=hub` 或 `mode=pull`） |
+| GET | `/integrations/chatgpt/v1/tasks` | 列出该入口提交的任务 |
+| GET | `/integrations/chatgpt/v1/tasks/{task_id}` | 查询该入口提交的任务 |
+| GET | `/integrations/chatgpt/v1/tasks/{task_id}/events` | SSE 快照与实时任务事件 |
+| POST | `/integrations/chatgpt/v1/tasks/{task_id}/cancel` | 取消该入口拥有的可取消 Pull 任务 |
+
+提交示例：
+
+```http
+POST /integrations/chatgpt/v1/tasks
+X-ChatGPT-Ingress-Token: <独立令牌>
+Idempotency-Key: chatgpt-2026-000001
+Content-Type: application/json
+
+{"agent_id":"echo-a","prompt":"请处理这项任务"}
+```
+
+幂等键在 24 小时内有效；相同键与相同请求重放返回原任务，不同请求复用同一键返回 409。任务列表/详情/SSE 仅允许读取该 ingress ledger 登记的任务。SSE 提供当前任务快照与连接期间的事件；断线恢复后可先 GET 任务状态，再重新订阅，当前版本不承诺历史事件重放。
+
+安全边界：仅允许提交任务，以及取消该入口拥有且当前存储支持的 Pull 任务；不允许调用 social、collab、任意 JSON-RPC method 或未列入白名单的 agent。Pull 任务取消当前要求 SQLite task store。Rate limiter 为单进程滑动窗口；多 worker/多实例部署前需替换为共享限流后端。请在 TLS 反向代理后使用，不要把令牌放进 URL 或日志。
+
+如需将该 REST ingress 配置为可选的 ChatGPT GPT Action，见 [ChatGPT Actions 接入说明](docs/chatgpt-actions-setup.md) 与 [OpenAPI schema](docs/chatgpt-actions-openapi.json)。该 schema 只是 REST Action 契约，不是 Remote MCP；使用前必须替换 HTTPS server URL 并完成独立部署/安全审查。
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：
@@ -1124,3 +1166,59 @@ Web 控制台为原生 JavaScript 手写，**未引入任何前端框架或第�
 ### 贡献
 
 提交 Pull Request 即表示你同意：你的贡献以 MIT License 授权给本项目及其他使用者。
+
+
+### WorkBuddy Personal pull connector (C2-A)
+
+ChatGPT ingress keeps its original behavior by default: omitted `mode` means `hub` and uses the existing Hub adapter execution path. To queue work for an outbound-poll connector, submit `mode: "pull"` to `POST /integrations/chatgpt/v1/tasks`. Pull enqueue persists the task and does **not** start a Hub adapter.
+
+Configure an independent `A2A_WORKBUDDY_CONNECTOR_TOKEN` (at least 32 characters); do not reuse the ChatGPT ingress token. Optional `A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS` narrows which agents this connector may claim. The WorkBuddy connector API is under `/integrations/workbuddy/v1`:
+
+- `POST /claim` — atomically claim one queued task and receive a lease envelope.
+- `POST /tasks/{task_id}/start` — mark the task working.
+- `POST /tasks/{task_id}/renew` — renew the lease.
+- `POST /tasks/{task_id}/progress` — append a sequenced progress update.
+- `POST /tasks/{task_id}/result` — submit a completed/failed result idempotently.
+- `POST /integrations/chatgpt/v1/tasks/{task_id}/cancel` — ChatGPT-side cancellation of a pull task without invoking the Hub adapter.
+
+All connector writes require the configured connector identity plus lease token and monotonically increasing lease version. Lease fencing prevents stale workers from overwriting a newer lease, but lease expiry does not prove the old process or its external side effects have stopped. This implementation targets one Hub host with SQLite; multi-host/distributed locking and durable event replay are out of scope. Configure TLS at the deployment edge.
+
+
+### WorkBuddy Pull Connector（C2-B）
+
+仓库新增独立的 WorkBuddy stdio MCP 客户端：`workbuddy_mcp_server.py`。它不启动本地 Hub，也不暴露入站端口；仅由 WorkBuddy 在用户明确触发时主动请求 Hub 的既有 REST Pull API。
+
+Connector 包位于 `connectors/netivora-a2a-workbuddy/`，包含：
+
+- `connector-meta.json`：Connector 元信息，Token 认证模式。
+- `icon.svg`：Connector 图标。
+- `token-schema.json`：在 WorkBuddy 本机表单收集 Hub 地址、脚本路径和独立 Connector Token。
+- `mcp.json`：stdio 启动配置，凭据通过环境变量注入子进程。
+- `skills/a2a-workbuddy-pull/SKILL.md`：手动领取、执行、续租、进度和结果回传指引。
+
+#### 本机配置
+
+1. 将仓库更新到最新开发分支，并确认 `workbuddy_mcp_server.py` 位于本机仓库根目录。
+2. 在 WorkBuddy 的自定义 Connector 页面导入/配置 `connectors/netivora-a2a-workbuddy/`。
+3. 在连接表单填写本机脚本完整路径、Hub 根 HTTPS 地址和独立的 `A2A_WORKBUDDY_CONNECTOR_TOKEN`。不要与 `A2A_CHATGPT_INGRESS_TOKEN` 共用。
+4. 确认本机可通过 `python` 命令启动 Python 3.10+。若当前 WorkBuddy 环境找不到 Python，先停止并报告，不要自行修改 MCP 配置。
+5. 用户明确触发“领取 Hub 任务”后，Skill 才领取一项任务；不会后台轮询。
+
+#### 安全与限制
+
+- Connector Token 由 WorkBuddy Token 表单本机保存，并注入 stdio 子进程环境；不得写入仓库、Skill、命令行参数或日志。
+- 每个任务的 lease token 只保存在 MCP 子进程内存中，不返回给模型；子进程重启后映射丢失，需等待旧租约过期后重新领取。
+- Hub 地址生产环境必须 HTTPS；客户端拒绝 HTTP 重定向，避免把认证头转发到其他地址。
+- 任务范围仍受 Hub 端独立 agent allowlist 和 lease fencing 保护。
+- 本 Connector 不实现 Hub → WorkBuddy 的公网入站回调；它是 WorkBuddy 主动 Pull，不是 Remote MCP 服务端。
+- WorkBuddy 的脚本/网络确认弹窗由客户端权限策略控制；不要为了无人值守而擅自放宽权限。
+
+#### 测试
+
+```powershell
+& $PY -m pytest -q tests/test_workbuddy_mcp_server.py
+& $PY -m compileall -q a2a_hub tests workbuddy_mcp_server.py
+& $PY -m pytest -q
+```
+
+当前开发版必须先通过本机专项、语法和全量回归，再进行 WorkBuddy Connector 安装与 Hub 联调。

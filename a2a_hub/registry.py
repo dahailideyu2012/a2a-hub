@@ -31,7 +31,7 @@ from .models import (
     TaskState,
     TextPart,
 )
-from .store import TaskStore
+from .ports import ClosableRepository, TaskRepository
 
 log = logging.getLogger("a2a_hub.registry")
 
@@ -110,7 +110,7 @@ class AgentRegistry:
         self,
         settings: Settings,
         hub_config: HubConfig,
-        store: TaskStore,
+        store: TaskRepository,
         bus: EventBus,
     ) -> None:
         self.settings = settings
@@ -483,6 +483,11 @@ class AgentRegistry:
     async def aclose(self) -> None:
         for rec in self._records.values():
             await rec.adapter.aclose()
+        # The registry owns the task store lifecycle. Close persistent stores
+        # during FastAPI lifespan shutdown so SQLite releases file handles,
+        # especially on Windows where the DB cannot be unlinked while open.
+        if isinstance(self.store, ClosableRepository):
+            self.store.close()
 
 
 # --------------------------------------------------------------------------- #

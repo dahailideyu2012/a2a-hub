@@ -1,0 +1,40 @@
+{
+  "title": "NETIVORA A2A Hub 连接配置",
+  "title_en": "NETIVORA A2A Hub Configuration",
+  "description": "填写本机 MCP 脚本路径、Hub 的 HTTPS 地址和独立 WorkBuddy Connector Token。凭据由 WorkBuddy 本机保存；不要与 ChatGPT Ingress Token 共用。",
+  "description_en": "Enter the local MCP script path, Hub HTTPS URL, and dedicated WorkBuddy Connector Token. WorkBuddy stores credentials locally. Do not reuse the ChatGPT Ingress Token.",
+  "docUrl": "https://github.com/dahailideyu2012/a2a-hub/blob/feature/chatgpt-workbuddy-bridge-v1/README.md",
+  "docLabel": "查看 A2A Hub 配置说明",
+  "fields": [
+    {
+      "key": "A2A_HUB_MCP_SERVER_PATH",
+      "label": "本机 MCP 服务脚本路径",
+      "label_en": "Local MCP server script path",
+      "type": "text",
+      "required": true,
+      "defaultValue": "H:\\soft\\netivora\\a2a-hub\\workbuddy_mcp_server.py",
+      "description": "填写仓库中 workbuddy_mcp_server.py 的完整路径。",
+      "description_en": "Full path to workbuddy_mcp_server.py in your local repository."
+    },
+    {
+      "key": "A2A_WORKBUDDY_HUB_URL",
+      "label": "A2A Hub HTTPS 地址",
+      "label_en": "A2A Hub HTTPS URL",
+      "type": "text",
+      "required": true,
+      "placeholder": "https://your-hub.example.com",
+      "description": "只填写 Hub 根地址，不要添加 API 路径；生产环境必须 HTTPS。",
+      "description_en": "Hub base URL only; do not append an API path. HTTPS is required in production."
+    },
+    {
+      "key": "A2A_WORKBUDDY_CONNECTOR_TOKEN",
+      "label": "WorkBuddy Connector Token",
+      "label_en": "WorkBuddy Connector Token",
+      "type": "password",
+      "required": true,
+      "placeholder": "粘贴独立的 WorkBuddy Connector Token",
+      "description": "至少 32 个字符；不要使用 ChatGPT Ingress Token。",
+      "description_en": "At least 32 characters. Do not reuse the ChatGPT Ingress Token."
+    }
+  ]
+}

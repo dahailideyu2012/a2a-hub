@@ -79,8 +79,15 @@ def test_memory_store_evicts_oldest():
 
 def test_build_store_selects_backend(tmp_path):
     assert isinstance(build_store("memory", ""), MemoryTaskStore)
+    assert isinstance(build_store(" MEMORY ", ""), MemoryTaskStore)
     assert isinstance(build_store("sqlite", str(tmp_path / "a.db")), SqliteTaskStore)
-    assert isinstance(build_store("weird", ""), MemoryTaskStore)  # 未知类型降级
+    assert isinstance(build_store(" SQLITE ", str(tmp_path / "b.db")), SqliteTaskStore)
+
+
+@pytest.mark.parametrize("backend", ["weird", "postgres", "sqllite", ""])
+def test_build_store_rejects_unknown_backend_instead_of_silent_memory_fallback(backend):
+    with pytest.raises(ValueError, match="Unsupported A2A_STORE backend"):
+        build_store(backend, "")
 
 
 def test_sqlite_persists_across_instances(tmp_path):
