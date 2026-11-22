@@ -19,6 +19,17 @@ The MCP endpoint exposes only five task tools:
 
 `get_task_events` currently returns a persisted snapshot checkpoint, not a replay of the complete event history. Live events remain available from the REST SSE route `GET /integrations/chatgpt/v1/tasks/{task_id}/events`. Do not describe this snapshot tool as historical event streaming.
 
+## Storage requirement for WorkBuddy Pull mode
+
+The default MCP `submit_task` mode is `pull`, so WorkBuddy can claim the task from the Hub. Pull mode requires a task repository implementing the `PullTaskRepository` contract.
+
+- `A2A_STORE=memory` is suitable for basic local Hub mode, but the in-memory repository does not implement the Pull lease/claim contract. Pull submissions will be rejected.
+- Use `A2A_STORE=sqlite` with a persistent `A2A_DB_PATH` for a single-host deployment, or the PostgreSQL adapter for a multi-process deployment.
+- Do not use ephemeral container filesystems for SQLite in production; use a durable mounted volume. PostgreSQL requires its separately configured optional driver and migrations.
+- `mode=hub` remains available for direct Hub execution, but it is not the WorkBuddy Pull execution path.
+
+The ingress fails closed when the configured repository cannot safely support Pull execution; it must not silently downgrade a Pull task to in-memory or Hub execution.
+
 ## Authentication and configuration
 
 Configure the existing dedicated ChatGPT ingress token. The token must be at least 32 characters and must be provided as:
