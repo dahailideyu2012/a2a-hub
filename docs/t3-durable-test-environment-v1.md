@@ -165,3 +165,8 @@ Delivery is at-least-once, not exactly-once. Keep this database on persistent
 storage and include it in backups. The worker starts only when the GitHub API
 token and repository allowlist are configured. No inbound webhook or public
 listener is added.
+
+For the isolated Compose stack, the outbox is stored in the persistent
+`/app/data` volume. Back up both databases independently, for example:
+`python scripts/sqlite_maintenance.py backup --database /app/data/github_callback_outbox.db --output /app/backups/github_callback_outbox.db`.
+Do not omit the outbox database when moving or restoring a Hub instance.

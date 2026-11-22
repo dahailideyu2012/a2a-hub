@@ -16,6 +16,9 @@ services:
       A2A_STORE: sqlite
       A2A_DB_PATH: /app/data/a2a_hub.db
       A2A_CHATGPT_INGRESS_DB_PATH: /app/data/chatgpt_ingress.db
+      A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH: /app/data/github_callback_outbox.db
+      A2A_GITHUB_CALLBACK_OUTBOX_MAX_ATTEMPTS: ${A2A_GITHUB_CALLBACK_OUTBOX_MAX_ATTEMPTS:-12}
+      A2A_GITHUB_CALLBACK_OUTBOX_POLL_SECONDS: ${A2A_GITHUB_CALLBACK_OUTBOX_POLL_SECONDS:-2.0}
       A2A_RELATIONS_FILE: /app/data/relations.json
       A2A_AGENTS_FILE: /app/config/agents.yaml
       A2A_REQUIRE_AUTH: "true"
