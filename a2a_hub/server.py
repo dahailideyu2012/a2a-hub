@@ -396,8 +396,9 @@ app.add_middleware(
 )
 
 # 独立 ChatGPT 入口：独立 token、窄白名单与任务级回读，不暴露任意 JSON-RPC。
-app.include_router(build_chatgpt_ingress_router(get_hub))
-app.include_router(build_chatgpt_mcp_router(get_hub))
+chatgpt_ingress_router = build_chatgpt_ingress_router(get_hub)
+app.include_router(chatgpt_ingress_router)
+app.include_router(build_chatgpt_mcp_router(get_hub, chatgpt_ingress_router))
 app.include_router(build_workbuddy_connector_router(get_hub))
 
 
