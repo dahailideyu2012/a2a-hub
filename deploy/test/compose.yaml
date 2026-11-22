@@ -4,7 +4,6 @@ services:
       context: ../..
       dockerfile: Dockerfile
     image: a2a-hub:test
-    container_name: a2a-hub-test
     restart: unless-stopped
     ports:
       - "127.0.0.1:\${A2A_TEST_PORT:-18080}:8080"
@@ -43,6 +42,4 @@ services:
 
 volumes:
   hub_test_data:
-    name: a2a-hub-test-data
   hub_test_backups:
-    name: a2a-hub-test-backups
