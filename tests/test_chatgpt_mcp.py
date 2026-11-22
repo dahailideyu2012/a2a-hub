@@ -18,11 +18,10 @@ def rpc(client: TestClient, method: str, params=None, request_id=1, headers=None
     request_headers = {**HEADERS, **(headers or {})}
     if method != "initialize":
         request_headers.setdefault("MCP-Protocol-Version", "2025-11-25")
-    return client.post(
-        MCP,
-        headers=request_headers,
-        json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}},
-    )
+    payload = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+    if request_id is not None:
+        payload["id"] = request_id
+    return client.post(MCP, headers=request_headers, json=payload)
 
 
 def call_tool(client: TestClient, name: str, arguments: dict, request_id=2):
@@ -150,9 +149,15 @@ class TestChatGPTRemoteMCP:
         assert response.status_code == 406
 
     def test_mcp_tool_call_response_includes_protocol_header(self, client):
-        result = call_tool(
+        response = rpc(
             client,
-            "submit_task",
-            {"agent_id": "echo-a", "prompt": "protocol response header", "idempotency_key": "mcp-proto-header-001"},
+            "tools/call",
+            {"name": "submit_task", "arguments": {
+                "agent_id": "echo-a",
+                "prompt": "protocol response header",
+                "idempotency_key": "mcp-proto-header-001",
+            }},
         )
-        assert result["isError"] is False
+        assert response.status_code == 200
+        assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
+        assert response.json()["result"]["isError"] is False
