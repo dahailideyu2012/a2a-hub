@@ -91,7 +91,7 @@ class TestChatGPTRemoteMCP:
 
     def test_submit_then_get_and_list_task(self, pull_client):
         submitted = call_tool(
-            client,
+            pull_client,
             "submit_task",
             {"agent_id": "echo-a", "prompt": "mcp remote smoke test", "mode": "pull", "idempotency_key": "remote-mcp-test-0001"},
         )
@@ -107,7 +107,7 @@ class TestChatGPTRemoteMCP:
 
     def test_event_tool_returns_owned_snapshot_checkpoint(self, pull_client):
         submitted = call_tool(
-            client,
+            pull_client,
             "submit_task",
             {"agent_id": "echo-a", "prompt": "event checkpoint", "mode": "pull", "idempotency_key": "remote-mcp-events-001"},
         )
@@ -179,7 +179,7 @@ class TestChatGPTRemoteMCP:
 
     def test_mcp_tool_call_response_includes_protocol_header(self, pull_client):
         response = rpc(
-            client,
+            pull_client,
             "tools/call",
             {"name": "submit_task", "arguments": {
                 "agent_id": "echo-a",
@@ -238,7 +238,7 @@ class TestChatGPTRemoteMCP:
 
     def test_cancel_pull_task_through_mcp(self, pull_client):
         submitted = call_tool(
-            client,
+            pull_client,
             "submit_task",
             {"agent_id": "echo-a", "prompt": "cancel me", "mode": "pull", "idempotency_key": "mcp-cancel-task-001"},
         )
