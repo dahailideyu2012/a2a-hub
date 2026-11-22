@@ -56,7 +56,7 @@ class TestChatGPTRemoteMCP:
 
     def test_missing_and_invalid_bearer_are_rejected(self, client):
         missing = rpc(client, "tools/list", headers={"Content-Type": "application/json", "Accept": "application/json"})
-        invalid = rpc(client, "tools/list", headers={**HEADERS, "Authorization": "Bearer invalid"})
+        invalid = rpc(client, "tools/list", headers={**HEADERS, "Authorization": "Bearer test-workbuddy-connector-token-0123456789"})
         assert missing.status_code == 401
         assert invalid.status_code == 403
 
@@ -161,3 +161,73 @@ class TestChatGPTRemoteMCP:
         assert response.status_code == 200
         assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
         assert response.json()["result"]["isError"] is False
+
+
+    def test_chatgpt_token_is_not_interchangeable_with_workbuddy_token(self, client):
+        response = rpc(
+            client,
+            "tools/list",
+            headers={**HEADERS, "Authorization": "Bearer test-workbuddy-connector-token-0123456789"},
+        )
+        assert response.status_code == 403
+
+    def test_short_chatgpt_token_fails_closed(self, client):
+        from a2a_hub.server import hub
+
+        original = hub.settings.chatgpt_ingress_token
+        try:
+            hub.settings.chatgpt_ingress_token = "short"
+            response = rpc(client, "tools/list")
+            assert response.status_code == 503
+        finally:
+            hub.settings.chatgpt_ingress_token = original
+
+    def test_agent_allowlist_is_enforced_through_mcp(self, client):
+        result = call_tool(
+            client,
+            "submit_task",
+            {"agent_id": "echo-b", "prompt": "not allowlisted", "idempotency_key": "mcp-denied-agent-001"},
+        )
+        assert result["isError"] is True
+
+    def test_task_ownership_is_enforced_through_mcp(self, client):
+        result = call_tool(client, "get_task", {"task_id": "task-not-owned-by-chatgpt"})
+        assert result["isError"] is True
+
+    def test_idempotent_submit_replays_same_task(self, client):
+        args = {
+            "agent_id": "echo-a",
+            "prompt": "same logical MCP task",
+            "mode": "pull",
+            "idempotency_key": "mcp-idempotency-replay-001",
+        }
+        first = call_tool(client, "submit_task", args)
+        second = call_tool(client, "submit_task", args)
+        assert first["isError"] is False
+        assert second["isError"] is False
+        assert first["structuredContent"]["task"]["id"] == second["structuredContent"]["task"]["id"]
+
+    def test_cancel_pull_task_through_mcp(self, client):
+        submitted = call_tool(
+            client,
+            "submit_task",
+            {"agent_id": "echo-a", "prompt": "cancel me", "mode": "pull", "idempotency_key": "mcp-cancel-task-001"},
+        )
+        task_id = submitted["structuredContent"]["task"]["id"]
+        cancelled = call_tool(client, "cancel_task", {"task_id": task_id})
+        assert cancelled["isError"] is False
+        assert cancelled["structuredContent"]["status"]["state"].lower() == "cancelled"
+
+    def test_unknown_jsonrpc_method_returns_method_not_found(self, client):
+        response = rpc(client, "not/a/real/method")
+        assert response.status_code == 200
+        assert response.json()["error"]["code"] == -32601
+
+    def test_invalid_json_returns_parse_error(self, client):
+        response = client.post(
+            MCP,
+            headers=HEADERS,
+            content=b"{not-json",
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32700
