@@ -169,17 +169,25 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             outbox = outbox_for(settings)
             # The terminal task is committed first; persist callback intent before network I/O.
             outbox.enqueue(task_id, callback, body.state, body.output)
-            try:
-                callback_result = await asyncio.to_thread(
-                    deliver_github_issue_result, callback, task_id, body.state, body.output,
-                    settings.github_relay_api_token, settings.github_relay_allowed_repos,
-                )
-            except GithubResultDeliveryError as exc:
-                current = outbox.status(task_id) or {}
-                outbox.mark_failed(task_id, max(1, int(current.get("attempts", 0)) + 1), exc)
-                raise HTTPException(status_code=502, detail="GitHub 结果已进入持久化重试队列")
+            # A WorkBuddy replay can request an immediate retry. The atomic SQLite
+            # lease still ensures only one process (request or worker) owns delivery.
+            if replay:
+                outbox.retry(task_id)
+            item = outbox.claim_due()
+            if item is None:
+                callback_result = {"queued": True, "status": (outbox.status(task_id) or {}).get("status", "pending")}
             else:
-                outbox.mark_delivered(task_id)
+                try:
+                    callback_result = await asyncio.to_thread(
+                        deliver_github_issue_result, item["callback"], task_id,
+                        item["state"], item["output"],
+                        settings.github_relay_api_token, settings.github_relay_allowed_repos,
+                    )
+                except GithubResultDeliveryError as exc:
+                    outbox.mark_failed(task_id, item["attempts"], exc)
+                    raise HTTPException(status_code=502, detail="GitHub 结果已进入持久化重试队列")
+                else:
+                    outbox.mark_delivered(task_id)
         if not replay:
             hub.registry.bus.publish(task_id, task)
             hub.registry.bus.close_task(task_id)
