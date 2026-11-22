@@ -79,11 +79,15 @@ _TOOLS = [
 ]
 
 
-def build_chatgpt_mcp_router(get_hub: Callable[[], Any]) -> APIRouter:
+def build_chatgpt_mcp_router(
+    get_hub: Callable[[], Any], ingress_router: APIRouter | None = None
+) -> APIRouter:
     """Build a sessionless MCP Streamable HTTP endpoint at /integrations/chatgpt/mcp."""
     router = APIRouter(tags=["ChatGPT Remote MCP"])
     rest_app = FastAPI()
-    rest_app.include_router(build_chatgpt_ingress_router(get_hub))
+    # Reuse the exact same router instance as REST so ledger and rate-limit
+    # state cannot be bypassed by switching between REST and MCP transports.
+    rest_app.include_router(ingress_router or build_chatgpt_ingress_router(get_hub))
 
     def bearer(value: str | None) -> str:
         if not value or not value.startswith("Bearer "):
