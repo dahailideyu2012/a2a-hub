@@ -45,3 +45,6 @@ jobs:
           docker compose -p a2a-hub-t3-ci --env-file deploy/test/.env.test -f deploy/test/compose.yaml config --quiet
       - name: Build image
         run: docker build -t a2a-hub:ci .
+
+      - name: Run isolated Docker Compose runtime acceptance
+        run: python scripts/compose_runtime_acceptance.py --project a2a-hub-t7-ci
