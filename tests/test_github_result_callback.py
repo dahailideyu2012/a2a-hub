@@ -15,7 +15,7 @@ def test_result_comment_escapes_untrusted_html_and_suppresses_mentions():
     assert "<script>" not in body
     assert "&lt;script&gt;" in body
     assert "@everyone" not in body
-    assert "@&#8203;everyone" in body
+    assert "@\u200beveryone" in body
     assert _marker("task-123") in body
 
 
