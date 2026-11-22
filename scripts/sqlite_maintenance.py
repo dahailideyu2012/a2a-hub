@@ -18,8 +18,11 @@ class MaintenanceError(RuntimeError):
 
 
 def _database_file(path: str | Path, *, must_exist: bool = True) -> Path:
-    target = Path(path).expanduser().resolve()
-    if must_exist and (not target.is_file() or target.is_symlink()):
+    original = Path(path).expanduser()
+    if original.is_symlink():
+        raise MaintenanceError(f"database path must not be a symlink: {original}")
+    target = original.resolve()
+    if must_exist and not target.is_file():
         raise MaintenanceError(f"database file does not exist or is not a regular file: {target}")
     return target
 
@@ -44,7 +47,10 @@ def _copy_database(source_path: Path, destination_path: Path) -> None:
 
 def backup_database(database: str | Path, output: str | Path) -> Path:
     source = _database_file(database)
-    destination = Path(output).expanduser().resolve()
+    raw_destination = Path(output).expanduser()
+    if raw_destination.is_symlink():
+        raise MaintenanceError("backup destination must not be a symlink")
+    destination = raw_destination.resolve()
     if source == destination:
         raise MaintenanceError("backup destination must differ from source database")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +64,7 @@ def backup_database(database: str | Path, output: str | Path) -> Path:
     temporary = Path(temp_name)
     try:
         _copy_database(source, temporary)
-        with temporary.open("rb") as handle:
+        with temporary.open("rb+") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
     finally:
@@ -68,7 +74,7 @@ def backup_database(database: str | Path, output: str | Path) -> Path:
 
 def verify_database(database: str | Path) -> Path:
     source = _database_file(database)
-    connection = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True, timeout=30)
+    connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=30)
     try:
         _integrity_check(connection)
     finally:
@@ -80,7 +86,10 @@ def restore_database(
     backup: str | Path, database: str | Path, *, overwrite: bool = False
 ) -> Path:
     source = verify_database(backup)
-    destination = Path(database).expanduser().resolve()
+    raw_destination = Path(database).expanduser()
+    if raw_destination.is_symlink():
+        raise MaintenanceError("restore destination must not be a symlink")
+    destination = raw_destination.resolve()
     if source == destination:
         raise MaintenanceError("restore source and destination must differ")
     if destination.exists() and not overwrite:
@@ -94,7 +103,7 @@ def restore_database(
     temporary = Path(temp_name)
     try:
         _copy_database(source, temporary)
-        with temporary.open("rb") as handle:
+        with temporary.open("rb+") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
     finally:
