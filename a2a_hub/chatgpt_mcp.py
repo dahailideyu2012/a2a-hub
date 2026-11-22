@@ -16,10 +16,11 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi import FastAPI
 
+from . import __version__ as APP_VERSION
 from .chatgpt_ingress import _read_limited_body, build_chatgpt_ingress_router
 
 _PROTOCOLS = {"2025-06-18", "2025-11-25"}
-_SERVER_INFO = {"name": "a2a-hub-chatgpt", "version": "0.6.0"}
+_SERVER_INFO = {"name": "a2a-hub-chatgpt", "version": APP_VERSION}
 _TOOLS = [
     {
         "name": "submit_task",
