@@ -38,7 +38,7 @@ From the repository root:
    `curl -H "Authorization: Bearer <A2A_API_TOKEN>" http://127.0.0.1:18080/agents`
 
 The test stack uses project-scoped named volumes. Use the same project name on every Compose command.
-`docker compose down` preserves volumes; `docker compose down -v` deletes them and must not be used when retaining test data.
+`docker compose -p a2a-hub-t3-test down` preserves volumes; `docker compose -p a2a-hub-t3-test down -v` deletes them and must not be used when retaining test data.
 
 ## SQLite backup and verification
 
