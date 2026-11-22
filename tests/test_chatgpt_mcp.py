@@ -55,7 +55,15 @@ class TestChatGPTRemoteMCP:
         assert all(item["inputSchema"]["additionalProperties"] is False for item in tools)
 
     def test_missing_and_invalid_bearer_are_rejected(self, client):
-        missing = rpc(client, "tools/list", headers={"Content-Type": "application/json", "Accept": "application/json"})
+        missing_headers = {
+            key: value for key, value in HEADERS.items() if key != "Authorization"
+        }
+        missing_headers["MCP-Protocol-Version"] = "2025-11-25"
+        missing = client.post(
+            MCP,
+            headers=missing_headers,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
         invalid = rpc(client, "tools/list", headers={**HEADERS, "Authorization": "Bearer test-workbuddy-connector-token-0123456789"})
         assert missing.status_code == 401
         assert invalid.status_code == 403
@@ -66,7 +74,7 @@ class TestChatGPTRemoteMCP:
             "submit_task",
             {"agent_id": "echo-a", "prompt": "mcp remote smoke test", "mode": "pull", "idempotency_key": "remote-mcp-test-0001"},
         )
-        assert submitted["isError"] is False
+        assert submitted["isError"] is False, submitted.get("content")
         task = submitted["structuredContent"]["task"]
         task_id = task["id"]
 
@@ -160,7 +168,7 @@ class TestChatGPTRemoteMCP:
         )
         assert response.status_code == 200
         assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
-        assert response.json()["result"]["isError"] is False
+        assert response.json()["result"]["isError"] is False, response.json()["result"].get("content")
 
 
     def test_chatgpt_token_is_not_interchangeable_with_workbuddy_token(self, client):
@@ -203,7 +211,7 @@ class TestChatGPTRemoteMCP:
         }
         first = call_tool(client, "submit_task", args)
         second = call_tool(client, "submit_task", args)
-        assert first["isError"] is False
+        assert first["isError"] is False, first.get("content")
         assert second["isError"] is False
         assert first["structuredContent"]["task"]["id"] == second["structuredContent"]["task"]["id"]
 
