@@ -62,6 +62,7 @@ def task_to_wire(task: Task, include_internal: bool = False) -> dict:
     if isinstance(metadata, dict):
         metadata.pop("chatgpt_ingress_operation_id", None)
         metadata.pop("chatgpt_ingress_request_hash", None)
+        metadata.pop("github_issue_callback", None)
     if include_internal:
         data["agentId"] = task.agentId
         data["createdAt"] = task.createdAt
