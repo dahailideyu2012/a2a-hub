@@ -6,7 +6,7 @@ services:
     image: a2a-hub:test
     restart: unless-stopped
     ports:
-      - "127.0.0.1:\${A2A_TEST_PORT:-18080}:8080"
+      - "127.0.0.1:${A2A_TEST_PORT:-18080}:8080"
     env_file:
       - .env.test
     environment:
