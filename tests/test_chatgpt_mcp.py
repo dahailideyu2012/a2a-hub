@@ -92,3 +92,26 @@ class TestChatGPTRemoteMCP:
     def test_non_post_methods_are_not_supported(self, client):
         assert client.get(MCP).status_code == 405
         assert client.delete(MCP).status_code == 405
+
+    def test_unsupported_protocol_header_is_rejected(self, client):
+        response = client.post(
+            MCP,
+            headers={**HEADERS, "MCP-Protocol-Version": "1900-01-01"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        assert response.status_code == 400
+
+    def test_mcp_body_limit_is_enforced(self, client):
+        response = client.post(
+            MCP,
+            headers=HEADERS,
+            content=json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "submit_task", "arguments": {
+                    "agent_id": "echo-a", "prompt": "x" * 20000
+                }},
+            }),
+        )
+        assert response.status_code == 413
