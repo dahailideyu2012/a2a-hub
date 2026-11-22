@@ -4,7 +4,7 @@
 
 - MCP Streamable HTTP: `POST /integrations/chatgpt/mcp`
 - REST fallback: `/integrations/chatgpt/v1`
-- MCP protocol versions negotiated: `2025-03-26`, `2025-06-18`
+- MCP protocol versions negotiated: `2025-06-18`, `2025-11-25`
 - Transport is stateless: no MCP session is created or persisted.
 
 The MCP endpoint exposes only five task tools:
