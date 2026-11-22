@@ -18,19 +18,29 @@ HEADERS = {
 @pytest.fixture
 def pull_client(settings, tmp_path):
     """Use an isolated SQLite repository because the memory store has no Pull contract."""
+    import a2a_hub.config as config
+    import a2a_hub.registry as registry
     import a2a_hub.server as server
+    from a2a_hub.ports import PullTaskRepository
 
     previous_hub = server.hub
+    previous_settings = config._settings
+    previous_registry = registry._registry
     previous_store = settings.store
     previous_db_path = settings.db_path
     settings.store = "sqlite"
     settings.db_path = str(tmp_path / "mcp-pull-tasks.sqlite3")
+    config._settings = settings
+    registry._registry = None
     server.hub = server.Hub()
+    assert isinstance(server.hub.registry.store, PullTaskRepository)
     try:
         with TestClient(server.app) as test_client:
             yield test_client
     finally:
         server.hub = previous_hub
+        config._settings = previous_settings
+        registry._registry = previous_registry
         settings.store = previous_store
         settings.db_path = previous_db_path
 
