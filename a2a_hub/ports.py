@@ -115,6 +115,14 @@ class PullTaskRepository(TaskRepository, Protocol):
 
 
 @runtime_checkable
+class GithubCallbackOutboxRepository(Protocol):
+    """Durable at-least-once delivery queue for GitHub Issue result callbacks."""
+
+    def claim_github_callback(self, lease_seconds: int = 60) -> Optional[dict[str, Any]]: ...
+    def complete_github_callback(self, outbox_id: int) -> None: ...
+    def retry_github_callback(self, outbox_id: int, error: str, delay_seconds: int) -> None: ...
+
+
 class ClosableRepository(Protocol):
     """Optional lifecycle capability for adapters that own local resources."""
 
@@ -128,5 +136,6 @@ __all__ = [
     "RepositoryNotFoundError",
     "TaskRepository",
     "PullTaskRepository",
+    "GithubCallbackOutboxRepository",
     "ClosableRepository",
 ]
