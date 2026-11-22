@@ -170,11 +170,18 @@ def build_chatgpt_mcp_router(get_hub: Callable[[], Any]) -> APIRouter:
         token = authenticate(authorization)
         if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
             raise HTTPException(status_code=415, detail="MCP requests must use application/json")
+        protocol_header = request.headers.get("mcp-protocol-version")
+        if protocol_header and protocol_header not in _PROTOCOLS:
+            raise HTTPException(status_code=400, detail="Unsupported MCP-Protocol-Version")
+        max_body = get_hub().settings.chatgpt_ingress_max_body_bytes
+        raw_body = await request.body()
+        if len(raw_body) > max_body:
+            raise HTTPException(status_code=413, detail="MCP request body exceeds configured limit")
         accept = request.headers.get("accept", "")
         if "application/json" not in accept and "text/event-stream" not in accept:
             raise HTTPException(status_code=406, detail="Accept must include application/json or text/event-stream")
         try:
-            message = await request.json()
+            message = json.loads(raw_body.decode('utf-8'))
         except Exception:
             return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, status_code=400)
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
