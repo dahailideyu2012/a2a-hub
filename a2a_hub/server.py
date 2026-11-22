@@ -75,6 +75,7 @@ from .config import get_settings
 from .models import A2AError, JsonRpcError, JsonRpcErrorCodes, JsonRpcResponse, utc_now
 from .orchestrator import Orchestrator
 from .registry import AgentRegistry, bootstrap
+from .github_outbox_worker import run_github_outbox_worker
 from .relations import (
     DEFAULT_MEMBER,
     USER,
@@ -371,11 +372,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 启动时做一次非阻塞健康探测，让控制台一打开就有状态
     asyncio.create_task(hub.registry.check_health(force=True))
+    outbox_task = None
+    outbox_stop = asyncio.Event()
+    if (s.github_relay_api_token and len(s.github_relay_api_token) >= 20
+            and s.github_relay_allowed_repos.strip()
+            and hasattr(hub.registry.store, "claim_github_callback")):
+        outbox_task = asyncio.create_task(run_github_outbox_worker(
+            hub.registry.store, s.github_relay_api_token,
+            s.github_relay_allowed_repos, outbox_stop,
+        ))
+    elif s.github_relay_allowed_repos.strip():
+        log.warning("GitHub result outbox remains pending: callback token/repository configuration is incomplete")
     # 巡航只有显式开启才会真的跑（默认关 = 零后台请求）
     if hub.cruise.start():
         log.info("自主交友巡航已启用（A2A_AUTONOMY_ENABLED=true）")
     yield
     await hub.cruise.stop()
+    if outbox_task is not None:
+        outbox_stop.set()
+        outbox_task.cancel()
+        try:
+            await outbox_task
+        except asyncio.CancelledError:
+            pass
     await hub.social.aclose()
     await hub.registry.aclose()
 
