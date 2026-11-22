@@ -184,10 +184,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                         settings.github_relay_api_token, settings.github_relay_allowed_repos,
                     )
                 except GithubResultDeliveryError as exc:
-                    outbox.mark_failed(task_id, item["attempts"], exc)
+                    outbox.mark_failed(task_id, item["attempts"], item["lease_token"], exc)
                     raise HTTPException(status_code=502, detail="GitHub 结果已进入持久化重试队列")
                 else:
-                    outbox.mark_delivered(task_id)
+                    outbox.mark_delivered(task_id, item["lease_token"])
         if not replay:
             hub.registry.bus.publish(task_id, task)
             hub.registry.bus.close_task(task_id)
