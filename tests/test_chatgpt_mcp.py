@@ -216,7 +216,7 @@ class TestChatGPTRemoteMCP:
         task_id = submitted["structuredContent"]["task"]["id"]
         cancelled = call_tool(client, "cancel_task", {"task_id": task_id})
         assert cancelled["isError"] is False
-        assert cancelled["structuredContent"]["status"]["state"].lower() == "cancelled"
+        assert cancelled["structuredContent"]["status"]["state"].lower() == "canceled"
 
     def test_unknown_jsonrpc_method_returns_method_not_found(self, client):
         response = rpc(client, "not/a/real/method")
