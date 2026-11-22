@@ -34,9 +34,16 @@ def read_values(path):
 def test_backup_includes_committed_wal_data_and_verifies(tmp_path):
     database = tmp_path / "hub.db"
     backup = tmp_path / "backups" / "hub.db"
-    create_database(database, "committed-in-wal")
-
-    result = backup_database(database, backup)
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("CREATE TABLE sample (value TEXT NOT NULL)")
+    connection.execute("INSERT INTO sample(value) VALUES (?)", ("committed-in-wal",))
+    connection.commit()
+    try:
+        assert (tmp_path / "hub.db-wal").exists()
+        result = backup_database(database, backup)
+    finally:
+        connection.close()
 
     assert result == backup.resolve()
     assert verify_database(backup) == backup.resolve()
