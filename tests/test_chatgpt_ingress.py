@@ -294,13 +294,15 @@ class TestChatGPTIngress:
         assert replay.json()["task"]["id"] == first.json()["task"]["id"]
 
 
-def test_github_relay_valid_hmac_is_accepted(client, monkeypatch):
+def test_github_relay_valid_hmac_is_accepted(client, monkeypatch, tmp_path):
     import hashlib
     import hmac
     import json
     import time
     import a2a_hub.server as server
+    from a2a_hub.store import SqliteTaskStore
 
+    monkeypatch.setattr(server.hub.registry, "store", SqliteTaskStore(str(tmp_path / "relay-pull.db")))
     secret = "relay-test-secret-0123456789-abcdef"
     monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret", secret)
     key = "gh-1234-5-5678"
