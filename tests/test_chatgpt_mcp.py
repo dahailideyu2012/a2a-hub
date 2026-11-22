@@ -278,3 +278,20 @@ class TestChatGPTRemoteMCP:
             content=b'{"jsonrpc":"2.0","id":1,"method":"initialize"}',
         )
         assert response.status_code == 415
+
+
+    def test_rate_limit_is_shared_with_rest_ingress(self, client):
+        from a2a_hub.server import hub
+
+        original = hub.settings.chatgpt_ingress_rate_limit
+        try:
+            hub.settings.chatgpt_ingress_rate_limit = 1
+            first = rpc(client, "tools/list")
+            assert first.status_code == 200
+            second = client.get(
+                "/integrations/chatgpt/v1/tasks",
+                headers={"X-ChatGPT-Ingress-Token": TOKEN},
+            )
+            assert second.status_code == 429
+        finally:
+            hub.settings.chatgpt_ingress_rate_limit = original
