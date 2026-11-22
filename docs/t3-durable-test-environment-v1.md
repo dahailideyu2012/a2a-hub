@@ -139,3 +139,34 @@ does not contact GitHub, use real credentials, prove the GitHub Actions webhook
 or WorkBuddy desktop runtime, or replace the later container/runtime acceptance.
 The existing T4 limitation remains: retries are initiated by WorkBuddy replay;
 there is not yet an autonomous durable callback outbox.
+
+
+## T6 — Durable GitHub callback outbox
+
+T6 adds a separate SQLite outbox database at `A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH`
+(default `./data/github_callback_outbox.db`). The terminal task result is saved
+first; the callback intent is inserted idempotently before outbound network I/O.
+A background worker drains due entries independently of WorkBuddy replay.
+
+- States: `pending`, `processing`, `delivered`, `dead`.
+- SQLite `BEGIN IMMEDIATE` claims due entries with a lease; expired processing
+  leases are reclaimable after process or worker failure.
+- Exponential retry delay is capped at one hour; default attempt budget is 12.
+- Task ID is the unique outbox key. Existing GitHub comment marker lookup remains
+  the idempotency guard for ambiguous POST success/response loss.
+- WorkBuddy may inspect `GET /integrations/workbuddy/v1/callbacks/{task_id}`
+  and manually requeue a pending/dead entry with
+  `POST /integrations/workbuddy/v1/callbacks/{task_id}/retry`; both require
+  the separate WorkBuddy connector token.
+- Startup reconciliation scans persisted terminal tasks and inserts missing
+  callback intents, covering a crash after task commit but before outbox insert.
+
+Delivery is at-least-once, not exactly-once. Keep this database on persistent
+storage and include it in backups. The worker starts only when the GitHub API
+token and repository allowlist are configured. No inbound webhook or public
+listener is added.
+
+For the isolated Compose stack, the outbox is stored in the persistent
+`/app/data` volume. Back up both databases independently, for example:
+`python scripts/sqlite_maintenance.py backup --database /app/data/github_callback_outbox.db --output /app/backups/github_callback_outbox.db`.
+Do not omit the outbox database when moving or restoring a Hub instance.

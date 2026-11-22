@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .ports import PullTaskRepository
 from .store import task_to_wire
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
+from .github_callback_outbox import GithubCallbackOutbox
 
 
 class ClaimRequest(BaseModel):
@@ -57,6 +59,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not isinstance(hub.registry.store, PullTaskRepository):
             raise HTTPException(status_code=503, detail="Connector claim requires a task repository that supports the PullTaskRepository contract")
         return hub.registry.store
+
+    def outbox_for(settings: Any) -> GithubCallbackOutbox:
+        path = Path(settings.github_callback_outbox_db_path)
+        if not path.is_absolute():
+            from .config import ROOT
+            path = (ROOT / path).resolve()
+        return GithubCallbackOutbox(path, max_attempts=settings.github_callback_outbox_max_attempts)
 
     def lease_args(body: LeaseRequest, settings: Any) -> tuple[str, str, int, int]:
         return settings.workbuddy_connector_id, body.lease_token, body.lease_version, settings.workbuddy_connector_lease_seconds
@@ -157,16 +166,28 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         callback_result = None
         callback = task.metadata.get("github_issue_callback")
         if isinstance(callback, dict):
-            try:
-                callback_result = await asyncio.to_thread(
-                    deliver_github_issue_result,
-                    callback, task_id, body.state, body.output,
-                    settings.github_relay_api_token, settings.github_relay_allowed_repos,
-                )
-            except GithubResultDeliveryError:
-                # The task result is already durable. Return 502 so WorkBuddy retries
-                # the exact same result; marker lookup prevents duplicate Issue comments.
-                raise HTTPException(status_code=502, detail="GitHub 结果回传暂时失败；请使用相同 result_key 重试")
+            outbox = outbox_for(settings)
+            # The terminal task is committed first; persist callback intent before network I/O.
+            outbox.enqueue(task_id, callback, body.state, body.output)
+            # A WorkBuddy replay can request an immediate retry. The atomic SQLite
+            # lease still ensures only one process (request or worker) owns delivery.
+            if replay:
+                outbox.retry(task_id)
+            item = outbox.claim_due()
+            if item is None:
+                callback_result = {"queued": True, "status": (outbox.status(task_id) or {}).get("status", "pending")}
+            else:
+                try:
+                    callback_result = await asyncio.to_thread(
+                        deliver_github_issue_result, item["callback"], task_id,
+                        item["state"], item["output"],
+                        settings.github_relay_api_token, settings.github_relay_allowed_repos,
+                    )
+                except GithubResultDeliveryError as exc:
+                    outbox.mark_failed(task_id, item["attempts"], exc)
+                    raise HTTPException(status_code=502, detail="GitHub 结果已进入持久化重试队列")
+                else:
+                    outbox.mark_delivered(task_id)
         if not replay:
             hub.registry.bus.publish(task_id, task)
             hub.registry.bus.close_task(task_id)
@@ -174,5 +195,22 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         if callback_result is not None:
             response["github_callback"] = callback_result
         return response
+
+    @router.get("/callbacks/{task_id}")
+    async def callback_status(task_id: str, connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token")) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        status = outbox_for(settings).status(task_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="回调任务不存在")
+        return status
+
+    @router.post("/callbacks/{task_id}/retry")
+    async def retry_callback(task_id: str, connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token")) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        if not outbox_for(settings).retry(task_id):
+            raise HTTPException(status_code=409, detail="回调不存在或当前状态不可人工重试")
+        return {"task_id": task_id, "status": "pending"}
 
     return router

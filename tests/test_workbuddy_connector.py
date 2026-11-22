@@ -455,6 +455,8 @@ def test_signed_github_task_result_is_returned_to_original_issue(client, tmp_pat
     replay = client.post(f"/integrations/workbuddy/v1/tasks/{task.id}/result", headers=headers, json=body)
     assert replay.status_code == 200
     assert replay.json()["idempotent_replay"] is True
-    assert len(calls) == 2
+    assert replay.json()["github_callback"]["status"] == "delivered"
+    # A durable delivered outbox entry suppresses redundant callback delivery.
+    assert len(calls) == 1
     assert calls[0][0]["issue_number"] == 42
     store.close()
