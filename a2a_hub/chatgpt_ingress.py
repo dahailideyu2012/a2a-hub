@@ -197,7 +197,6 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
                     # reconciliation pass was in flight. Never overwrite it.
                     continue
 
-    @router.post("/tasks")
     def verify_github_relay_signature(request: Request, settings: Any, idempotency_key: str, raw: bytes) -> None:
         source = request.headers.get("x-a2a-relay-source")
         if source is None:
@@ -209,6 +208,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
             raise HTTPException(status_code=503, detail="GitHub relay HMAC 尚未配置有效密钥")
         timestamp = request.headers.get("x-a2a-relay-timestamp", "")
         supplied = request.headers.get("x-a2a-relay-signature", "")
+        if not timestamp.isascii() or not timestamp.isdigit() or len(timestamp) > 12:
+            raise HTTPException(status_code=401, detail="GitHub relay 签名时间无效")
         try:
             issued_at = int(timestamp)
         except (TypeError, ValueError):
@@ -220,6 +221,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=403, detail="GitHub relay 签名无效")
 
+    @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
         hub, settings, ledger, limiter = runtime()
         await guard(ingress_token, settings, limiter)
