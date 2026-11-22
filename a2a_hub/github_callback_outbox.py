@@ -140,8 +140,8 @@ class GithubCallbackOutbox:
                 """UPDATE github_callback_outbox
                    SET status='delivered',lease_until=NULL,lease_token=NULL,
                        last_error=NULL,updated_at=?
-                   WHERE task_id=? AND status='processing' AND lease_token=?""",
-                (time.time(), task_id, lease_token),
+                   WHERE task_id=? AND status='processing' AND lease_token=? AND lease_until>?""",
+                (time.time(), task_id, lease_token, time.time()),
             )
             return cur.rowcount == 1
 
@@ -160,7 +160,7 @@ class GithubCallbackOutbox:
                 """UPDATE github_callback_outbox
                    SET status=?,next_attempt_at=?,lease_until=NULL,lease_token=NULL,
                        last_error=?,updated_at=?
-                   WHERE task_id=? AND status='processing' AND lease_token=? AND attempts=?""",
+                   WHERE task_id=? AND status='processing' AND lease_token=? AND attempts=? AND lease_until>?""",
                 (
                     "dead" if dead else "pending",
                     now + delay,
@@ -169,6 +169,7 @@ class GithubCallbackOutbox:
                     task_id,
                     lease_token,
                     attempts,
+                    now,
                 ),
             )
             return cur.rowcount == 1
