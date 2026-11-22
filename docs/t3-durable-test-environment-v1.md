@@ -170,3 +170,26 @@ For the isolated Compose stack, the outbox is stored in the persistent
 `/app/data` volume. Back up both databases independently, for example:
 `python scripts/sqlite_maintenance.py backup --database /app/data/github_callback_outbox.db --output /app/backups/github_callback_outbox.db`.
 Do not omit the outbox database when moving or restoring a Hub instance.
+
+
+## T7 — Disposable container runtime acceptance
+
+Run the real Docker Compose runtime acceptance from the repository root:
+
+`python scripts/compose_runtime_acceptance.py`
+
+The harness refuses to overwrite an existing `deploy/test/.env.test`, creates
+short-lived high-entropy test-only credentials, binds the Hub to loopback, and
+uses only the local `echo` agent. It performs a real application-level
+ChatGPT-ingress → WorkBuddy Pull claim/start/result flow, checks ingress
+idempotency, writes a synthetic pending callback marker to the outbox without
+enabling GitHub delivery, creates/verifies backups for all three SQLite
+databases, tests an offline restore to a disposable destination, restarts the
+container, and confirms task + outbox persistence and idempotent replay.
+
+The harness deletes its generated env file and tears down its unique Compose
+project and named volumes in a `finally` block. It never configures GitHub
+credentials, calls GitHub APIs, exposes a public port, or touches Cloudflare.
+The CI Docker job executes this harness after the image build. A passing job
+proves the disposable runtime path on that CI runner; it does not prove a
+user's own Docker host or real WorkBuddy desktop account is connected.
