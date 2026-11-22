@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY a2a_hub/ ./a2a_hub/
 COPY web/ ./web/
 COPY config/ ./config/
+COPY scripts/sqlite_maintenance.py ./scripts/sqlite_maintenance.py
 COPY run.py pyproject.toml README.md ./
 
 RUN mkdir -p /app/data && \
