@@ -22,7 +22,7 @@ COPY config/ ./config/
 COPY scripts/sqlite_maintenance.py ./scripts/sqlite_maintenance.py
 COPY run.py pyproject.toml README.md ./
 
-RUN mkdir -p /app/data && \
+RUN mkdir -p /app/data /app/backups && \
     useradd -m -u 10001 hub && chown -R hub:hub /app
 USER hub
 
