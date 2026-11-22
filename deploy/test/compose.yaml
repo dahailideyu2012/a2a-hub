@@ -24,6 +24,7 @@ services:
       A2A_AUTONOMY_ENABLED: "false"
     volumes:
       - hub_test_data:/app/data
+      - hub_test_backups:/app/backups
       - ../../config/agents.yaml:/app/config/agents.yaml:ro
     healthcheck:
       test:
@@ -43,3 +44,5 @@ services:
 volumes:
   hub_test_data:
     name: a2a-hub-test-data
+  hub_test_backups:
+    name: a2a-hub-test-backups
