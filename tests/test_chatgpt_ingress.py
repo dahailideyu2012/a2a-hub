@@ -292,3 +292,86 @@ class TestChatGPTIngress:
         assert replay.status_code == 200
         assert replay.json()["idempotent_replay"] is True
         assert replay.json()["task"]["id"] == first.json()["task"]["id"]
+
+
+def test_github_relay_valid_hmac_is_accepted(client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    import time
+    import a2a_hub.server as server
+
+    secret = "relay-test-secret-0123456789-abcdef"
+    monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret", secret)
+    key = "gh-1234-5-5678"
+    raw = json.dumps({"agent_id": "echo-a", "prompt": "signed relay", "mode": "hub"},
+                     ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    timestamp = str(int(time.time()))
+    message = timestamp.encode() + b"." + key.encode() + b"." + raw
+    signature = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    response = client.post(
+        f"{BASE}/tasks",
+        headers={
+            **headers(key),
+            "X-A2A-Relay-Source": "github-issue-comment",
+            "X-A2A-Relay-Timestamp": timestamp,
+            "X-A2A-Relay-Signature": signature,
+            "Content-Type": "application/json",
+        },
+        content=raw,
+    )
+    assert response.status_code == 200
+    assert response.json()["task"]["id"]
+
+
+def test_github_relay_rejects_stale_hmac(client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    import time
+    import a2a_hub.server as server
+
+    secret = "relay-test-secret-0123456789-abcdef"
+    monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret", secret)
+    key = "gh-1234-5-5679"
+    raw = json.dumps({"agent_id": "echo-a", "prompt": "stale relay", "mode": "pull"},
+                     ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    timestamp = str(int(time.time()) - 600)
+    message = timestamp.encode() + b"." + key.encode() + b"." + raw
+    signature = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    response = client.post(
+        f"{BASE}/tasks",
+        headers={
+            **headers(key),
+            "X-A2A-Relay-Source": "github-issue-comment",
+            "X-A2A-Relay-Timestamp": timestamp,
+            "X-A2A-Relay-Signature": signature,
+            "Content-Type": "application/json",
+        },
+        content=raw,
+    )
+    assert response.status_code == 401
+
+
+def test_github_relay_rejects_bad_signature(client, monkeypatch):
+    import json
+    import time
+    import a2a_hub.server as server
+
+    monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret",
+                        "relay-test-secret-0123456789-abcdef")
+    key = "gh-1234-5-5680"
+    raw = json.dumps({"agent_id": "echo-a", "prompt": "tampered", "mode": "pull"},
+                     ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    response = client.post(
+        f"{BASE}/tasks",
+        headers={
+            **headers(key),
+            "X-A2A-Relay-Source": "github-issue-comment",
+            "X-A2A-Relay-Timestamp": str(int(time.time())),
+            "X-A2A-Relay-Signature": "sha256=" + "0" * 64,
+            "Content-Type": "application/json",
+        },
+        content=raw,
+    )
+    assert response.status_code == 403

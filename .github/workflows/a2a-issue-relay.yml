@@ -1,0 +1,40 @@
+name: A2A GitHub Issue Relay
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a2a-issue-relay-${{ github.event.issue.id }}
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: github.event.issue.pull_request == null && github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out default-branch relay code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate and relay task to A2A Hub
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          A2A_HUB_URL: ${{ vars.A2A_HUB_URL }}
+          A2A_CHATGPT_INGRESS_TOKEN: ${{ secrets.A2A_CHATGPT_INGRESS_TOKEN }}
+          A2A_GITHUB_RELAY_HMAC_SECRET: ${{ secrets.A2A_GITHUB_RELAY_HMAC_SECRET }}
+          A2A_GITHUB_RELAY_ALLOWED_ACTORS: ${{ vars.A2A_GITHUB_RELAY_ALLOWED_ACTORS }}
+          A2A_GITHUB_RELAY_ALLOWED_AGENTS: ${{ vars.A2A_GITHUB_RELAY_ALLOWED_AGENTS }}
+        run: python scripts/github_issue_relay.py

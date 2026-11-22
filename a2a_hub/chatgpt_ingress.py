@@ -197,6 +197,30 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
                     # reconciliation pass was in flight. Never overwrite it.
                     continue
 
+    def verify_github_relay_signature(request: Request, settings: Any, idempotency_key: str, raw: bytes) -> None:
+        source = request.headers.get("x-a2a-relay-source")
+        if source is None:
+            return
+        if source != "github-issue-comment":
+            raise HTTPException(status_code=400, detail="不支持的 relay 来源")
+        secret = settings.github_relay_hmac_secret
+        if len(secret) < 32:
+            raise HTTPException(status_code=503, detail="GitHub relay HMAC 尚未配置有效密钥")
+        timestamp = request.headers.get("x-a2a-relay-timestamp", "")
+        supplied = request.headers.get("x-a2a-relay-signature", "")
+        if not timestamp.isascii() or not timestamp.isdigit() or len(timestamp) > 12:
+            raise HTTPException(status_code=401, detail="GitHub relay 签名时间无效")
+        try:
+            issued_at = int(timestamp)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="GitHub relay 签名时间无效")
+        if abs(time.time() - issued_at) > 300:
+            raise HTTPException(status_code=401, detail="GitHub relay 签名已过期")
+        message = timestamp.encode("ascii") + b"." + idempotency_key.encode("ascii") + b"." + raw
+        expected = "sha256=" + hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            raise HTTPException(status_code=403, detail="GitHub relay 签名无效")
+
     @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
         hub, settings, ledger, limiter = runtime()
@@ -206,6 +230,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
             raise HTTPException(status_code=415, detail="仅支持 application/json")
         raw = await _read_limited_body(request, settings.chatgpt_ingress_max_body_bytes)
+        verify_github_relay_signature(request, settings, idempotency_key, raw)
         try: payload = DelegateRequest.model_validate_json(raw)
         except ValidationError: raise HTTPException(status_code=422, detail="请求参数无效；仅允许 agent_id 和 prompt")
         allowed = {v.strip() for v in settings.chatgpt_ingress_allowed_agents.split(",") if v.strip()}

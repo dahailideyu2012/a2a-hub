@@ -1222,3 +1222,14 @@ Connector 包位于 `connectors/netivora-a2a-workbuddy/`，包含：
 ```
 
 当前开发版必须先通过本机专项、语法和全量回归，再进行 WorkBuddy Connector 安装与 Hub 联调。
+
+
+### GitHub Issue → A2A Hub relay (T1/T2)
+
+An opt-in, allowlisted GitHub Issue comment relay can enqueue WorkBuddy Pull
+tasks without requiring write-capable ChatGPT Remote MCP. See
+[`docs/github-issue-relay-v1.md`](docs/github-issue-relay-v1.md). The workflow
+is intentionally inactive until merged to the default branch and configured
+with repository Actions variables/secrets. It uses a separate HMAC secret,
+timestamp validation, stable per-comment idempotency keys, and the existing
+Hub ingress/agent allowlists.
