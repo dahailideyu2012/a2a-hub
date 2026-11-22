@@ -4,7 +4,7 @@ import asyncio, json, sqlite3, time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
-from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
+from .github_result_callback import deliver_github_issue_result
 
 class GithubCallbackOutbox:
     """Lease-based outbox safe across restarts and concurrent workers."""
