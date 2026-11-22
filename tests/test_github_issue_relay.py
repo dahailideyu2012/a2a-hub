@@ -72,3 +72,24 @@ def test_hmac_signature_is_bound_to_timestamp_key_and_body():
     assert sig != relay.signature(secret, "1700000001", "gh-1-2-3", body)
     assert sig != relay.signature(secret, "1700000000", "gh-1-2-4", body)
     assert sig != relay.signature(secret, "1700000000", "gh-1-2-3", body + b" ")
+
+
+
+def test_github_callback_context_is_extracted_from_validated_issue_event():
+    context = relay._github_callback_context(event())
+    assert context == {
+        "repository": "owner/repo",
+        "issue_number": 5,
+        "source_comment_id": 5678,
+    }
+
+
+def test_github_callback_context_rejects_invalid_repository_and_ids():
+    bad_repo = event()
+    bad_repo["repository"]["full_name"] = "https://attacker.example/repo"
+    with pytest.raises(relay.RelayError):
+        relay._github_callback_context(bad_repo)
+    bad_issue = event()
+    bad_issue["issue"]["number"] = True
+    with pytest.raises(relay.RelayError):
+        relay._github_callback_context(bad_issue)

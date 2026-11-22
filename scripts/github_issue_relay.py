@@ -83,13 +83,25 @@ def _validate_event(event: dict[str, Any], actor_allowlist: set[str], agent_allo
     return agent_id, prompt, key
 
 
+def _github_callback_context(event: dict[str, Any]) -> dict[str, Any]:
+    repo = (event.get("repository") or {}).get("full_name")
+    issue = event.get("issue") or {}
+    comment = event.get("comment") or {}
+    issue_number, comment_id = issue.get("number"), comment.get("id")
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise RelayError("GitHub repository identity is invalid")
+    if not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (issue_number, comment_id)):
+        raise RelayError("GitHub Issue callback identifiers are invalid")
+    return {"repository": repo, "issue_number": issue_number, "source_comment_id": comment_id}
+
+
 def signature(secret: str, timestamp: str, idempotency_key: str, raw_body: bytes) -> str:
     message = timestamp.encode("ascii") + b"." + idempotency_key.encode("ascii") + b"." + raw_body
     digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
     return "sha256=" + digest
 
 
-def _post_hub(url: str, token: str, secret: str, key: str, payload: dict[str, str]) -> dict[str, Any]:
+def _post_hub(url: str, token: str, secret: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise RelayError("A2A_HUB_URL must be a clean HTTPS origin/base URL")
@@ -176,7 +188,8 @@ def main() -> int:
             ingress_token,
             signing_secret,
             key,
-            {"agent_id": agent_id, "prompt": prompt, "mode": "pull"},
+            {"agent_id": agent_id, "prompt": prompt, "mode": "pull",
+             "github_issue_callback": _github_callback_context(event)},
         )
         task = result.get("task") if isinstance(result, dict) else None
         task_id = task.get("id") if isinstance(task, dict) else None

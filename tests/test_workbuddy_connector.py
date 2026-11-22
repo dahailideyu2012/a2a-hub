@@ -409,3 +409,52 @@ def test_reclaimed_lease_fences_every_old_worker_operation_after_restart(tmp_pat
     assert completed.status.state == TaskState.COMPLETED
     assert replay is False
     store.close()
+
+
+
+def test_signed_github_task_result_is_returned_to_original_issue(client, tmp_path, monkeypatch):
+    import a2a_hub.server as server
+    import a2a_hub.workbuddy_connector as connector
+    from a2a_hub.models import Message, Task
+
+    store = SqliteTaskStore(str(tmp_path / "github-result.db"))
+    monkeypatch.setattr(server.hub.registry, "store", store)
+    task = Task(agentId="echo-a", metadata={
+        "github_issue_callback": {
+            "repository": "owner/repo",
+            "issue_number": 42,
+            "source_comment_id": 99,
+        }
+    })
+    task.history.append(Message.user("run from GitHub"))
+    store.enqueue_pull(task)
+    calls = []
+
+    def fake_delivery(callback, task_id, state, output, token, allowed):
+        calls.append((callback, task_id, state, output, token, allowed))
+        return {"delivered": True, "replayed": len(calls) > 1}
+
+    monkeypatch.setattr(connector, "deliver_github_issue_result", fake_delivery)
+    server.hub.settings.workbuddy_connector_allowed_agents = "echo-a"
+    server.hub.settings.github_relay_api_token = "x" * 32
+    server.hub.settings.github_relay_allowed_repos = "owner/repo"
+    token = "test-workbuddy-connector-token-0123456789"
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    claimed = client.post("/integrations/workbuddy/v1/claim", headers=headers, json={}).json()
+    lease = claimed["lease"]
+    body = {
+        "lease_token": lease["lease_token"],
+        "lease_version": lease["lease_version"],
+        "result_key": "github-result-0001",
+        "state": "completed",
+        "output": "result from WorkBuddy",
+    }
+    first = client.post(f"/integrations/workbuddy/v1/tasks/{task.id}/result", headers=headers, json=body)
+    assert first.status_code == 200
+    assert first.json()["github_callback"]["delivered"] is True
+    replay = client.post(f"/integrations/workbuddy/v1/tasks/{task.id}/result", headers=headers, json=body)
+    assert replay.status_code == 200
+    assert replay.json()["idempotent_replay"] is True
+    assert len(calls) == 2
+    assert calls[0][0]["issue_number"] == 42
+    store.close()

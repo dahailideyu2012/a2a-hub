@@ -16,11 +16,19 @@ _IDEMPOTENCY_TTL = 24 * 60 * 60
 _PENDING_TTL = 120
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 
+class GithubIssueCallback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repository: str = Field(min_length=3, max_length=200, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    issue_number: int = Field(gt=0)
+    source_comment_id: int = Field(gt=0)
+
+
 class DelegateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     agent_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     prompt: str = Field(min_length=1, max_length=12000)
     mode: Literal["hub", "pull"] = "hub"
+    github_issue_callback: GithubIssueCallback | None = None
 
 class IdempotencyConflict(Exception): pass
 class IdempotencyPending(Exception): pass
@@ -197,10 +205,10 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
                     # reconciliation pass was in flight. Never overwrite it.
                     continue
 
-    def verify_github_relay_signature(request: Request, settings: Any, idempotency_key: str, raw: bytes) -> None:
+    def verify_github_relay_signature(request: Request, settings: Any, idempotency_key: str, raw: bytes) -> bool:
         source = request.headers.get("x-a2a-relay-source")
         if source is None:
-            return
+            return False
         if source != "github-issue-comment":
             raise HTTPException(status_code=400, detail="不支持的 relay 来源")
         secret = settings.github_relay_hmac_secret
@@ -220,6 +228,7 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         expected = "sha256=" + hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=403, detail="GitHub relay 签名无效")
+        return True
 
     @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
@@ -230,9 +239,21 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
             raise HTTPException(status_code=415, detail="仅支持 application/json")
         raw = await _read_limited_body(request, settings.chatgpt_ingress_max_body_bytes)
-        verify_github_relay_signature(request, settings, idempotency_key, raw)
+        relay_signed = verify_github_relay_signature(request, settings, idempotency_key, raw)
         try: payload = DelegateRequest.model_validate_json(raw)
-        except ValidationError: raise HTTPException(status_code=422, detail="请求参数无效；仅允许 agent_id 和 prompt")
+        except ValidationError: raise HTTPException(status_code=422, detail="请求参数无效；请求字段或格式不符合要求")
+        if payload.github_issue_callback is not None and not relay_signed:
+            raise HTTPException(status_code=403, detail="GitHub 回传上下文只能由签名 relay 提供")
+        if payload.github_issue_callback is not None and payload.mode != "pull":
+            raise HTTPException(status_code=422, detail="GitHub Issue 回传仅支持 Pull 模式任务")
+        if relay_signed and payload.github_issue_callback is None:
+            raise HTTPException(status_code=422, detail="签名 GitHub relay 必须提供 Issue 回传上下文")
+        if payload.github_issue_callback is not None:
+            allowed_repos = {x.strip().lower() for x in settings.github_relay_allowed_repos.split(",") if x.strip()}
+            if not allowed_repos or payload.github_issue_callback.repository.lower() not in allowed_repos:
+                raise HTTPException(status_code=403, detail="GitHub Issue 回传仓库不在白名单中")
+            if len(settings.github_relay_api_token) < 20:
+                raise HTTPException(status_code=503, detail="GitHub Issue 回传凭据尚未配置")
         allowed = {v.strip() for v in settings.chatgpt_ingress_allowed_agents.split(",") if v.strip()}
         if not allowed: raise HTTPException(status_code=503, detail="尚未配置 ChatGPT ingress agent 白名单")
         if payload.agent_id not in allowed: raise HTTPException(status_code=403, detail="该 agent 不在 ChatGPT ingress 白名单中")
@@ -289,7 +310,9 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
                            "configuration": {"blocking": False},
                            "metadata": {"source": "chatgpt-ingress", "mode": payload.mode,
                                        "chatgpt_ingress_operation_id": operation_id,
-                                       "chatgpt_ingress_request_hash": request_hash}},
+                                       "chatgpt_ingress_request_hash": request_hash,
+                                       **({"github_issue_callback": payload.github_issue_callback.model_dump()}
+                                          if payload.github_issue_callback is not None else {})}},
             }, actor=settings.chatgpt_ingress_actor)
             if "error" in rpc_result:
                 error = rpc_result["error"]

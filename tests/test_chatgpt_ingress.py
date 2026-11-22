@@ -294,18 +294,27 @@ class TestChatGPTIngress:
         assert replay.json()["task"]["id"] == first.json()["task"]["id"]
 
 
-def test_github_relay_valid_hmac_is_accepted(client, monkeypatch):
+def test_github_relay_valid_hmac_is_accepted(client, monkeypatch, tmp_path):
     import hashlib
     import hmac
     import json
     import time
     import a2a_hub.server as server
+    from a2a_hub.store import SqliteTaskStore
 
+    relay_store = SqliteTaskStore(str(tmp_path / "relay-pull.db"))
+    monkeypatch.setattr(server.hub.registry, "store", relay_store)
     secret = "relay-test-secret-0123456789-abcdef"
     monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret", secret)
     key = "gh-1234-5-5678"
-    raw = json.dumps({"agent_id": "echo-a", "prompt": "signed relay", "mode": "hub"},
-                     ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    server.hub.settings.github_relay_api_token = "github-test-token-0123456789"
+    server.hub.settings.github_relay_allowed_repos = "owner/repo"
+    raw = json.dumps({
+        "agent_id": "echo-a", "prompt": "signed relay", "mode": "pull",
+        "github_issue_callback": {
+            "repository": "owner/repo", "issue_number": 5, "source_comment_id": 5678
+        },
+    }, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     timestamp = str(int(time.time()))
     message = timestamp.encode() + b"." + key.encode() + b"." + raw
     signature = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
@@ -322,6 +331,8 @@ def test_github_relay_valid_hmac_is_accepted(client, monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["task"]["id"]
+    assert "github_issue_callback" not in response.json()["task"]["metadata"]
+    relay_store.close()
 
 
 def test_github_relay_rejects_stale_hmac(client, monkeypatch):
@@ -373,5 +384,24 @@ def test_github_relay_rejects_bad_signature(client, monkeypatch):
             "Content-Type": "application/json",
         },
         content=raw,
+    )
+    assert response.status_code == 403
+
+
+
+def test_unsigned_request_cannot_supply_github_callback_context(client, tmp_path, monkeypatch):
+    response = client.post(
+        f"{BASE}/tasks",
+        headers=headers("unsigned-callback-01"),
+        json={
+            "agent_id": "echo-a",
+            "prompt": "must not be able to choose an Issue callback",
+            "mode": "pull",
+            "github_issue_callback": {
+                "repository": "owner/repo",
+                "issue_number": 5,
+                "source_comment_id": 123,
+            },
+        },
     )
     assert response.status_code == 403

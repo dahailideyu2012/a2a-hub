@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     chatgpt_ingress_max_body_bytes: int = Field(default=16384, ge=1024, le=1048576, alias="A2A_CHATGPT_INGRESS_MAX_BODY_BYTES")
     # Optional GitHub Issue relay signature verification; independent from ingress and WorkBuddy tokens.
     github_relay_hmac_secret: str = Field(default="", alias="A2A_GITHUB_RELAY_HMAC_SECRET")
+    # Result callback credentials are narrowly scoped to the configured repositories.
+    github_relay_api_token: str = Field(default="", alias="A2A_GITHUB_RELAY_API_TOKEN")
+    github_relay_allowed_repos: str = Field(default="", alias="A2A_GITHUB_RELAY_ALLOWED_REPOS")
     # WorkBuddy pull connector: independent credential; never reuse ChatGPT ingress token.
     workbuddy_connector_token: str = Field(default="", alias="A2A_WORKBUDDY_CONNECTOR_TOKEN")
     workbuddy_connector_id: str = Field(default="workbuddy-personal", min_length=1, max_length=64, alias="A2A_WORKBUDDY_CONNECTOR_ID")

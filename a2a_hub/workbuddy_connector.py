@@ -1,6 +1,7 @@
 """Restricted outbound-poll API for the WorkBuddy Personal connector."""
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import Any, Callable, Literal
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .ports import PullTaskRepository
 from .store import task_to_wire
+from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
 
 
 class ClaimRequest(BaseModel):
@@ -152,9 +154,25 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+        callback_result = None
+        callback = task.metadata.get("github_issue_callback")
+        if isinstance(callback, dict):
+            try:
+                callback_result = await asyncio.to_thread(
+                    deliver_github_issue_result,
+                    callback, task_id, body.state, body.output,
+                    settings.github_relay_api_token, settings.github_relay_allowed_repos,
+                )
+            except GithubResultDeliveryError:
+                # The task result is already durable. Return 502 so WorkBuddy retries
+                # the exact same result; marker lookup prevents duplicate Issue comments.
+                raise HTTPException(status_code=502, detail="GitHub 结果回传暂时失败；请使用相同 result_key 重试")
         if not replay:
             hub.registry.bus.publish(task_id, task)
             hub.registry.bus.close_task(task_id)
-        return {"task": task_to_wire(task, include_internal=True), "idempotent_replay": replay}
+        response = {"task": task_to_wire(task, include_internal=True), "idempotent_replay": replay}
+        if callback_result is not None:
+            response["github_callback"] = callback_result
+        return response
 
     return router
