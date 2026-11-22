@@ -40,8 +40,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate isolated T3 Compose configuration
         run: |
+          trap 'rm -f deploy/test/.env.test' EXIT
           python -c "import secrets; print('A2A_API_TOKEN=' + secrets.token_urlsafe(32))" > deploy/test/.env.test
           docker compose -p a2a-hub-t3-ci --env-file deploy/test/.env.test -f deploy/test/compose.yaml config --quiet
-          rm -f deploy/test/.env.test
       - name: Build image
         run: docker build -t a2a-hub:ci .
