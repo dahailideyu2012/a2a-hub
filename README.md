@@ -69,6 +69,7 @@ Protocol v0.3）的 agent，实现 **能力发现 → 任务委派 → 流式回
 > 设计取舍与协议映射细节（为什么这样实现、哪些还没做）见
 > [`docs/protocol-notes.md`](docs/protocol-notes.md)。
 > 社交层的**配置与运维手册**见 [`docs/social-guide.md`](docs/social-guide.md)。
+> ChatGPT Remote MCP 接入、认证与能力边界见 [`docs/chatgpt-remote-mcp-v1.md`](docs/chatgpt-remote-mcp-v1.md)。
 
 ---
 
