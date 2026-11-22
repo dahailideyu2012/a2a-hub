@@ -1,6 +1,7 @@
 """Restricted outbound-poll API for the WorkBuddy Personal connector."""
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import Any, Callable, Literal
 
@@ -157,7 +158,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         callback = task.metadata.get("github_issue_callback")
         if isinstance(callback, dict):
             try:
-                callback_result = await __import__("asyncio").to_thread(
+                callback_result = await asyncio.to_thread(
                     deliver_github_issue_result,
                     callback, task_id, body.state, body.output,
                     settings.github_relay_api_token, settings.github_relay_allowed_repos,
