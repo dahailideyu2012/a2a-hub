@@ -15,9 +15,12 @@ HEADERS = {
 
 
 def rpc(client: TestClient, method: str, params=None, request_id=1, headers=None):
+    request_headers = {**HEADERS, **(headers or {})}
+    if method != "initialize":
+        request_headers.setdefault("MCP-Protocol-Version", "2025-11-25")
     return client.post(
         MCP,
-        headers=headers or HEADERS,
+        headers=request_headers,
         json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}},
     )
 
@@ -45,6 +48,7 @@ class TestChatGPTRemoteMCP:
     def test_tools_list_exposes_only_restricted_task_tools(self, client):
         response = rpc(client, "tools/list")
         assert response.status_code == 200
+        assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
         tools = response.json()["result"]["tools"]
         assert {item["name"] for item in tools} == {
             "submit_task", "get_task", "list_tasks", "get_task_events", "cancel_task"
@@ -116,3 +120,39 @@ class TestChatGPTRemoteMCP:
             }),
         )
         assert response.status_code == 413
+
+
+    def test_initialized_notification_requires_and_returns_protocol_header(self, client):
+        response = rpc(client, "notifications/initialized", request_id=None)
+        assert response.status_code == 202
+        assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
+
+    def test_post_initialize_request_requires_protocol_header(self, client):
+        response = client.post(
+            MCP,
+            headers=HEADERS,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        assert response.status_code == 400
+        assert "MCP-Protocol-Version" in response.json()["detail"]
+
+    def test_initialize_requires_request_id(self, client):
+        response = rpc(client, "initialize", request_id=None)
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32600
+
+    def test_accept_must_advertise_both_streamable_http_response_types(self, client):
+        response = client.post(
+            MCP,
+            headers={**HEADERS, "Accept": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
+        assert response.status_code == 406
+
+    def test_mcp_tool_call_response_includes_protocol_header(self, client):
+        result = call_tool(
+            client,
+            "submit_task",
+            {"agent_id": "echo-a", "prompt": "protocol response header", "idempotency_key": "mcp-proto-header-001"},
+        )
+        assert result["isError"] is False
