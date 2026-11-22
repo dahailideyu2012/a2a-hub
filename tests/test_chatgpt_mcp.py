@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 TOKEN = "test-chatgpt-ingress-token-0123456789"
@@ -12,6 +13,26 @@ HEADERS = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream",
 }
+
+
+@pytest.fixture
+def pull_client(settings, tmp_path):
+    """Use an isolated SQLite repository because the memory store has no Pull contract."""
+    import a2a_hub.server as server
+
+    previous_hub = server.hub
+    previous_store = settings.store
+    previous_db_path = settings.db_path
+    settings.store = "sqlite"
+    settings.db_path = str(tmp_path / "mcp-pull-tasks.sqlite3")
+    server.hub = server.Hub()
+    try:
+        with TestClient(server.app) as test_client:
+            yield test_client
+    finally:
+        server.hub = previous_hub
+        settings.store = previous_store
+        settings.db_path = previous_db_path
 
 
 def rpc(client: TestClient, method: str, params=None, request_id=1, headers=None):
@@ -68,7 +89,7 @@ class TestChatGPTRemoteMCP:
         assert missing.status_code == 401
         assert invalid.status_code == 403
 
-    def test_submit_then_get_and_list_task(self, client):
+    def test_submit_then_get_and_list_task(self, pull_client):
         submitted = call_tool(
             client,
             "submit_task",
@@ -78,20 +99,20 @@ class TestChatGPTRemoteMCP:
         task = submitted["structuredContent"]["task"]
         task_id = task["id"]
 
-        fetched = call_tool(client, "get_task", {"task_id": task_id})
+        fetched = call_tool(pull_client, "get_task", {"task_id": task_id})
         assert fetched["structuredContent"]["id"] == task_id
 
-        listed = call_tool(client, "list_tasks", {"limit": 10})
+        listed = call_tool(pull_client, "list_tasks", {"limit": 10})
         assert task_id in {item["id"] for item in listed["structuredContent"]["tasks"]}
 
-    def test_event_tool_returns_owned_snapshot_checkpoint(self, client):
+    def test_event_tool_returns_owned_snapshot_checkpoint(self, pull_client):
         submitted = call_tool(
             client,
             "submit_task",
             {"agent_id": "echo-a", "prompt": "event checkpoint", "mode": "pull", "idempotency_key": "remote-mcp-events-001"},
         )
         task_id = submitted["structuredContent"]["task"]["id"]
-        result = call_tool(client, "get_task_events", {"task_id": task_id})
+        result = call_tool(pull_client, "get_task_events", {"task_id": task_id})
         checkpoint = result["structuredContent"]
         assert checkpoint["task_id"] == task_id
         assert checkpoint["events"][0]["type"] == "task_snapshot"
@@ -156,7 +177,7 @@ class TestChatGPTRemoteMCP:
         )
         assert response.status_code == 406
 
-    def test_mcp_tool_call_response_includes_protocol_header(self, client):
+    def test_mcp_tool_call_response_includes_protocol_header(self, pull_client):
         response = rpc(
             client,
             "tools/call",
@@ -202,27 +223,27 @@ class TestChatGPTRemoteMCP:
         result = call_tool(client, "get_task", {"task_id": "task-not-owned-by-chatgpt"})
         assert result["isError"] is True
 
-    def test_idempotent_submit_replays_same_task(self, client):
+    def test_idempotent_submit_replays_same_task(self, pull_client):
         args = {
             "agent_id": "echo-a",
             "prompt": "same logical MCP task",
             "mode": "pull",
             "idempotency_key": "mcp-idempotency-replay-001",
         }
-        first = call_tool(client, "submit_task", args)
-        second = call_tool(client, "submit_task", args)
+        first = call_tool(pull_client, "submit_task", args)
+        second = call_tool(pull_client, "submit_task", args)
         assert first["isError"] is False, first.get("content")
         assert second["isError"] is False
         assert first["structuredContent"]["task"]["id"] == second["structuredContent"]["task"]["id"]
 
-    def test_cancel_pull_task_through_mcp(self, client):
+    def test_cancel_pull_task_through_mcp(self, pull_client):
         submitted = call_tool(
             client,
             "submit_task",
             {"agent_id": "echo-a", "prompt": "cancel me", "mode": "pull", "idempotency_key": "mcp-cancel-task-001"},
         )
         task_id = submitted["structuredContent"]["task"]["id"]
-        cancelled = call_tool(client, "cancel_task", {"task_id": task_id})
+        cancelled = call_tool(pull_client, "cancel_task", {"task_id": task_id})
         assert cancelled["isError"] is False
         assert cancelled["structuredContent"]["status"]["state"].lower() == "canceled"
 
