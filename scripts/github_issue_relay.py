@@ -101,7 +101,7 @@ def signature(secret: str, timestamp: str, idempotency_key: str, raw_body: bytes
     return "sha256=" + digest
 
 
-def _post_hub(url: str, token: str, secret: str, key: str, payload: dict[str, str]) -> dict[str, Any]:
+def _post_hub(url: str, token: str, secret: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise RelayError("A2A_HUB_URL must be a clean HTTPS origin/base URL")
