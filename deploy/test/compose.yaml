@@ -1,0 +1,45 @@
+services:
+  hub-test:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: a2a-hub:test
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${A2A_TEST_PORT:-18080}:8080"
+    env_file:
+      - .env.test
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: "8080"
+      A2A_PUBLIC_URL: "http://127.0.0.1:${A2A_TEST_PORT:-18080}"
+      A2A_STORE: sqlite
+      A2A_DB_PATH: /app/data/a2a_hub.db
+      A2A_CHATGPT_INGRESS_DB_PATH: /app/data/chatgpt_ingress.db
+      A2A_RELATIONS_FILE: /app/data/relations.json
+      A2A_AGENTS_FILE: /app/config/agents.yaml
+      A2A_REQUIRE_AUTH: "true"
+      A2A_API_TOKEN: "${A2A_API_TOKEN:?Set A2A_API_TOKEN in deploy/test/.env.test}"
+      A2A_AUTONOMY_ENABLED: "false"
+    volumes:
+      - hub_test_data:/app/data
+      - hub_test_backups:/app/backups
+      - ../../config/agents.yaml:/app/config/agents.yaml:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  hub_test_data:
+  hub_test_backups:
