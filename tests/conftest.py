@@ -97,6 +97,9 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS", "echo-a")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_LEASE_SECONDS", "120")
+    monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH", str(agents_file.parent / "github-callback-outbox.db"))
+    monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_MAX_ATTEMPTS", "12")
+    monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_POLL_SECONDS", "0.2")
     monkeypatch.delenv("A2A_REQUIRE_AUTH", raising=False)
     # 社交层的两个文件必须指向临时目录：**测试不能依赖工作树状态**。
     # 否则部署者本机跑了 `social init`（生成 config/members.yaml）之后，

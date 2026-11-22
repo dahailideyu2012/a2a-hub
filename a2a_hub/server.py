@@ -92,6 +92,7 @@ from .store import task_to_wire
 from .chatgpt_ingress import build_chatgpt_ingress_router
 from .chatgpt_mcp import build_chatgpt_mcp_router
 from .workbuddy_connector import build_workbuddy_connector_router
+from .github_callback_outbox import GithubCallbackOutbox, run_outbox_worker
 
 log = logging.getLogger("a2a_hub.server")
 
@@ -371,10 +372,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 启动时做一次非阻塞健康探测，让控制台一打开就有状态
     asyncio.create_task(hub.registry.check_health(force=True))
+    # Durable GitHub callback outbox: only enabled with explicit outbound credentials.
+    outbox_stop = asyncio.Event()
+    outbox_task = None
+    if s.github_relay_api_token and s.github_relay_allowed_repos:
+        outbox_path = Path(s.github_callback_outbox_db_path)
+        if not outbox_path.is_absolute():
+            from .config import ROOT
+            outbox_path = (ROOT / outbox_path).resolve()
+        outbox = GithubCallbackOutbox(outbox_path, max_attempts=s.github_callback_outbox_max_attempts)
+        recovered = outbox.recover_tasks(hub.registry.store.list(limit=10000))
+        if recovered:
+            log.warning("GitHub callback outbox startup reconciliation queued %d task(s)", recovered)
+        outbox_task = asyncio.create_task(run_outbox_worker(
+            outbox, outbox_stop, api_token=s.github_relay_api_token,
+            allowed_repos=s.github_relay_allowed_repos,
+            poll_seconds=s.github_callback_outbox_poll_seconds,
+        ))
     # 巡航只有显式开启才会真的跑（默认关 = 零后台请求）
     if hub.cruise.start():
         log.info("自主交友巡航已启用（A2A_AUTONOMY_ENABLED=true）")
     yield
+    if outbox_task is not None:
+        outbox_stop.set()
+        await outbox_task
     await hub.cruise.stop()
     await hub.social.aclose()
     await hub.registry.aclose()

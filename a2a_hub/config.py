@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # Result callback credentials are narrowly scoped to the configured repositories.
     github_relay_api_token: str = Field(default="", alias="A2A_GITHUB_RELAY_API_TOKEN")
     github_relay_allowed_repos: str = Field(default="", alias="A2A_GITHUB_RELAY_ALLOWED_REPOS")
+    github_callback_outbox_db_path: str = Field(default="./data/github_callback_outbox.db", alias="A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH")
+    github_callback_outbox_max_attempts: int = Field(default=12, ge=1, le=100, alias="A2A_GITHUB_CALLBACK_OUTBOX_MAX_ATTEMPTS")
+    github_callback_outbox_poll_seconds: float = Field(default=2.0, ge=0.1, le=60.0, alias="A2A_GITHUB_CALLBACK_OUTBOX_POLL_SECONDS")
     # WorkBuddy pull connector: independent credential; never reuse ChatGPT ingress token.
     workbuddy_connector_token: str = Field(default="", alias="A2A_WORKBUDDY_CONNECTOR_TOKEN")
     workbuddy_connector_id: str = Field(default="workbuddy-personal", min_length=1, max_length=64, alias="A2A_WORKBUDDY_CONNECTOR_ID")
