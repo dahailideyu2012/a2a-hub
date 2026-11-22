@@ -201,6 +201,25 @@ class SqliteTaskStore(TaskStore):
             )"""
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_task_idempotency_task ON task_idempotency(task_id)")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS github_result_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL UNIQUE,
+                callback_json TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                output TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                locked_until REAL,
+                last_error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_github_result_outbox_due "
+            "ON github_result_outbox(state,next_attempt_at,locked_until)"
+        )
         self._conn.commit()
 
     def _remember_idempotency(self, task: Task) -> None:
@@ -498,11 +517,77 @@ class SqliteTaskStore(TaskStore):
                 )
                 if cur.rowcount != 1:
                     raise RepositoryConflictError(RepositoryErrorCode.LEASE_CONFLICT)
+                callback = task.metadata.get("github_issue_callback")
+                if isinstance(callback, dict):
+                    callback_json = json.dumps(callback, ensure_ascii=False, sort_keys=True)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO github_result_outbox "
+                        "(task_id,callback_json,state,output,attempt_count,next_attempt_at,created_at,updated_at) "
+                        "VALUES(?,?,'pending',?,0,?,?,?)",
+                        (task_id, callback_json, output, now, now, now),
+                    )
                 conn.commit()
                 return task, False
             except Exception:
                 conn.rollback()
                 raise
+
+    def claim_github_callback(self, lease_seconds: int = 60) -> Optional[dict]:
+        now = time.time()
+        expires = now + max(15, min(int(lease_seconds), 300))
+        with self._lock:
+            conn = self._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT id,task_id,callback_json,state,output,attempt_count "
+                    "FROM github_result_outbox WHERE state='pending' AND next_attempt_at<=? "
+                    "AND (locked_until IS NULL OR locked_until<=?) ORDER BY id LIMIT 1",
+                    (now, now),
+                ).fetchone()
+                if not row:
+                    conn.commit()
+                    return None
+                cur = conn.execute(
+                    "UPDATE github_result_outbox SET locked_until=?,attempt_count=attempt_count+1,updated_at=? "
+                    "WHERE id=? AND state='pending' AND (locked_until IS NULL OR locked_until<=?)",
+                    (expires, now, row[0], now),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return {
+                    "id": int(row[0]), "task_id": row[1],
+                    "callback": json.loads(row[2]), "state": row[3],
+                    "output": row[4], "attempt_count": int(row[5]) + 1,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+    def complete_github_callback(self, outbox_id: int) -> None:
+        now = time.time()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE github_result_outbox SET state='delivered',locked_until=NULL,last_error=NULL,updated_at=? "
+                "WHERE id=? AND state='pending'",
+                (now, outbox_id),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("github_callback_outbox_conflict")
+
+    def retry_github_callback(self, outbox_id: int, error: str, delay_seconds: int) -> None:
+        now = time.time()
+        safe_error = (error or "delivery failed")[:200]
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE github_result_outbox SET next_attempt_at=?,locked_until=NULL,last_error=?,updated_at=? "
+                "WHERE id=? AND state='pending'",
+                (now + max(1, min(int(delay_seconds), 86400)), safe_error, now, outbox_id),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("github_callback_outbox_conflict")
 
     def cancel_pull_task(self, task_id: str) -> Task:
         """Cancel a pull task without invoking an agent adapter."""
