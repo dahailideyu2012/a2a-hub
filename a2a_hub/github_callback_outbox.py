@@ -1,6 +1,7 @@
 """Durable SQLite outbox for GitHub Issue result callbacks."""
 from __future__ import annotations
 import asyncio, json, sqlite3, time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
@@ -22,11 +23,15 @@ class GithubCallbackOutbox:
                 attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at REAL NOT NULL, lease_until REAL,
                 last_error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_github_callback_due ON github_callback_outbox(status,next_attempt_at,lease_until)")
+    @contextmanager
     def _connect(self):
         conn=sqlite3.connect(str(self.path),timeout=10,isolation_level=None)
         conn.row_factory=sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
     def enqueue(self, task_id: str, callback: dict[str,Any], state: str, output: str) -> bool:
         if state not in {"completed","failed"}: raise ValueError("callback state must be terminal")
         now=time.time()
@@ -40,6 +45,9 @@ class GithubCallbackOutbox:
         now=time.time()
         with self._connect() as c:
             c.execute("BEGIN IMMEDIATE")
+            c.execute("""UPDATE github_callback_outbox SET status='dead',lease_until=NULL,updated_at=?
+                WHERE status='processing' AND lease_until<=? AND attempts>=?""",
+                (now,now,self.max_attempts))
             row=c.execute("""SELECT * FROM github_callback_outbox
                 WHERE (status='pending' AND next_attempt_at<=?)
                    OR (status='processing' AND lease_until<=?)
