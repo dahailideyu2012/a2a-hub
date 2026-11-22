@@ -113,3 +113,29 @@ Agent output is treated as untrusted text: HTML is escaped, @-mentions are neutr
 and output is capped at 8,000 characters. The callback is disabled unless both the
 repository allowlist and a dedicated GitHub API token are configured. No public
 webhook or inbound GitHub connection is opened by the Hub.
+
+
+## T5 — End-to-end callback round-trip acceptance
+
+T5 adds an integration test that exercises the application routes as one workflow,
+using a disposable SQLite task database and a local in-memory GitHub API stub:
+
+1. Submit an Issue-originated Pull task with callback context covered by the relay HMAC.
+2. Verify the accepted task and the WorkBuddy claim payload do not expose the
+   internal GitHub callback metadata.
+3. Claim and start the task through the WorkBuddy Connector.
+4. Submit a terminal result. The stub simulates GitHub accepting the comment while
+   the HTTP response is lost; the Hub must return retryable HTTP 502 while keeping
+   the terminal task result durable.
+5. Retry the exact same result body and `result_key`. The Hub must find the
+   deterministic marker, return an idempotent replay, and avoid a second POST.
+
+Run the focused test with:
+
+`python -m pytest -q tests/test_github_callback_roundtrip.py`
+
+This is an application-level integration test with a local GitHub API stub. It
+does not contact GitHub, use real credentials, prove the GitHub Actions webhook
+or WorkBuddy desktop runtime, or replace the later container/runtime acceptance.
+The existing T4 limitation remains: retries are initiated by WorkBuddy replay;
+there is not yet an autonomous durable callback outbox.
