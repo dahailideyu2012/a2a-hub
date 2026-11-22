@@ -302,7 +302,8 @@ def test_github_relay_valid_hmac_is_accepted(client, monkeypatch, tmp_path):
     import a2a_hub.server as server
     from a2a_hub.store import SqliteTaskStore
 
-    monkeypatch.setattr(server.hub.registry, "store", SqliteTaskStore(str(tmp_path / "relay-pull.db")))
+    relay_store = SqliteTaskStore(str(tmp_path / "relay-pull.db"))
+    monkeypatch.setattr(server.hub.registry, "store", relay_store)
     secret = "relay-test-secret-0123456789-abcdef"
     monkeypatch.setattr(server.hub.settings, "github_relay_hmac_secret", secret)
     key = "gh-1234-5-5678"
@@ -331,6 +332,7 @@ def test_github_relay_valid_hmac_is_accepted(client, monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["task"]["id"]
     assert "github_issue_callback" not in response.json()["task"]["metadata"]
+    relay_store.close()
 
 
 def test_github_relay_rejects_stale_hmac(client, monkeypatch):
@@ -382,5 +384,24 @@ def test_github_relay_rejects_bad_signature(client, monkeypatch):
             "Content-Type": "application/json",
         },
         content=raw,
+    )
+    assert response.status_code == 403
+
+
+
+def test_unsigned_request_cannot_supply_github_callback_context(client, tmp_path, monkeypatch):
+    response = client.post(
+        f"{BASE}/tasks",
+        headers=headers("unsigned-callback-01"),
+        json={
+            "agent_id": "echo-a",
+            "prompt": "must not be able to choose an Issue callback",
+            "mode": "pull",
+            "github_issue_callback": {
+                "repository": "owner/repo",
+                "issue_number": 5,
+                "source_comment_id": 123,
+            },
+        },
     )
     assert response.status_code == 403
