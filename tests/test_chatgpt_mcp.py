@@ -33,13 +33,14 @@ class TestChatGPTRemoteMCP:
         response = rpc(
             client,
             "initialize",
-            {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}},
+            {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}},
         )
         assert response.status_code == 200
         body = response.json()["result"]
-        assert body["protocolVersion"] == "2025-06-18"
+        assert body["protocolVersion"] == "2025-11-25"
         assert body["capabilities"]["tools"]["listChanged"] is False
         assert body["serverInfo"]["name"] == "a2a-hub-chatgpt"
+        assert response.headers["MCP-Protocol-Version"] == "2025-11-25"
 
     def test_tools_list_exposes_only_restricted_task_tools(self, client):
         response = rpc(client, "tools/list")
