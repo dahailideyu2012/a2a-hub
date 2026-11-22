@@ -24,8 +24,9 @@ The MCP endpoint exposes only five task tools:
 The default MCP `submit_task` mode is `pull`, so WorkBuddy can claim the task from the Hub. Pull mode requires a task repository implementing the `PullTaskRepository` contract.
 
 - `A2A_STORE=memory` is suitable for basic local Hub mode, but the in-memory repository does not implement the Pull lease/claim contract. Pull submissions will be rejected.
-- Use `A2A_STORE=sqlite` with a persistent `A2A_DB_PATH` for a single-host deployment, or the PostgreSQL adapter for a multi-process deployment.
-- Do not use ephemeral container filesystems for SQLite in production; use a durable mounted volume. PostgreSQL requires its separately configured optional driver and migrations.
+- On this bridge branch, use `A2A_STORE=sqlite` with a persistent `A2A_DB_PATH` for WorkBuddy Pull mode.
+- Do not use ephemeral container filesystems for SQLite in production; use a durable mounted volume.
+- PostgreSQL Adapter V1 is tracked separately on `feature/postgres-task-store-v1` and is not wired into this bridge branch's `build_store()` factory. Do not set `A2A_STORE=postgres` here; it will fail closed until the adapter is deliberately integrated and revalidated.
 - `mode=hub` remains available for direct Hub execution, but it is not the WorkBuddy Pull execution path.
 
 The ingress fails closed when the configured repository cannot safely support Pull execution; it must not silently downgrade a Pull task to in-memory or Hub execution.
