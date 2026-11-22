@@ -231,3 +231,21 @@ class TestChatGPTRemoteMCP:
         )
         assert response.status_code == 400
         assert response.json()["error"]["code"] == -32700
+
+
+    def test_jsonrpc_null_id_is_rejected_not_treated_as_notification(self, client):
+        response = client.post(
+            MCP,
+            headers={**HEADERS, "MCP-Protocol-Version": "2025-11-25"},
+            json={"jsonrpc": "2.0", "id": None, "method": "tools/list"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32600
+
+    def test_invalid_content_type_is_rejected(self, client):
+        response = client.post(
+            MCP,
+            headers={**HEADERS, "Content-Type": "text/plain"},
+            content=b'{"jsonrpc":"2.0","id":1,"method":"initialize"}',
+        )
+        assert response.status_code == 415
