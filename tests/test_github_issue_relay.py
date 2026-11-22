@@ -12,7 +12,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(relay)
 
 
-def event(*, actor="owner", body="/a2a submit echo-a\n\nhello Hub", labels=None, is_pr=False):
+def event(*, actor="owner", body="/a2a submit echo-a\\n\\nhello Hub", labels=None, is_pr=False):
     selected_labels = ["a2a-relay-enabled"] if labels is None else labels
     issue = {"number": 5, "labels": [{"name": name} for name in selected_labels]}
     if is_pr:
@@ -26,24 +26,23 @@ def event(*, actor="owner", body="/a2a submit echo-a\n\nhello Hub", labels=None,
 
 
 def test_parse_command_and_default_pull_mode():
-    assert relay.parse_command("/a2a submit echo-a\n\nhello\nworld") == ("echo-a", "hello\nworld")
+    assert relay.parse_command("/a2a submit echo-a\\n\\nhello\\nworld") == ("echo-a", "hello\\nworld")
 
 
 @pytest.mark.parametrize("body", [
     "hello",
     "/a2a submit echo-a",
-    "/a2a submit echo-a\n\n",
-    "/a2a submit echo-a; rm -rf /\n\nprompt",
-    "/a2a submit echo-a\n\nprompt\n/a2a submit echo-b",
+    "/a2a submit echo-a\\n\\n",
+    "/a2a submit echo-a; rm -rf /\\n\\nprompt",
 ])
-def test_rejects_noncanonical_or_command_injection_shapes(body):
+def test_rejects_noncanonical_command_shapes(body):
     with pytest.raises(relay.RelayError):
         relay.parse_command(body)
 
 
 def test_prompt_treats_command_like_lines_as_data_not_executable_commands():
-    assert relay.parse_command("/a2a submit echo-a\n\nordinary prompt\n/a2a submit echo-b") == (
-        "echo-a", "ordinary prompt\n/a2a submit echo-b"
+    assert relay.parse_command("/a2a submit echo-a\\n\\nordinary prompt\\n/a2a submit echo-b") == (
+        "echo-a", "ordinary prompt\\n/a2a submit echo-b"
     )
 
 
