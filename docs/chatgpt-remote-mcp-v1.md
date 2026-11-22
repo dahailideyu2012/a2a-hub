@@ -4,7 +4,7 @@
 
 - MCP Streamable HTTP: `POST /integrations/chatgpt/mcp`
 - REST fallback: `/integrations/chatgpt/v1`
-- MCP protocol versions negotiated: `2025-06-18`, `2025-11-25`
+- MCP protocol versions negotiated: `2025-06-18`, `2025-11-25` (preferred default: `2025-11-25`)
 - Transport is stateless: no MCP session is created or persisted.
 
 The MCP endpoint exposes only five task tools:
@@ -52,14 +52,14 @@ Accept: application/json, text/event-stream
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "capabilities": {},
     "clientInfo": {"name": "mcp-inspector", "version": "1"}
   }
 }
 ```
 
-Then send `notifications/initialized`, followed by `tools/list` and `tools/call` requests. The server returns JSON-RPC responses using the Streamable HTTP transport. GET and DELETE are intentionally not supported in this stateless implementation.
+Then send `notifications/initialized`, followed by `tools/list` and `tools/call` requests. The client must include both `application/json` and `text/event-stream` in `Accept`. After `initialize`, every subsequent request/notification must include the negotiated `MCP-Protocol-Version` header. The server rejects missing or unsupported version headers. The server returns JSON-RPC responses using the Streamable HTTP transport and does not issue an `Mcp-Session-Id` because it is stateless. Request bodies are size-limited while streaming, before the full body is buffered. GET and DELETE are intentionally not supported in this stateless implementation.
 
 ## ChatGPT product compatibility
 
