@@ -244,6 +244,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
         except ValidationError: raise HTTPException(status_code=422, detail="请求参数无效；请求字段或格式不符合要求")
         if payload.github_issue_callback is not None and not relay_signed:
             raise HTTPException(status_code=403, detail="GitHub 回传上下文只能由签名 relay 提供")
+        if payload.github_issue_callback is not None and payload.mode != "pull":
+            raise HTTPException(status_code=422, detail="GitHub Issue 回传仅支持 Pull 模式任务")
         if relay_signed and payload.github_issue_callback is None:
             raise HTTPException(status_code=422, detail="签名 GitHub relay 必须提供 Issue 回传上下文")
         if payload.github_issue_callback is not None:
