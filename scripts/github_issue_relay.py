@@ -52,23 +52,30 @@ def _validate_event(event: dict[str, Any], actor_allowlist: set[str], agent_allo
     issue = event.get("issue")
     if not isinstance(issue, dict) or issue.get("pull_request"):
         raise RelayError("relay accepts issue comments only, not pull-request comments")
+    raw_labels = issue.get("labels")
+    if not isinstance(raw_labels, list):
+        raise RelayError("issue labels are missing or invalid")
     labels = {
         (item.get("name") or "").lower()
-        for item in (issue.get("labels") or [])
+        for item in raw_labels
         if isinstance(item, dict)
     }
     if "a2a-relay-enabled" not in labels:
         raise RelayError("issue is not enabled for A2A relay")
-    actor = (event.get("comment") or {}).get("user", {}).get("login", "")
+    comment = event.get("comment")
+    if not isinstance(comment, dict):
+        raise RelayError("GitHub comment payload is missing")
+    user = comment.get("user")
+    actor = user.get("login", "") if isinstance(user, dict) else ""
     if not actor or actor not in actor_allowlist:
         raise RelayError("comment author is not allowlisted")
-    agent_id, prompt = parse_command((event.get("comment") or {}).get("body", ""))
+    agent_id, prompt = parse_command(comment.get("body", ""))
     if agent_id not in agent_allowlist:
         raise RelayError("agent is not allowlisted for GitHub relay")
     repo = event.get("repository") or {}
     repo_id = repo.get("id")
     issue_number = issue.get("number")
-    comment_id = (event.get("comment") or {}).get("id")
+    comment_id = comment.get("id")
     if not all(isinstance(v, int) and v > 0 for v in (repo_id, issue_number, comment_id)):
         raise RelayError("GitHub event is missing stable numeric identifiers")
     # Stable across retries and workflow re-runs; unique per GitHub comment.
@@ -89,7 +96,6 @@ def _post_hub(url: str, token: str, secret: str, key: str, payload: dict[str, st
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     timestamp = str(int(time.time()))
     headers = {
-        "Authorization": "Bearer " + token,
         "X-ChatGPT-Ingress-Token": token,
         "Idempotency-Key": key,
         "X-A2A-Relay-Source": "github-issue-comment",
