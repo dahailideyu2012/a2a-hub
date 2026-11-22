@@ -33,7 +33,7 @@ def render_result_comment(task_id: str, state: str, output: str) -> str:
         raise GithubResultDeliveryError("unsupported terminal task state")
     # Treat agent output as inert text: escape HTML, suppress @-mentions, and cap size.
     bounded = (output or "(empty output)")[:8000]
-    bounded = bounded.replace("@", "@&#8203;")
+    bounded = bounded.replace("@", "@\u200b")
     escaped = html.escape(bounded, quote=False)
     return (
         f"{_marker(task_id)}\n"
