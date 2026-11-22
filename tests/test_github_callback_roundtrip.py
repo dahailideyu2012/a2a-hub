@@ -185,5 +185,5 @@ async def test_signed_issue_to_workbuddy_to_github_roundtrip_and_ambiguous_retry
         headers={"X-ChatGPT-Ingress-Token": "test-chatgpt-ingress-token-0123456789"},
     )
     assert readback.status_code == 200
-    assert readback.json()["task"]["status"]["state"] == "completed"
+    assert readback.json()["status"]["state"] == "completed"
     store.close()
