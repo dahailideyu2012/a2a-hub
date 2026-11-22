@@ -207,6 +207,7 @@ class SqliteTaskStore(TaskStore):
                 task_id TEXT NOT NULL UNIQUE,
                 callback_json TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'pending',
+                result_state TEXT NOT NULL,
                 output TEXT NOT NULL,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at REAL NOT NULL,
@@ -522,9 +523,9 @@ class SqliteTaskStore(TaskStore):
                     callback_json = json.dumps(callback, ensure_ascii=False, sort_keys=True)
                     conn.execute(
                         "INSERT OR IGNORE INTO github_result_outbox "
-                        "(task_id,callback_json,state,output,attempt_count,next_attempt_at,created_at,updated_at) "
-                        "VALUES(?,?,'pending',?,0,?,?,?)",
-                        (task_id, callback_json, output, now, now, now),
+                        "(task_id,callback_json,state,result_state,output,attempt_count,next_attempt_at,created_at,updated_at) "
+                        "VALUES(?,?,'pending',?,?,0,?,?,?)",
+                        (task_id, callback_json, state, output, now, now, now),
                     )
                 conn.commit()
                 return task, False
@@ -540,7 +541,7 @@ class SqliteTaskStore(TaskStore):
             conn.execute("BEGIN IMMEDIATE")
             try:
                 row = conn.execute(
-                    "SELECT id,task_id,callback_json,state,output,attempt_count "
+                    "SELECT id,task_id,callback_json,result_state,output,attempt_count "
                     "FROM github_result_outbox WHERE state='pending' AND next_attempt_at<=? "
                     "AND (locked_until IS NULL OR locked_until<=?) ORDER BY id LIMIT 1",
                     (now, now),
