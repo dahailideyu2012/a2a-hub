@@ -296,8 +296,8 @@ class TestChatGPTRemoteMCP:
         original = hub.settings.chatgpt_ingress_rate_limit
         try:
             hub.settings.chatgpt_ingress_rate_limit = 1
-            first = rpc(client, "tools/list")
-            assert first.status_code == 200
+            first = call_tool(client, "list_tasks", {})
+            assert first["isError"] is False
             second = client.get(
                 "/integrations/chatgpt/v1/tasks",
                 headers={"X-ChatGPT-Ingress-Token": TOKEN},
