@@ -8,8 +8,11 @@ using its separate WorkBuddy Connector token.
 
 ## Command format
 
-Add the label `a2a-relay-enabled` to a private, controlled GitHub Issue.
-Only actors listed in `A2A_GITHUB_RELAY_ALLOWED_ACTORS` may submit:
+Add the label `a2a-relay-enabled` to a controlled GitHub Issue (a private
+repository is recommended). Only actors listed in
+`A2A_GITHUB_RELAY_ALLOWED_ACTORS` may submit. Issue comments are stored by
+GitHub and may be visible to repository readers; never include passwords,
+tokens, personal data, or other secrets in the prompt:
 
 ```text
 /a2a submit echo-a
@@ -63,6 +66,8 @@ PR unmerged until independent acceptance and user approval.
 ## Result
 
 On successful enqueue, the workflow posts a comment with the task ID and
-explicitly says that enqueue is not execution completion. WorkBuddy must claim,
-execute, and submit the result through the existing Pull Connector. ChatGPT
-can then read the result from the Issue thread and Hub task record.
+explicitly says that enqueue is not execution completion. WorkBuddy must claim, execute, and submit the result through the existing Pull
+Connector. T1/T2 posts only the Hub task ID to the Issue; it does not yet post
+WorkBuddy's execution output back to GitHub. A separate result-notification or
+polling bridge is a later stage, so do not treat enqueue confirmation as a
+completed task or as a full two-way ChatGPT ↔ WorkBuddy round trip.
