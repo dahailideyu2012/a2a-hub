@@ -82,3 +82,34 @@ destination. Never restore over a database while the Hub process is running.
 T3 code-level acceptance does not prove the real WorkBuddy runtime or public
 GitHub-to-Hub relay is operational. That requires a later explicitly approved
 integration stage.
+
+
+## T4 — GitHub Issue result callback
+
+T4 adds a result callback for tasks accepted through the signed GitHub Issue relay.
+The relay includes the originating repository, Issue number, and source comment ID
+inside the exact HMAC-signed ingress body. The Hub accepts this callback context only
+when the relay signature is valid and the repository is present in
+`A2A_GITHUB_RELAY_ALLOWED_REPOS`.
+
+When WorkBuddy posts a terminal result, the Hub first persists the result in the task
+store, then posts a bounded, escaped result comment to the original Issue. Configure
+`A2A_GITHUB_RELAY_API_TOKEN` with a fine-grained GitHub token restricted to the
+single repository and Issues: write permission, and set
+`A2A_GITHUB_RELAY_ALLOWED_REPOS=owner/repo`. Do not reuse the ingress, relay HMAC,
+or WorkBuddy connector token. The token is stored only in the Hub environment and
+must never be committed.
+
+Delivery retries use the same WorkBuddy `result_key`. The Hub searches existing
+Issue comments for a deterministic hidden task marker before creating a new comment,
+so a retry after an ambiguous network failure does not normally duplicate the result.
+A failed callback returns HTTP 502 after the task result is durably committed; WorkBuddy
+must retry the exact same result payload and key. This is not an autonomous durable
+outbox: if WorkBuddy never retries after a callback failure, operator intervention
+or a later retry is required. True background retry/reconciliation is a later hardening
+step.
+
+Agent output is treated as untrusted text: HTML is escaped, @-mentions are neutralized,
+and output is capped at 8,000 characters. The callback is disabled unless both the
+repository allowlist and a dedicated GitHub API token are configured. No public
+webhook or inbound GitHub connection is opened by the Hub.
