@@ -113,3 +113,26 @@ Agent output is treated as untrusted text: HTML is escaped, @-mentions are neutr
 and output is capped at 8,000 characters. The callback is disabled unless both the
 repository allowlist and a dedicated GitHub API token are configured. No public
 webhook or inbound GitHub connection is opened by the Hub.
+
+
+## T5 — Durable GitHub result outbox
+
+T5 changes GitHub result delivery from synchronous WorkBuddy-request retry to a
+SQLite-backed outbox. In the same SQLite transaction that commits a terminal Pull
+task result, the Hub inserts one outbox row keyed uniquely by task ID. The WorkBuddy
+result endpoint can therefore return after the result and callback intent are durable.
+
+At startup, the Hub starts a background worker only when a dedicated
+`A2A_GITHUB_RELAY_API_TOKEN` (at least 20 characters), a non-empty
+`A2A_GITHUB_RELAY_ALLOWED_REPOS`, and an outbox-capable persistent store are
+available. The worker atomically claims due rows with a time-bounded lock, attempts
+delivery, marks success, or schedules retry using capped exponential backoff with
+jitter. A process crash releases the row after its claim lock expires. A crash after
+GitHub accepted a comment but before the outbox row is marked delivered is handled
+by the existing deterministic task marker lookup on the next attempt.
+
+Delivery is at-least-once, not exactly-once. The unique task ID prevents duplicate
+outbox records; the GitHub marker makes normal retries idempotent. If the configured
+GitHub token is absent, the queue is retained and delivery is paused rather than
+discarded. This first implementation has no dead-letter cutoff; persistent permission
+errors continue retrying with a maximum one-hour interval and should be monitored.
