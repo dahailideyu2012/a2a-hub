@@ -13,13 +13,14 @@ services:
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: "8080"
-      A2A_PUBLIC_URL: http://127.0.0.1:18080
+      A2A_PUBLIC_URL: "http://127.0.0.1:${A2A_TEST_PORT:-18080}"
       A2A_STORE: sqlite
       A2A_DB_PATH: /app/data/a2a_hub.db
       A2A_CHATGPT_INGRESS_DB_PATH: /app/data/chatgpt_ingress.db
       A2A_RELATIONS_FILE: /app/data/relations.json
       A2A_AGENTS_FILE: /app/config/agents.yaml
       A2A_REQUIRE_AUTH: "true"
+      A2A_API_TOKEN: "${A2A_API_TOKEN:?Set A2A_API_TOKEN in deploy/test/.env.test}"
       A2A_AUTONOMY_ENABLED: "false"
     volumes:
       - hub_test_data:/app/data
