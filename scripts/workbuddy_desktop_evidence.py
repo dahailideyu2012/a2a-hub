@@ -157,8 +157,8 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
             else:
                 seen_refs[evidence_ref] = index
         if duplicate_indexes:
-            indexes = "、".join(str(index) for index in sorted(duplicate_indexes))
-            errors.append(f"events[{indexes}] evidence_ref 必须唯一，不能重复引用同一证据")
+            locations = "、".join(f"events[{index}]" for index in sorted(duplicate_indexes))
+            errors.append(f"{locations} evidence_ref 必须唯一，不能重复引用同一证据")
 
     # Event timestamps must form a chronological timeline inside the declared session.
     if (
