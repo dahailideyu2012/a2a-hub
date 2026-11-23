@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workbuddy_sandbox import DEFAULT_PORT, create_env_file, load_env_file, validate_port
+from scripts.workbuddy_sandbox import (
+    DEFAULT_PORT,
+    create_env_file,
+    load_env_file,
+    main,
+    validate_port,
+)
 
 
 def test_init_creates_three_distinct_credentials_without_printing_them(tmp_path: Path, capsys):
@@ -48,10 +54,10 @@ def test_valid_ports_are_accepted(port: int):
 def test_env_reader_rejects_reused_credentials(tmp_path: Path):
     target = tmp_path / ".env.workbuddy-sandbox"
     target.write_text(
-        "A2A_WORKBUDDY_SANDBOX_PORT=18081\n"
-        "A2A_API_TOKEN=" + "a" * 48 + "\n"
-        "A2A_CHATGPT_INGRESS_TOKEN=" + "a" * 48 + "\n"
-        "A2A_WORKBUDDY_CONNECTOR_TOKEN=" + "c" * 48 + "\n",
+        "A2A_WORKBUDDY_SANDBOX_PORT=18081\\n"
+        "A2A_API_TOKEN=" + "a" * 48 + "\\n"
+        "A2A_CHATGPT_INGRESS_TOKEN=" + "a" * 48 + "\\n"
+        "A2A_WORKBUDDY_CONNECTOR_TOKEN=" + "c" * 48 + "\\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="invalid or reused"):
@@ -61,9 +67,32 @@ def test_env_reader_rejects_reused_credentials(tmp_path: Path):
 def test_env_reader_rejects_duplicate_keys(tmp_path: Path):
     target = tmp_path / ".env.workbuddy-sandbox"
     target.write_text(
-        "A2A_WORKBUDDY_SANDBOX_PORT=18081\n"
-        "A2A_WORKBUDDY_SANDBOX_PORT=18082\n",
+        "A2A_WORKBUDDY_SANDBOX_PORT=18081\\n"
+        "A2A_WORKBUDDY_SANDBOX_PORT=18082\\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate"):
         load_env_file(target)
+
+
+def test_destroy_refuses_without_explicit_confirmation(monkeypatch, capsys):
+    compose_calls = []
+    monkeypatch.setattr(
+        "scripts.workbuddy_sandbox._compose",
+        lambda *args: compose_calls.append(args) or 0,
+    )
+
+    assert main(["destroy"]) == 2
+    assert compose_calls == []
+    assert "--confirm-delete-data" in capsys.readouterr().err
+
+
+def test_destroy_removes_volume_only_after_explicit_confirmation(monkeypatch):
+    compose_calls = []
+    monkeypatch.setattr(
+        "scripts.workbuddy_sandbox._compose",
+        lambda *args: compose_calls.append(args) or 0,
+    )
+
+    assert main(["destroy", "--confirm-delete-data"]) == 0
+    assert compose_calls == [("down", "--volumes")]
