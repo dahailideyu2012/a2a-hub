@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -15,6 +17,8 @@ from .store import task_to_wire
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
 from .github_callback_outbox import GithubCallbackOutbox
 from .workbuddy_presence import WorkBuddyPresenceStore
+from .chatgpt_ingress import SlidingWindowLimiter
+from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
 
 
 # Protocol handshake and lightweight liveness receipts. The connector token remains
@@ -65,6 +69,7 @@ class ResultRequest(LeaseRequest):
 
 def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
     router = APIRouter(prefix="/integrations/workbuddy/v1", tags=["WorkBuddy connector"])
+    limiters: dict[tuple[str, str, int], SlidingWindowLimiter] = {}
 
     def runtime():
         hub = get_hub()
@@ -79,6 +84,88 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             raise HTTPException(status_code=401, detail="缺少 X-WorkBuddy-Connector-Token")
         if not hmac.compare_digest(token, settings.workbuddy_connector_token):
             raise HTTPException(status_code=403, detail="WorkBuddy connector token 无效")
+
+    def limiter_for(settings: Any) -> SlidingWindowLimiter:
+        # Include the credential in the in-memory key so credential/limit rotation
+        # cannot inherit another configuration's bucket. The token is never logged.
+        key = (
+            settings.workbuddy_connector_token,
+            settings.workbuddy_connector_id,
+            settings.workbuddy_connector_rate_limit,
+        )
+        limiter = limiters.get(key)
+        if limiter is None:
+            limiter = SlidingWindowLimiter(settings.workbuddy_connector_rate_limit)
+            limiters[key] = limiter
+        return limiter
+
+    async def guard(token: str | None, settings: Any) -> None:
+        authenticate(token, settings)
+        if not await limiter_for(settings).allow(settings.workbuddy_connector_id):
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+
+    def audited(event: str):
+        def decorate(fn):
+            @functools.wraps(fn)
+            async def wrapped(*args, **kwargs):
+                started = time.monotonic()
+                supplied_token = kwargs.get("connector_token")
+                try:
+                    response = await fn(*args, **kwargs)
+                except HTTPException as exc:
+                    status = exc.status_code
+                    if status == 401:
+                        outcome, reason = "unauthenticated", "token_missing"
+                    elif status == 403:
+                        outcome = "denied"
+                        reason = (
+                            "connector_identity_mismatch"
+                            if exc.detail == "WorkBuddy connector identity mismatch"
+                            else "token_mismatch"
+                        )
+                    elif status == 409:
+                        outcome, reason = "conflict", "conflict"
+                    elif status == 429:
+                        outcome, reason = "rate_limited", "rate_limited"
+                    elif status == 503:
+                        outcome, reason = "unavailable", "unavailable"
+                    else:
+                        outcome, reason = "error", "http_error"
+                    try:
+                        connector_id = get_hub().settings.workbuddy_connector_id
+                    except Exception:
+                        connector_id = None
+                    emit_audit(
+                        event, outcome, connector_id=connector_id, status=status,
+                        token_fp=token_fingerprint(supplied_token),
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        reason=reason,
+                    )
+                    raise
+                except Exception:
+                    try:
+                        connector_id = get_hub().settings.workbuddy_connector_id
+                    except Exception:
+                        connector_id = None
+                    emit_audit(
+                        event, "error", connector_id=connector_id, status=500,
+                        token_fp=token_fingerprint(supplied_token),
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        reason="internal_error",
+                    )
+                    raise
+                try:
+                    connector_id = get_hub().settings.workbuddy_connector_id
+                except Exception:
+                    connector_id = None
+                emit_audit(
+                    event, "ok", connector_id=connector_id, status=200,
+                    token_fp=token_fingerprint(supplied_token),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                return response
+            return wrapped
+        return decorate
 
     def store_for(hub: Any) -> PullTaskRepository:
         if not isinstance(hub.registry.store, PullTaskRepository):
@@ -103,12 +190,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return settings.workbuddy_connector_id, body.lease_token, body.lease_version, settings.workbuddy_connector_lease_seconds
 
     @router.post("/claim")
+    @audited("claim")
     async def claim(
         body: ClaimRequest | None = None,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         hub, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         store = store_for(hub)
         configured = {x.strip() for x in settings.workbuddy_connector_allowed_agents.split(",") if x.strip()}
         if not configured:
@@ -134,13 +222,14 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         }
 
     @router.post("/tasks/{task_id}/start")
+    @audited("start")
     async def start(
         task_id: str,
         body: LeaseRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         hub, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         connector_id, token, version, _ = lease_args(body, settings)
         try:
             task = store_for(hub).start_pull_task(task_id, connector_id, token, version)
@@ -150,13 +239,14 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return task_to_wire(task, include_internal=True)
 
     @router.post("/tasks/{task_id}/renew")
+    @audited("renew")
     async def renew(
         task_id: str,
         body: LeaseRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         hub, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         connector_id, token, version, seconds = lease_args(body, settings)
         try:
             expires = store_for(hub).renew_pull_lease(task_id, connector_id, token, version, seconds)
@@ -165,13 +255,14 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return {"lease_expires_at": expires}
 
     @router.post("/tasks/{task_id}/progress")
+    @audited("progress")
     async def progress(
         task_id: str,
         body: ProgressRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         hub, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         connector_id, token, version, _ = lease_args(body, settings)
         try:
             task, replay = store_for(hub).progress_pull_task(
@@ -184,13 +275,14 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return {"task": task_to_wire(task, include_internal=True), "idempotent_replay": replay}
 
     @router.post("/tasks/{task_id}/result")
+    @audited("result")
     async def result(
         task_id: str,
         body: ResultRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         hub, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         connector_id, token, version, _ = lease_args(body, settings)
         try:
             task, replay = store_for(hub).finish_pull_task(
@@ -232,30 +324,33 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return response
 
     @router.get("/callbacks/{task_id}")
+    @audited("callback_status")
     async def callback_status(task_id: str, connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token")) -> dict[str, Any]:
         _, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         status = outbox_for(settings).status(task_id)
         if status is None:
             raise HTTPException(status_code=404, detail="回调任务不存在")
         return status
 
     @router.post("/callbacks/{task_id}/retry")
+    @audited("callback_retry")
     async def retry_callback(task_id: str, connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token")) -> dict[str, Any]:
         _, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         if not outbox_for(settings).retry(task_id):
             raise HTTPException(status_code=409, detail="回调不存在或当前状态不可人工重试")
         return {"task_id": task_id, "status": "pending"}
 
 
     @router.post("/handshake")
+    @audited("handshake")
     async def handshake(
         body: HandshakeRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         _, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
             raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
         configured = sorted(
@@ -289,12 +384,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         }
 
     @router.post("/heartbeat")
+    @audited("heartbeat")
     async def heartbeat(
         body: HeartbeatRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         _, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
             raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
         recorded = presence_for(settings).record_heartbeat(
@@ -317,11 +413,12 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         }
 
     @router.get("/presence")
+    @audited("presence")
     async def presence(
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
         _, settings = runtime()
-        authenticate(connector_token, settings)
+        await guard(connector_token, settings)
         state = presence_for(settings).get_presence(settings.workbuddy_connector_id)
         if state is None:
             return {

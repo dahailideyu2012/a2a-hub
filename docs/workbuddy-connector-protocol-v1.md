@@ -148,3 +148,40 @@ The end-to-end task loop joins the separate ChatGPT and WorkBuddy credentials wi
 - ChatGPT reads the same task through its ingress-owned `get_task` / `get_task_events` tools.
 
 The automated contract test `tests/test_chatgpt_workbuddy_loop.py` runs both MCP surfaces against one isolated Hub and temporary SQLite task/presence stores. It proves the software/API contract only; it does not launch WorkBuddy Desktop, simulate a user approval, or establish a production connection. No Hub-to-Desktop push is implied: WorkBuddy must pull and invoke each lifecycle tool.
+
+
+## Connector request rate limit (T31)
+
+The Hub applies a sliding-window request budget to every authenticated WorkBuddy
+connector endpoint (claim/start/renew/progress/result, callback status/retry,
+handshake/heartbeat/presence). Configure `A2A_WORKBUDDY_CONNECTOR_RATE_LIMIT`
+(default `60`, allowed `1`–`600`) as requests per 60 seconds for the configured
+connector identity. Authentication is checked before consuming the budget; a
+missing or invalid token therefore does not consume an authenticated request slot.
+Requests over budget return HTTP `429` before opening task, presence, or callback
+storage for that endpoint.
+
+The current limiter is in-process memory, reuses the Hub's sliding-window
+implementation, and is intentionally **not shared between worker processes**.
+With `N` Uvicorn workers the effective aggregate allowance may reach `N × limit`.
+Use a single worker for a strict aggregate budget; shared atomic rate limiting is
+reserved for T33. The current single configured connector identity means this is
+one connector bucket, not a multi-device/token registry.
+
+
+## Structured security audit (T31)
+
+The connector emits one-line JSON audit records to the dedicated Python logger
+`a2a_hub.audit.workbuddy` at INFO level. Events cover all ten connector routes:
+claim, start, renew, progress, result, handshake, heartbeat, presence, callback
+status, and callback retry. HTTP failures are recorded with their status and a
+fixed reason code; the original exception text and response body are not logged.
+
+The record uses a closed field set: event, outcome, configured connector ID,
+HTTP status, an eight-hex-character SHA-256 token fingerprint (or `-` when no
+token was supplied), duration in milliseconds, and an optional fixed reason
+code. The raw token, lease token, task prompt, progress message, result output,
+request/response bodies, and arbitrary exception text are never audit fields.
+The logger uses its own namespace and does not configure or attach handlers to
+the root logger. Audit records are telemetry, not task events, and are never
+published to the Hub event bus.
