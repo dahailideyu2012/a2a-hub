@@ -14,6 +14,7 @@ from .ports import PullTaskRepository
 from .store import task_to_wire
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
 from .github_callback_outbox import GithubCallbackOutbox
+from .workbuddy_presence import WorkBuddyPresenceStore
 
 
 # Protocol handshake and lightweight liveness receipts. The connector token remains
@@ -90,6 +91,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             from .config import ROOT
             path = (ROOT / path).resolve()
         return GithubCallbackOutbox(path, max_attempts=settings.github_callback_outbox_max_attempts)
+
+    def presence_for(settings: Any) -> WorkBuddyPresenceStore:
+        path = Path(settings.workbuddy_presence_db_path)
+        if not path.is_absolute():
+            from .config import ROOT
+            path = (ROOT / path).resolve()
+        return WorkBuddyPresenceStore(path, ttl_seconds=settings.workbuddy_presence_ttl_seconds)
 
     def lease_args(body: LeaseRequest, settings: Any) -> tuple[str, str, int, int]:
         return settings.workbuddy_connector_id, body.lease_token, body.lease_version, settings.workbuddy_connector_lease_seconds
@@ -256,6 +264,17 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         )
         if not configured:
             raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
+        negotiated_capabilities = sorted(
+            set(body.capabilities).intersection(
+                {"claim", "start", "renew", "progress", "result", "heartbeat"}
+            )
+        )
+        presence_for(settings).record_handshake(
+            settings.workbuddy_connector_id,
+            body.protocol_version,
+            body.client_version,
+            negotiated_capabilities,
+        )
         return {
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
@@ -263,13 +282,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "client_version": body.client_version,
             "server_time": _server_time(),
             "heartbeat_interval_seconds": 30,
+            "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
             "allowed_agent_ids": configured,
-            "capabilities": sorted(
-                set(body.capabilities).intersection(
-                    {"claim", "start", "renew", "progress", "result", "heartbeat"}
-                )
-            ),
+            "capabilities": negotiated_capabilities,
         }
 
     @router.post("/heartbeat")
@@ -281,6 +297,14 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         authenticate(connector_token, settings)
         if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
             raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        recorded = presence_for(settings).record_heartbeat(
+            settings.workbuddy_connector_id,
+            body.heartbeat_id,
+            body.status,
+            body.current_task_id,
+        )
+        if not recorded:
+            raise HTTPException(status_code=409, detail="WorkBuddy connector must complete handshake before heartbeat")
         return {
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
@@ -289,6 +313,24 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "current_task_id": body.current_task_id,
             "server_time": _server_time(),
             "next_heartbeat_seconds": 30,
+            "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
         }
+
+    @router.get("/presence")
+    async def presence(
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        state = presence_for(settings).get_presence(settings.workbuddy_connector_id)
+        if state is None:
+            return {
+                "connector_id": settings.workbuddy_connector_id,
+                "online": False,
+                "status": "offline",
+                "reason": "handshake_not_seen",
+                "ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+            }
+        return state
 
     return router
