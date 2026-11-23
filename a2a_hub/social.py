@@ -44,6 +44,7 @@ import asyncio
 import logging
 import re
 import time
+from pathlib import Path
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
@@ -52,6 +53,7 @@ from pydantic import BaseModel, Field
 from .bus import EventBus
 from .models import Message, TaskState, new_id, utc_now
 from .registry import AgentRecord, AgentRegistry
+from .social_store import SqliteSocialStore
 #: ``USER`` / ``SYSTEM`` 这两个保留字只在 relations.py 里定义一份——
 #: 两边各写一个"user"常量迟早会漂移。
 from .relations import (
@@ -178,6 +180,7 @@ class SocialHub:
         registry: AgentRegistry,
         bus: EventBus,
         guard: Optional[FriendshipGuard] = None,
+        persistence_path: str | Path | None = None,
     ) -> None:
         self.registry = registry
         self.bus = bus
@@ -186,6 +189,15 @@ class SocialHub:
         self.guard: FriendshipGuard = guard or NullGuard()
         self._convs: dict[str, Conversation] = {}
         self._order: list[str] = []
+        self._store = SqliteSocialStore(persistence_path) if persistence_path else None
+        if self._store is not None:
+            for raw in self._store.load():
+                conv = Conversation.model_validate_json(raw)
+                self._convs[conv.id] = conv
+                self._order.append(conv.id)
+            # Enforce the same bounded in-memory history after recovery.
+            self._order = self._order[-500:]
+            self._convs = {cid: self._convs[cid] for cid in self._order}
         # 后台派发任务：必须持有引用，否则可能被 GC 掉
         self._inflight: set[asyncio.Task[Any]] = set()
 
@@ -500,6 +512,8 @@ class SocialHub:
             # 只有会话所有者能解散它；别人最多退出（stage 2 再补「退出」语义）
             raise PermissionError("只有会话所有者能解散该会话")
         self._convs.pop(conv_id, None)
+        if self._store is not None:
+            self._store.delete(conv_id)
         if conv_id in self._order:
             self._order.remove(conv_id)
         self.bus.publish(self._channel(conv_id), {"kind": "im-event", "event": "conversation-disbanded", "conversationId": conv_id})
@@ -577,10 +591,23 @@ class SocialHub:
         while len(self._order) > 500:
             old = self._order.pop(0)
             self._convs.pop(old, None)
+            if self._store is not None:
+                self._store.delete(old)
+        self._persist(conv)
         log.info("会话已创建 %s (%s)：%s", conv.id, conv.kind, ", ".join(conv.members))
+
+    def _persist(self, conv: Conversation) -> None:
+        if self._store is None:
+            return
+        try:
+            position = self._order.index(conv.id)
+        except ValueError:
+            return
+        self._store.save(conv.id, position, conv.updatedAt, conv.model_dump_json())
 
     def _touch(self, conv: Conversation) -> None:
         conv.updatedAt = utc_now()
+        self._persist(conv)
 
     def _channel(self, conv_id: str) -> str:
         return f"im:{conv_id}"
@@ -913,6 +940,7 @@ class SocialHub:
         d.taskId = task.id
         msg.taskId = task.id
         conv.reads[d.agentId] = msg.id  # 对方已经开始读了
+        self._persist(conv)
 
         try:
             marked = False
@@ -1019,6 +1047,9 @@ class SocialHub:
             task.cancel()
         if self._inflight:
             await asyncio.gather(*self._inflight, return_exceptions=True)
+        if self._store is not None:
+            self._store.close()
+            self._store = None
 
 
 __all__ = [
