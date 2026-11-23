@@ -1,0 +1,57 @@
+# T21 — WorkBuddy Desktop 真实连接证据与离线校验
+
+## 目标与边界
+
+T21 的第一阶段只验证真实 WorkBuddy Desktop 是否能加载 Connector、启动本机 stdio MCP Server，并完成 Hub handshake、presence 和 heartbeat。**不领取任务、不执行任务、不调用 claim_task、不访问生产**。
+
+T20 的 doctor/CI PASS 只证明 Connector 包和静态配置规则通过，不证明 Desktop 已安装、已连接或在线。Hub 的 presence online 也只是认证心跳 TTL 内的服务端遥测，不单独证明桌面 UI 正在运行。
+
+## 当前开发交付
+
+- `scripts/workbuddy_desktop_evidence.py`：离线校验操作者提供的 JSON 证据清单。
+- `examples/workbuddy-desktop-evidence.example.json`：字段模板，不是真实测试结果。
+- `tests/test_workbuddy_desktop_evidence.py`：结构、安全边界与失败场景测试。
+
+## 连接验收顺序
+
+1. 在 WorkBuddy Desktop 中导入 Connector，并记录实际客户端版本。
+2. 确认本机 MCP Server 已由 Desktop 启动；只记录 UI 状态/本地观察证据，不复制环境变量或命令行中的 Token。
+3. 从 Desktop 发起 Connector status，确认 Hub handshake 被接受。
+4. 确认 presence 查询返回 online，并保存不含凭据的回执标识。
+5. 从 Desktop 发起一次 heartbeat，确认 Hub 接受并返回 receipt。
+6. 结束本轮连接检查。此阶段不得领取任务。
+
+## 证据清单格式
+
+以 example JSON 为模板，填写实际版本、connector id、Hub 根地址、环境、会话时间及五个事件。事件顺序固定：
+
+- `connector_imported`
+- `mcp_server_started`
+- `handshake_accepted`
+- `presence_online`
+- `heartbeat_accepted`
+
+每个事件必须提供带时区的 ISO-8601 时间、来源（`desktop_ui` / `hub_receipt` / `operator_observation`）和不含秘密的 evidence_ref。不要把截图内容、Token、Cookie、Authorization header、lease token、环境变量值或完整日志粘贴进 JSON。截图应由操作者在安全渠道单独保管，分享前遮蔽敏感信息。
+
+## 离线校验
+
+在仓库根目录运行：
+
+```bash
+python scripts/workbuddy_desktop_evidence.py examples/workbuddy-desktop-evidence.example.json
+pytest -q tests/test_workbuddy_desktop_evidence.py
+```
+
+示例文件仅用于验证格式，不能作为真实连接证据。生产 Hub 必须使用 HTTPS；只有本机 loopback 测试可显式使用 `--allow-loopback-http`。
+
+## 如何解释结果
+
+- `PASS`：只代表 JSON 字段、事件顺序、时间、Hub URL 和操作者声明结构通过。
+- `FAIL`：证据清单结构不合格或包含疑似凭据字段。
+- 本工具离线运行，不连接 Hub、不启动 WorkBuddy、不验证截图真伪、不验证回执签名、不提供密码学真实性保证。
+- 证据中的 `operator_attestation` 是操作者声明，不是数字签名。
+- WorkBuddy Desktop 真实连接是否成立，必须由独立验收者核对客户端现场证据与 Hub 侧对应回执。不得仅凭模板、doctor、CI 或模拟测试宣称真实 Desktop 已连接。
+
+## 下一阶段
+
+T21 后续阶段在用户明确授权后，使用非生产/隔离 Hub 做一次受控连接复核。只有在连接证据通过后，才单独讨论是否授权一次无敏感内容的测试任务；本阶段没有任务领取或执行授权。
