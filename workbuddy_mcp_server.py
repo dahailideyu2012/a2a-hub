@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import json, os, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import json, os, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
 from typing import Any
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -10,7 +10,11 @@ SUPPORTED = {"2024-11-05", "2025-03-26", "2025-06-18"}
 LEASES: dict[str, dict[str, Any]] = {}
 LEASES_LOCK = threading.Lock()
 MAX_ACTIVE_LEASES = 1
+HANDSHAKE_READY = False
+HANDSHAKE_LOCK = threading.Lock()
 TOOLS = [
+ {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
+ {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
  {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
@@ -52,6 +56,54 @@ def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
  except (UnicodeDecodeError,json.JSONDecodeError): raise RuntimeError("Hub 返回了无效 JSON") from None
+def _get(path: str) -> dict[str,Any]:
+ base,token=_config()
+ request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),headers={"Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="GET")
+ try:
+  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=15) as response:
+   raw=response.read(64*1024+1)
+   if len(raw)>64*1024: raise RuntimeError("Hub 响应超过 64 KiB 限制")
+   data=json.loads(raw.decode("utf-8"))
+   if not isinstance(data,dict): raise RuntimeError("Hub 返回了非对象 JSON")
+   return data
+ except urllib.error.HTTPError as exc:
+  try:
+   error=json.loads(exc.read(16*1024).decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
+  except Exception: detail="Hub 返回 HTTP 错误"
+  raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
+ except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
+ except (UnicodeDecodeError,json.JSONDecodeError): raise RuntimeError("Hub 返回了无效 JSON") from None
+
+def _connector_id() -> str:
+ value=os.environ.get("A2A_WORKBUDDY_CONNECTOR_ID","workbuddy-personal").strip()
+ if not value or len(value)>64 or not value[0].isalnum() or any(not (ch.isalnum() or ch in "._-") for ch in value):
+  raise RuntimeError("A2A_WORKBUDDY_CONNECTOR_ID 格式无效")
+ return value
+
+def _ensure_handshake() -> dict[str,Any]:
+ global HANDSHAKE_READY
+ with HANDSHAKE_LOCK:
+  if HANDSHAKE_READY: return {"accepted":True,"cached":True,"connector_id":_connector_id()}
+  result=_post("handshake",{"connector_id":_connector_id(),"protocol_version":"1.0","client_version":"1.0.0","capabilities":["claim","start","renew","progress","result","heartbeat"]})
+  if result.get("accepted") is not True or result.get("connector_id") != _connector_id():
+   raise RuntimeError("Hub handshake 响应与配置的 connector identity 不匹配")
+  HANDSHAKE_READY=True
+  return result
+
+def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
+ _ensure_handshake()
+ return _ok(_get("presence"))
+
+def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
+ # Reject malformed input locally before performing any network handshake.
+ status=args.get("status")
+ if status not in {"idle","busy","degraded"}: raise RuntimeError("status 必须是 idle、busy 或 degraded")
+ task_id=args.get("current_task_id")
+ if task_id is not None and (not isinstance(task_id,str) or len(task_id)>128): raise RuntimeError("current_task_id 无效")
+ _ensure_handshake()
+ payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
+ return _ok(_post("heartbeat",payload))
+
 def _post_idempotent(path: str, payload: dict[str,Any]) -> dict[str,Any]:
  """Retry only operations whose server contract is idempotent.
 
@@ -93,6 +145,7 @@ def _task_prompt(task: dict[str,Any]) -> str:
     if isinstance(value,str): chunks.append(value)
  return "\n".join(chunks).strip()
 def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
+ _ensure_handshake()
  _prune_expired_leases()
  with LEASES_LOCK:
   if len(LEASES) >= MAX_ACTIVE_LEASES:
@@ -128,7 +181,7 @@ def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
  with LEASES_LOCK: LEASES.pop(task_id,None)
  return _ok(result)
-TOOL_FUNCS={"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
+TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
  fn=TOOL_FUNCS.get(name)
  if fn is None: return _err("未知工具")

@@ -7,6 +7,8 @@ ROOT=Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
  with server.LEASES_LOCK: server.LEASES.clear()
+ server.HANDSHAKE_READY=False
+ monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID","workbuddy-personal")
  monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL","https://hub.example.test")
  monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN","x"*48)
  yield
@@ -20,14 +22,14 @@ def test_config_requires_https_and_long_token(monkeypatch):
  with pytest.raises(RuntimeError,match="32"): server._config()
 def test_claim_keeps_lease_secret_out_of_model_result(monkeypatch):
  task={"id":"task-1","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"请审查代码"}]}]}
- monkeypatch.setattr(server,"_post",lambda path,payload:{"claimed":True,"task":task,"lease":{"lease_token":"SECRET-LEASE-MATERIAL","lease_version":2,"lease_expires_at":time.time()+120}})
+ monkeypatch.setattr(server,"_post",lambda path,payload: ({"accepted":True,"connector_id":"workbuddy-personal"} if path=="handshake" else {"claimed":True,"task":task,"lease":{"lease_token":"SECRET-LEASE-MATERIAL","lease_version":2,"lease_expires_at":time.time()+120}}))
  result=server.tool_claim({}); text=result["content"][0]["text"]
  assert "请审查代码" in text and "task-1" in text
  assert "SECRET-LEASE-MATERIAL" not in text
  assert server.LEASES["task-1"]["lease_version"]==2
 def test_lifecycle_uses_private_lease_and_stable_result_key(monkeypatch):
  calls=[]
- monkeypatch.setattr(server,"_post",lambda path,payload:calls.append((path,payload)) or ({"lease_expires_at":time.time()+120} if path.endswith("/renew") else {"ok":True}))
+ monkeypatch.setattr(server,"_post",lambda path,payload:calls.append((path,payload)) or ({"accepted":True,"connector_id":"workbuddy-personal"} if path=="handshake" else ({"lease_expires_at":time.time()+120} if path.endswith("/renew") else {"ok":True})))
  with server.LEASES_LOCK: server.LEASES["task-2"]={"lease_token":"private-lease","lease_version":3,"lease_expires_at":time.time()+120}
  assert not server.tool_start({"task_id":"task-2"})["isError"]
  assert not server.tool_renew({"task_id":"task-2"})["isError"]
@@ -43,7 +45,7 @@ def test_task_lifecycle_rejects_unknown_lease():
  result=server.call_tool("workbuddy_start_task",{"task_id":"not-claimed"})
  assert result["isError"] is True and "没有该任务" in result["content"][0]["text"]
 def test_no_task_is_a_normal_result(monkeypatch):
- monkeypatch.setattr(server,"_post",lambda path,payload:{"claimed":False})
+ monkeypatch.setattr(server,"_post",lambda path,payload: ({"accepted":True,"connector_id":"workbuddy-personal"} if path=="handshake" else {"claimed":False}))
  result=server.tool_claim({})
  assert result["isError"] is False and "没有可领取" in result["content"][0]["text"]
 def test_stdio_handshake_and_tools_list():
@@ -60,14 +62,14 @@ def test_stdio_handshake_and_tools_list():
 def test_claim_refuses_second_active_task_until_result_is_submitted(monkeypatch):
  calls=[]
  task={"id":"task-active","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"do work"}]}]}
- monkeypatch.setattr(server,"_post",lambda path,payload:calls.append(path) or {
+ monkeypatch.setattr(server,"_post",lambda path,payload:calls.append(path) or ({"accepted":True,"connector_id":"workbuddy-personal"} if path=="handshake" else {
   "claimed":True,"task":task,"lease":{"lease_token":"private-lease-material","lease_version":1,"lease_expires_at":time.time()+120}
- })
+ }))
  first=server.tool_claim({})
  second=server.tool_claim({})
  assert first["isError"] is False
  assert second["isError"] is True
- assert len(calls)==1
+ assert calls==["handshake","claim"]
  assert "已有未完成任务" in second["content"][0]["text"]
 
 
@@ -75,9 +77,9 @@ def test_expired_local_lease_is_pruned_before_next_claim(monkeypatch):
  task={"id":"task-next","agentId":"codex","status":{"state":"submitted"},"history":[{"parts":[{"kind":"text","text":"next"}]}]}
  with server.LEASES_LOCK:
   server.LEASES["task-expired"]={"lease_token":"old-secret","lease_version":1,"lease_expires_at":time.time()-1}
- monkeypatch.setattr(server,"_post",lambda path,payload:{
+ monkeypatch.setattr(server,"_post",lambda path,payload: ({"accepted":True,"connector_id":"workbuddy-personal"} if path=="handshake" else {
   "claimed":True,"task":task,"lease":{"lease_token":"new-secret-material","lease_version":1,"lease_expires_at":time.time()+120}
- })
+ }))
  result=server.tool_claim({})
  assert result["isError"] is False
  assert "task-expired" not in server.LEASES
@@ -129,10 +131,15 @@ def test_idempotent_retry_does_not_retry_conflicts_or_claim(monkeypatch):
  assert len(attempts)==1
 
  claim_attempts=[]
- monkeypatch.setattr(server,"_post",lambda path,payload:claim_attempts.append(path) or (_ for _ in ()).throw(RuntimeError("Hub HTTP 503: unavailable")))
+ def fail_claim_after_handshake(path,payload):
+  claim_attempts.append(path)
+  if path=="handshake":
+   return {"accepted":True,"connector_id":"workbuddy-personal"}
+  raise RuntimeError("Hub HTTP 503: unavailable")
+ monkeypatch.setattr(server,"_post",fail_claim_after_handshake)
  result=server.call_tool("workbuddy_claim_task",{})
  assert result["isError"] is True
- assert claim_attempts==["claim"]
+ assert claim_attempts==["handshake","claim"]
 
 
 
@@ -164,3 +171,78 @@ def test_idempotent_retry_stops_after_three_total_attempts(monkeypatch):
   server._post_idempotent("tasks/task-1/result", payload)
  assert len(attempts) == 3
  assert attempts[0] == attempts[1] == attempts[2]
+
+
+def test_claim_performs_handshake_once_before_claim(monkeypatch):
+    calls = []
+    task = {"id": "task-hs", "agentId": "codex", "status": {"state": "submitted"}, "history": []}
+
+    def fake_post(path, payload):
+        calls.append((path, payload))
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        return {"claimed": True, "task": task, "lease": {
+            "lease_token": "private-lease-material", "lease_version": 1,
+            "lease_expires_at": time.time() + 120,
+        }}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    assert server.tool_claim({})["isError"] is False
+    assert [path for path, _ in calls] == ["handshake", "claim"]
+    assert calls[0][1]["protocol_version"] == "1.0"
+    assert "claim" in calls[0][1]["capabilities"]
+    assert server.HANDSHAKE_READY is True
+
+
+def test_handshake_identity_mismatch_fails_closed(monkeypatch):
+    monkeypatch.setattr(server, "_post", lambda _path, _payload: {
+        "accepted": True, "connector_id": "attacker-connector",
+    })
+    result = server.call_tool("workbuddy_claim_task", {})
+    assert result["isError"] is True
+    assert "identity" in result["content"][0]["text"]
+
+
+def test_connector_id_rejects_invalid_values(monkeypatch):
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "../other")
+    with pytest.raises(RuntimeError, match="格式无效"):
+        server._connector_id()
+
+
+def test_heartbeat_requires_handshake_and_sends_configured_identity(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda path, payload: calls.append((path, payload)) or (
+        {"accepted": True, "connector_id": "workbuddy-personal"} if path == "handshake"
+        else {"accepted": True, "receipt_id": payload["heartbeat_id"]}
+    ))
+    result = server.tool_heartbeat({"status": "busy", "current_task_id": "task-123"})
+    assert result["isError"] is False
+    assert [path for path, _ in calls] == ["handshake", "heartbeat"]
+    assert calls[1][1]["connector_id"] == "workbuddy-personal"
+    assert calls[1][1]["status"] == "busy"
+    assert calls[1][1]["current_task_id"] == "task-123"
+    assert "lease_token" not in result["content"][0]["text"]
+
+
+def test_status_uses_authenticated_get_after_handshake(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda path, payload: calls.append(("POST", path)) or {
+        "accepted": True, "connector_id": "workbuddy-personal",
+    })
+    monkeypatch.setattr(server, "_get", lambda path: calls.append(("GET", path)) or {
+        "connector_id": "workbuddy-personal", "online": True, "status": "idle",
+    })
+    result = server.tool_status({})
+    assert result["isError"] is False
+    assert calls == [("POST", "handshake"), ("GET", "presence")]
+    assert "online" in result["content"][0]["text"]
+
+
+def test_heartbeat_rejects_invalid_status_before_network(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda path, payload: calls.append(path) or {
+        "accepted": True, "connector_id": "workbuddy-personal",
+    })
+    result = server.call_tool("workbuddy_heartbeat", {"status": "root"})
+    assert result["isError"] is True
+    assert calls == []
