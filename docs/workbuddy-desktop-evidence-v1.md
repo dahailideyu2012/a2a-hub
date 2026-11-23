@@ -55,3 +55,15 @@ pytest -q tests/test_workbuddy_desktop_evidence.py
 ## 下一阶段
 
 T21 后续阶段在用户明确授权后，使用非生产/隔离 Hub 做一次受控连接复核。只有在连接证据通过后，才单独讨论是否授权一次无敏感内容的测试任务；本阶段没有任务领取或执行授权。
+
+
+## T22 — 单次连接检查工具（不领取任务）
+
+WorkBuddy Desktop 导入 Connector 后，可显式调用 MCP 工具 `workbuddy_connection_check` 完成一次受控检查：
+
+1. authenticated handshake；
+2. 读取一次 presence；
+3. 发送一次 `idle` heartbeat（`current_task_id=null`）；
+4. 再读取一次 presence，并返回脱敏的回执摘要。
+
+该工具不调用 `claim`、不领取任务、不执行任务、不启动后台轮询。只有 Hub 明确接受 heartbeat 后才返回成功；失败时返回 MCP error。返回值包含 `task_claimed=false` 与 `task_executed=false`，但仍只是服务端请求回执，不是 WorkBuddy Desktop UI 的密码学证明。真实联调必须由操作者在非生产环境中运行，并由独立验收者核对客户端 UI 与 Hub 回执。
