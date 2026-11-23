@@ -190,3 +190,19 @@ def test_multiple_duplicate_evidence_references_are_reported_without_echoing_val
     assert "events[1]" in duplicate_error and "events[3]" in duplicate_error
     assert secret_like_reference not in duplicate_error
     assert all(secret_like_reference not in error for error in errors)
+
+
+
+def test_evidence_references_reject_control_characters_without_echoing_values():
+    for unsafe_ref in ("receipt:one\\nforged-log-line", "receipt:one\\tfield", "receipt:one\\x00tail", "receipt:one\\x7ftail"):
+        data = valid_evidence()
+        data["events"][0]["evidence_ref"] = unsafe_ref
+        errors = validate_evidence(data)
+        assert any("evidence_ref 无效或包含控制字符" in error for error in errors)
+        assert all(unsafe_ref not in error for error in errors)
+
+
+def test_normal_opaque_evidence_references_remain_valid():
+    data = valid_evidence()
+    data["events"][0]["evidence_ref"] = "hub-receipt:hb_01-abc/trace.2"
+    assert validate_evidence(data) == []
