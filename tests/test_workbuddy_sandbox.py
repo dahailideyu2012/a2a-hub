@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workbuddy_sandbox import DEFAULT_PORT, create_env_file, load_env_file, validate_port
+from scripts.workbuddy_sandbox import (
+    DEFAULT_PORT,
+    create_env_file,
+    load_env_file,
+    main,
+    validate_port,
+)
 
 
 def test_init_creates_three_distinct_credentials_without_printing_them(tmp_path: Path, capsys):
@@ -67,3 +73,26 @@ def test_env_reader_rejects_duplicate_keys(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="duplicate"):
         load_env_file(target)
+
+
+def test_destroy_refuses_without_explicit_confirmation(monkeypatch, capsys):
+    compose_calls = []
+    monkeypatch.setattr(
+        "scripts.workbuddy_sandbox._compose",
+        lambda *args: compose_calls.append(args) or 0,
+    )
+
+    assert main(["destroy"]) == 2
+    assert compose_calls == []
+    assert "--confirm-delete-data" in capsys.readouterr().err
+
+
+def test_destroy_removes_volume_only_after_explicit_confirmation(monkeypatch):
+    compose_calls = []
+    monkeypatch.setattr(
+        "scripts.workbuddy_sandbox._compose",
+        lambda *args: compose_calls.append(args) or 0,
+    )
+
+    assert main(["destroy", "--confirm-delete-data"]) == 0
+    assert compose_calls == [("down", "--volumes")]
