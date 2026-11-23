@@ -111,48 +111,53 @@ def _utc_now() -> str:
  return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")
 
 def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
- """Perform one task-free connection check with traceable, non-secret receipt metadata."""
+ """Perform one task-free connection check and retain safe trace metadata on failure."""
  check_id="conn-"+uuid.uuid4().hex
  started_at=_utc_now()
- handshake=_ensure_handshake()
- handshake_observed_at=_utc_now()
- before=_get("presence")
- presence_before_observed_at=_utc_now()
- heartbeat_id="hb-"+uuid.uuid4().hex
- receipt=_post("heartbeat",{"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None})
- heartbeat_observed_at=_utc_now()
- if receipt.get("accepted") is not True:
-  raise RuntimeError("Hub 未确认连接检查心跳")
- after=_get("presence")
- presence_after_observed_at=_utc_now()
- if after.get("online") is not True:
-  raise RuntimeError("Hub 已接受心跳，但连接 presence 未确认 online")
- if after.get("connector_id") != _connector_id():
-  raise RuntimeError("Hub presence connector identity 与当前配置不匹配")
- completed_at=_utc_now()
- return _ok({
-  "connection_check":"passed",
-  "check_id":check_id,
-  "started_at":started_at,
-  "completed_at":completed_at,
-  "connector_id":_connector_id(),
-  "handshake_accepted":True,
-  "handshake_receipt_id":handshake.get("receipt_id"),
-  "handshake_observed_at":handshake_observed_at,
-  "presence_online_before":before.get("online") is True,
-  "presence_before_observed_at":presence_before_observed_at,
-  "heartbeat_accepted":True,
-  "heartbeat_id":heartbeat_id,
-  "heartbeat_receipt_id":receipt.get("receipt_id"),
-  "heartbeat_observed_at":heartbeat_observed_at,
-  "presence_online_after":after.get("online") is True,
-  "presence_after_observed_at":presence_after_observed_at,
-  "hub_server_time":receipt.get("server_time") or after.get("server_time"),
-  "task_claimed":False,
-  "task_executed":False,
-  "note":"时间戳由本地 MCP 进程记录；receipt_id 仅在 Hub 实际返回时提供。该结果不证明 Desktop UI 身份，也未领取或执行任务。"
- })
-
+ trace={"check_id":check_id,"started_at":started_at,"task_claimed":False,"task_executed":False}
+ stage="handshake"
+ try:
+  handshake=_ensure_handshake()
+  trace["handshake_observed_at"]=_utc_now()
+  stage="presence_before"
+  before=_get("presence")
+  trace["presence_before_observed_at"]=_utc_now()
+  heartbeat_id="hb-"+uuid.uuid4().hex
+  stage="heartbeat"
+  receipt=_post("heartbeat",{"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None})
+  trace["heartbeat_observed_at"]=_utc_now()
+  if receipt.get("accepted") is not True:
+   raise RuntimeError("Hub 未确认连接检查心跳")
+  stage="presence_after"
+  after=_get("presence")
+  trace["presence_after_observed_at"]=_utc_now()
+  if after.get("online") is not True:
+   raise RuntimeError("Hub 已接受心跳，但连接 presence 未确认 online")
+  if after.get("connector_id") != _connector_id():
+   raise RuntimeError("Hub presence connector identity 与当前配置不匹配")
+  completed_at=_utc_now()
+  trace["completed_at"]=completed_at
+  return _ok({
+   "connection_check":"passed",
+   **trace,
+   "connector_id":_connector_id(),
+   "handshake_accepted":True,
+   "handshake_receipt_id":handshake.get("receipt_id"),
+   "presence_online_before":before.get("online") is True,
+   "heartbeat_accepted":True,
+   "heartbeat_id":heartbeat_id,
+   "heartbeat_receipt_id":receipt.get("receipt_id"),
+   "presence_online_after":after.get("online") is True,
+   "hub_server_time":receipt.get("server_time") or after.get("server_time"),
+   "note":"时间戳由本地 MCP 进程记录；receipt_id 仅在 Hub 实际返回时提供。该结果不证明 Desktop UI 身份，也未领取或执行任务。"
+  })
+ except Exception as exc:
+  # Keep diagnostics useful without echoing Hub response bodies or credential-bearing data.
+  trace["failed_at"]=_utc_now()
+  trace["failed_stage"]=stage
+  trace["failure_type"]=type(exc).__name__
+  trace["connection_check"]="failed"
+  raise RuntimeError(str(exc)+" [connection_check_trace="+json.dumps(trace,ensure_ascii=False,separators=(",",":"))+"]") from None
 
 def _post_idempotent(path: str, payload: dict[str,Any]) -> dict[str,Any]:
  """Retry only operations whose server contract is idempotent.
