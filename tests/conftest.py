@@ -97,7 +97,8 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS", "echo-a")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_LEASE_SECONDS", "120")
-    monkeypatch.delenv("A2A_REQUIRE_AUTH", raising=False)
+    # Test clients explicitly opt into local unauthenticated mode; production defaults stay secure.
+    monkeypatch.setenv("A2A_REQUIRE_AUTH", "false")
     # 社交层的两个文件必须指向临时目录：**测试不能依赖工作树状态**。
     # 否则部署者本机跑了 `social init`（生成 config/members.yaml）之后，
     # 那些断言「社交层未启用」的用例就会莫名其妙变红——门禁开没开

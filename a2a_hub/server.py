@@ -320,10 +320,14 @@ async def resolve_member(
     if graph.enabled:
         if token:
             member = graph.resolve_token(token)
-            if member is None:
-                raise HTTPException(status_code=403, detail="Token 无效：不属于任何成员")
-            return member
-        if graph.any_tokens():
+            if member is not None:
+                return member
+            # The global API token remains a valid single-owner credential when
+            # members.yaml exists but no member-specific token matches it.
+            if h.settings.api_token and hmac.compare_digest(token, h.settings.api_token):
+                return graph.member_or_synthetic(graph.default_member_id)
+            raise HTTPException(status_code=403, detail="Token 无效：不属于任何成员")
+        if graph.any_tokens() or h.settings.require_auth:
             raise HTTPException(status_code=401, detail="缺少 Bearer Token")
         return graph.member_or_synthetic(graph.default_member_id)
 
@@ -387,12 +391,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+cors_origins = [
+    origin.strip()
+    for origin in hub.settings.cors_allowed_origins.split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=hub.settings.cors_allow_credentials and bool(cors_origins),
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-ChatGPT-Ingress-Token",
+        "X-WorkBuddy-Connector-Token",
+    ],
 )
 
 # 独立 ChatGPT 入口：独立 token、窄白名单与任务级回读，不暴露任意 JSON-RPC。

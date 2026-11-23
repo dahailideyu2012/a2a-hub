@@ -82,7 +82,7 @@ agents:
           - 这个仓库的鉴权流程是怎么串起来的
           - 找出所有调用了这段代码的上游模块
     config:
-      command: "claude -p {prompt} --output-format stream-json --verbose --permission-mode bypassPermissions"
+      command: "claude -p {prompt} --output-format stream-json --verbose --permission-mode default"
       parser: claude
       timeout: 300
 
