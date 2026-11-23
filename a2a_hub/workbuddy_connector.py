@@ -389,7 +389,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         body: HeartbeatRequest,
         connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
     ) -> dict[str, Any]:
-        _, settings = runtime()
+        hub, settings = runtime()
         await guard(connector_token, settings)
         if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
             raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
@@ -401,12 +401,19 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         )
         if not recorded:
             raise HTTPException(status_code=409, detail="WorkBuddy connector must complete handshake before heartbeat")
+        cancel_requested = False
+        if body.current_task_id and isinstance(hub.registry.store, PullTaskRepository):
+            cancel_requested = hub.registry.store.is_pull_task_cancelled(
+                body.current_task_id, settings.workbuddy_connector_id
+            )
         return {
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
             "receipt_id": body.heartbeat_id,
             "status": body.status,
             "current_task_id": body.current_task_id,
+            "cancel_requested": cancel_requested,
+            "cancel_reason": "task_cancelled_by_caller" if cancel_requested else None,
             "server_time": _server_time(),
             "next_heartbeat_seconds": 30,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
