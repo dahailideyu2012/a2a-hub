@@ -67,3 +67,14 @@ WorkBuddy Desktop 导入 Connector 后，可显式调用 MCP 工具 `workbuddy_c
 4. 再读取一次 presence，并返回脱敏的回执摘要。
 
 该工具不调用 `claim`、不领取任务、不执行任务、不启动后台轮询。只有 Hub 明确接受 heartbeat 后才返回成功；失败时返回 MCP error。返回值包含 `task_claimed=false` 与 `task_executed=false`，但仍只是服务端请求回执，不是 WorkBuddy Desktop UI 的密码学证明。真实联调必须由操作者在非生产环境中运行，并由独立验收者核对客户端 UI 与 Hub 回执。
+
+
+## T23 — 连接检查回执追踪字段
+
+T23 为 `workbuddy_connection_check` 增加一次检查的 `check_id`、本地 UTC 时间戳和明确区分的 heartbeat ID / Hub receipt ID。若 Hub 响应没有真实 `receipt_id`，字段保持 null，不再用本地 heartbeat ID 冒充 Hub 回执编号。
+
+- 时间戳由本机 MCP 进程记录，用于排序和诊断，不是 Hub 签名时间。
+- `heartbeat_id` 是客户端生成的请求关联 ID；`heartbeat_receipt_id` 仅在 Hub 实际返回时有值。
+- 仍然只执行 handshake、presence GET、单次 idle heartbeat、presence GET。
+- 不调用 claim/start/renew/progress/result，不领取或执行任务。
+- 这些追踪字段有助于操作者将 Desktop 现场观察与 Hub 日志进行关联，但本身不构成数字签名或真实 Desktop UI 证明。

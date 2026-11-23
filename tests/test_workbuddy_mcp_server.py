@@ -288,3 +288,39 @@ def test_connection_check_fails_closed_when_heartbeat_not_accepted(monkeypatch):
     result = server.call_tool("workbuddy_connection_check", {})
     assert result["isError"] is True
     assert "未确认" in result["content"][0]["text"]
+
+
+def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_receipt_ids(monkeypatch):
+    calls = []
+    def fake_post(path, payload):
+        calls.append(("POST", path, payload.copy()))
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        if path == "heartbeat":
+            return {"accepted": True, "server_time": "2026-11-23T10:00:00Z"}
+        raise AssertionError(f"unexpected POST {path}")
+    def fake_get(path):
+        calls.append(("GET", path, {}))
+        return {"connector_id": "workbuddy-personal", "online": True}
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["check_id"].startswith("conn-")
+    assert payload["heartbeat_id"].startswith("hb-")
+    assert payload["handshake_receipt_id"] is None
+    assert payload["heartbeat_receipt_id"] is None
+    timestamps = [
+        payload["started_at"],
+        payload["handshake_observed_at"],
+        payload["presence_before_observed_at"],
+        payload["heartbeat_observed_at"],
+        payload["presence_after_observed_at"],
+        payload["completed_at"],
+    ]
+    from datetime import datetime
+    parsed = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in timestamps]
+    assert parsed == sorted(parsed)
+    assert payload["task_claimed"] is False and payload["task_executed"] is False
+    assert [call[1] for call in calls] == ["handshake", "presence", "heartbeat", "presence"]
