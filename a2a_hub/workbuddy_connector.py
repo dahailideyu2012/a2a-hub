@@ -16,6 +16,29 @@ from .github_result_callback import GithubResultDeliveryError, deliver_github_is
 from .github_callback_outbox import GithubCallbackOutbox
 
 
+# Protocol handshake and lightweight liveness receipts. The connector token remains
+# the sole authentication secret; the response never echoes it or the lease token.
+class HandshakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    protocol_version: Literal["1.0"] = "1.0"
+    client_version: str = Field(default="unknown", min_length=1, max_length=64)
+    capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class HeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    heartbeat_id: str = Field(min_length=8, max_length=128)
+    status: Literal["idle", "busy", "degraded"]
+    current_task_id: str | None = Field(default=None, max_length=128)
+
+
+def _server_time() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+
 class ClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_ids: list[str] = Field(default_factory=list, max_length=50)
@@ -81,7 +104,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         store = store_for(hub)
         configured = {x.strip() for x in settings.workbuddy_connector_allowed_agents.split(",") if x.strip()}
         if not configured:
-            raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
+            raise HTTPException(
+                status_code=503,
+                detail="WorkBuddy connector agent allowlist is not configured",
+            )
         requested = set((body or ClaimRequest()).agent_ids)
         allowed = sorted(configured.intersection(requested)) if requested else sorted(configured)
         seconds = (body.lease_seconds if body and body.lease_seconds else settings.workbuddy_connector_lease_seconds)
@@ -239,7 +265,11 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "heartbeat_interval_seconds": 30,
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
             "allowed_agent_ids": configured,
-            "capabilities": sorted(set(body.capabilities).intersection({"claim", "start", "renew", "progress", "result", "heartbeat"})),
+            "capabilities": sorted(
+                set(body.capabilities).intersection(
+                    {"claim", "start", "renew", "progress", "result", "heartbeat"}
+                )
+            ),
         }
 
     @router.post("/heartbeat")
@@ -262,30 +292,3 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         }
 
     return router
-
-
-# Protocol handshake and lightweight liveness receipts. The connector token remains
-# the sole authentication secret; the response never echoes it or the lease token.
-class HandshakeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    protocol_version: Literal["1.0"] = "1.0"
-    client_version: str = Field(default="unknown", min_length=1, max_length=64)
-    capabilities: list[str] = Field(default_factory=list, max_length=20)
-
-
-class HeartbeatRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    heartbeat_id: str = Field(min_length=8, max_length=128)
-    status: Literal["idle", "busy", "degraded"]
-    current_task_id: str | None = Field(default=None, max_length=128)
-
-
-def _server_time() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-# The endpoints are attached by build_workbuddy_connector_router below. They are
-# intentionally stateless: a successful response is an authenticated receipt,
-# not a claim that a background worker or a real Desktop process is running.
