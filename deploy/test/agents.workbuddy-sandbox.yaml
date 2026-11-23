@@ -1,0 +1,20 @@
+hub:
+  name: A2A Hub WorkBuddy Sandbox
+  description: Disposable local-only environment for WorkBuddy Desktop connector acceptance
+
+agents:
+  - id: workbuddy
+    name: WorkBuddy Sandbox Pull Target
+    type: echo
+    description: Synthetic Pull target; no external CLI or paid API is invoked
+    priority: 1
+    tags: [sandbox, test, workbuddy-pull]
+    skills:
+      - id: sandbox-canary
+        name: Sandbox canary task
+        description: Receives synthetic tasks for validating WorkBuddy Desktop Pull and result callbacks
+        tags: [sandbox, canary, acceptance, test]
+        examples:
+          - Return the exact canary phrase from a synthetic Hub task
+    config:
+      prefix: "[sandbox-only]"

@@ -1,0 +1,54 @@
+services:
+  hub-workbuddy-sandbox:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: a2a-hub:workbuddy-sandbox
+    container_name: a2a-hub-workbuddy-sandbox
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${A2A_WORKBUDDY_SANDBOX_PORT:-18081}:8080"
+    env_file:
+      - .env.workbuddy-sandbox
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: "8080"
+      A2A_PUBLIC_URL: "http://127.0.0.1:${A2A_WORKBUDDY_SANDBOX_PORT:-18081}"
+      A2A_STORE: sqlite
+      A2A_DB_PATH: /app/data/tasks.sqlite3
+      A2A_SOCIAL_DB_PATH: /app/data/social.sqlite3
+      A2A_CHATGPT_INGRESS_DB_PATH: /app/data/chatgpt-ingress.sqlite3
+      A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH: /app/data/github-outbox.sqlite3
+      A2A_AGENTS_FILE: /app/config/agents.yaml
+      A2A_REQUIRE_AUTH: "true"
+      A2A_API_TOKEN: "${A2A_API_TOKEN:?run scripts/workbuddy_sandbox.py init}"
+      A2A_CHATGPT_INGRESS_TOKEN: "${A2A_CHATGPT_INGRESS_TOKEN:?run scripts/workbuddy_sandbox.py init}"
+      A2A_CHATGPT_INGRESS_ALLOWED_AGENTS: workbuddy
+      A2A_WORKBUDDY_CONNECTOR_TOKEN: "${A2A_WORKBUDDY_CONNECTOR_TOKEN:?run scripts/workbuddy_sandbox.py init}"
+      A2A_WORKBUDDY_CONNECTOR_ID: workbuddy-desktop-sandbox
+      A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS: workbuddy
+      A2A_AUTONOMY_ENABLED: "false"
+      A2A_CORS_ALLOWED_ORIGINS: ""
+    volumes:
+      - workbuddy_sandbox_data:/app/data
+      - ./agents.workbuddy-sandbox.yaml:/app/config/agents.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  workbuddy_sandbox_data:
