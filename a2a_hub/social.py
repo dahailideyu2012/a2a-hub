@@ -195,8 +195,14 @@ class SocialHub:
                 conv = Conversation.model_validate_json(raw)
                 self._convs[conv.id] = conv
                 self._order.append(conv.id)
-            # Enforce the same bounded in-memory history after recovery.
+            # Enforce the same bounded history in both memory and SQLite after recovery.
+            evicted = self._order[:-500]
             self._order = self._order[-500:]
+            for old_id in evicted:
+                self._store.delete(old_id)
+                self._convs.pop(old_id, None)
+            if evicted:
+                self._store.reorder(self._order)
             self._convs = {cid: self._convs[cid] for cid in self._order}
         # 后台派发任务：必须持有引用，否则可能被 GC 掉
         self._inflight: set[asyncio.Task[Any]] = set()
