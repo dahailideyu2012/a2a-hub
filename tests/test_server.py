@@ -8,6 +8,17 @@ import pytest
 
 
 class TestDiscovery:
+    def test_cors_does_not_reflect_untrusted_origin(self, client):
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": "https://evil.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert "access-control-allow-origin" not in response.headers
+        assert response.headers.get("access-control-allow-credentials") != "true"
+
     def test_health(self, client):
         r = client.get("/health")
         assert r.status_code == 200
