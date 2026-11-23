@@ -213,4 +213,81 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             raise HTTPException(status_code=409, detail="回调不存在或当前状态不可人工重试")
         return {"task_id": task_id, "status": "pending"}
 
+
+    @router.post("/handshake")
+    async def handshake(
+        body: HandshakeRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        configured = sorted(
+            item.strip() for item in settings.workbuddy_connector_allowed_agents.split(",")
+            if item.strip()
+        )
+        if not configured:
+            raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
+        return {
+            "accepted": True,
+            "connector_id": settings.workbuddy_connector_id,
+            "protocol_version": "1.0",
+            "server_time": _server_time(),
+            "heartbeat_interval_seconds": 30,
+            "lease_seconds": settings.workbuddy_connector_lease_seconds,
+            "allowed_agent_ids": configured,
+            "capabilities": ["claim", "start", "renew", "progress", "result", "heartbeat"],
+        }
+
+    @router.post("/heartbeat")
+    async def heartbeat(
+        body: HeartbeatRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        return {
+            "accepted": True,
+            "connector_id": settings.workbuddy_connector_id,
+            "receipt_id": body.heartbeat_id,
+            "status": body.status,
+            "current_task_id": body.current_task_id,
+            "server_time": _server_time(),
+            "next_heartbeat_seconds": 30,
+        }
+
     return router
+
+
+# Protocol handshake and lightweight liveness receipts. The connector token remains
+# the sole authentication secret; the response never echoes it or the lease token.
+from datetime import datetime, timezone
+from uuid import uuid4
+
+
+class HandshakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64)
+    protocol_version: Literal["1.0"] = "1.0"
+    client_version: str = Field(default="unknown", min_length=1, max_length=64)
+    capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class HeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64)
+    heartbeat_id: str = Field(min_length=8, max_length=128)
+    status: Literal["idle", "busy", "degraded"]
+    current_task_id: str | None = Field(default=None, max_length=128)
+
+
+def _server_time() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# The endpoints are attached by build_workbuddy_connector_router below. They are
+# intentionally stateless: a successful response is an authenticated receipt,
+# not a claim that a background worker or a real Desktop process is running.
