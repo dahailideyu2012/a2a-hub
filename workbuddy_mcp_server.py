@@ -110,25 +110,45 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
 def _utc_now() -> str:
  return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")
 
+def _connection_check_failure(
+ stage: str, check_id: str, started_at: str, observed: dict[str,str], reason: str
+) -> RuntimeError:
+ trace = {
+  "check_id": check_id,
+  "started_at": started_at,
+  "failed_stage": stage,
+  **observed,
+ }
+ # Only locally generated identifiers/timestamps are included; never include
+ # Hub response bodies, request headers, tokens, or arbitrary exception text.
+ return RuntimeError(
+  f"{reason} [connection_check_trace={json.dumps(trace,ensure_ascii=False,separators=(',',':'))}]"
+ )
+
 def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
  """Perform one task-free connection check with traceable, non-secret receipt metadata."""
  check_id="conn-"+uuid.uuid4().hex
  started_at=_utc_now()
+ observed: dict[str,str] = {}
  handshake=_ensure_handshake()
  handshake_observed_at=_utc_now()
+ observed["handshake_observed_at"]=handshake_observed_at
  before=_get("presence")
  presence_before_observed_at=_utc_now()
+ observed["presence_before_observed_at"]=presence_before_observed_at
  heartbeat_id="hb-"+uuid.uuid4().hex
  receipt=_post("heartbeat",{"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None})
  heartbeat_observed_at=_utc_now()
+ observed["heartbeat_observed_at"]=heartbeat_observed_at
  if receipt.get("accepted") is not True:
-  raise RuntimeError("Hub 未确认连接检查心跳")
+  raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳")
  after=_get("presence")
  presence_after_observed_at=_utc_now()
+ observed["presence_after_observed_at"]=presence_after_observed_at
  if after.get("online") is not True:
-  raise RuntimeError("Hub 已接受心跳，但连接 presence 未确认 online")
+  raise _connection_check_failure("final_presence_online",check_id,started_at,observed,"Hub 已接受心跳，但连接 presence 未确认 online")
  if after.get("connector_id") != _connector_id():
-  raise RuntimeError("Hub presence connector identity 与当前配置不匹配")
+  raise _connection_check_failure("final_presence_identity",check_id,started_at,observed,"Hub presence connector identity 与当前配置不匹配")
  completed_at=_utc_now()
  return _ok({
   "connection_check":"passed",
