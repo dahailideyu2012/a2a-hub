@@ -129,3 +129,42 @@ def test_presence_endpoint_requires_connector_auth(client, monkeypatch, tmp_path
     wrong = client.get(f"{BASE}/presence", headers={"X-WorkBuddy-Connector-Token": "x" * 40})
     assert missing.status_code == 401
     assert wrong.status_code == 403
+
+
+def test_presence_store_closes_sqlite_connections(monkeypatch, tmp_path):
+    import sqlite3
+
+    from a2a_hub.workbuddy_presence import WorkBuddyPresenceStore
+
+    class TrackingConnection(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_closed = False
+
+        def close(self):
+            self.was_closed = True
+            super().close()
+
+    store = WorkBuddyPresenceStore(tmp_path / "tracked.db")
+    connections = []
+
+    def tracked_connect():
+        db = sqlite3.connect(
+            store.db_path, timeout=10, factory=TrackingConnection
+        )
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout = 10000")
+        connections.append(db)
+        return db
+
+    monkeypatch.setattr(store, "_connect", tracked_connect)
+    store.record_handshake("workbuddy-personal", "1.0", "test", ["heartbeat"])
+    assert connections[-1].was_closed is True
+
+    assert store.record_heartbeat(
+        "workbuddy-personal", "heartbeat-0001", "busy", "task-1"
+    )
+    assert connections[-1].was_closed is True
+
+    assert store.get_presence("workbuddy-personal")["current_task_id"] == "task-1"
+    assert connections[-1].was_closed is True
