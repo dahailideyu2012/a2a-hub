@@ -188,3 +188,47 @@ def test_multiple_duplicate_evidence_references_are_reported_without_echoing_val
     errors = validate_evidence(data)
     assert any("events[1]、3" in error or "events[1]" in error for error in errors)
     assert all(secret_like_reference not in error for error in errors)
+
+
+
+def test_evidence_references_reject_control_characters_without_echoing_values():
+    for unsafe_ref in ("receipt:one\nforged-log-line", "receipt:one\tfield", "receipt:one\x00tail", "receipt:one\x7ftail"):
+        data = valid_evidence()
+        data["events"][0]["evidence_ref"] = unsafe_ref
+        errors = validate_evidence(data)
+        assert any("evidence_ref 无效或包含控制字符" in error for error in errors)
+        assert all(unsafe_ref not in error for error in errors)
+
+
+def test_normal_opaque_evidence_references_remain_valid():
+    data = valid_evidence()
+    data["events"][0]["evidence_ref"] = "hub-receipt:hb_01-abc/trace.2"
+    assert validate_evidence(data) == []
+
+
+def test_evidence_references_reject_unicode_line_and_format_controls():
+    for unsafe_ref in (
+        "receipt:one\u0085forged",
+        "receipt:one\u2028forged",
+        "receipt:one\u2029forged",
+        "receipt:one\u200bforged",
+    ):
+        data = valid_evidence()
+        data["events"][2]["evidence_ref"] = unsafe_ref
+        errors = validate_evidence(data)
+        assert any("evidence_ref 无效或包含控制字符" in error for error in errors)
+        assert all(unsafe_ref not in error for error in errors)
+
+
+def test_session_id_and_client_version_reject_log_forging_controls():
+    data = valid_evidence()
+    data["session"]["id"] = "session-001\nforged-log-line"
+    errors = validate_evidence(data)
+    assert any("session id 无效" in error for error in errors)
+    assert all("forged-log-line" not in error for error in errors)
+
+    data = valid_evidence()
+    data["client"]["version"] = "4.23.0\u2028forged"
+    errors = validate_evidence(data)
+    assert any("client 产品名称或版本无效" in error for error in errors)
+    assert all("forged" not in error for error in errors)
