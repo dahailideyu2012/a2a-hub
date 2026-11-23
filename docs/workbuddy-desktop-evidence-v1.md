@@ -106,3 +106,14 @@ T26 为连接检查的关键失败门增加安全追踪元数据。心跳未被�
 - 不把 Hub 响应体、receipt ID、请求头、Connector Token、lease token 或任意异常详情复制进错误消息。
 - 失败追踪用于将本地诊断与操作者记录关联；它不是 Hub 签名回执，也不证明 Desktop UI 身份。
 - 成功路径的握手、两次 presence、单次 idle heartbeat 顺序不变；不领取或执行任务，不启动轮询。
+
+
+## T27 — 时间线诊断与时区边界完善
+
+T27 完善 T25 的离线时间线校验：
+- session 时间窗口按闭区间处理，事件时间恰好等于 started_at 或 completed_at 时有效；
+- session 与事件带不同 UTC offset 时，按绝对时间点比较，而不是比较时间字符串；
+- session.completed_at 早于 started_at 时，只报告 session 根因，不再为五个事件追加重复的窗口错误；
+- 相邻或全部事件时间相等仍允许，前提是它们处于有效 session 窗口内。
+
+这些规则只改善输入一致性诊断，不验证设备时钟准确性、事件真实性或 Desktop 身份。

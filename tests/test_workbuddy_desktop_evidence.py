@@ -131,3 +131,34 @@ def test_equal_adjacent_event_timestamps_are_allowed():
     data = valid_evidence()
     data["events"][1]["observed_at"] = data["events"][0]["observed_at"]
     assert validate_evidence(data) == []
+
+
+
+def test_session_window_endpoints_are_inclusive():
+    data = valid_evidence()
+    data["events"][0]["observed_at"] = data["session"]["started_at"]
+    data["events"][-1]["observed_at"] = data["session"]["completed_at"]
+    assert validate_evidence(data) == []
+
+
+def test_mixed_timezone_offsets_are_compared_as_absolute_instants():
+    data = valid_evidence()
+    # 02:00:01Z and 10:00:01+08:00 represent the same absolute instant.
+    data["events"][1]["observed_at"] = "2026-11-23T02:00:01Z"
+    data["events"][2]["observed_at"] = "2026-11-23T10:00:02+08:00"
+    assert validate_evidence(data) == []
+
+
+def test_all_equal_event_timestamps_are_allowed_within_session():
+    data = valid_evidence()
+    same = data["session"]["started_at"]
+    for event in data["events"]:
+        event["observed_at"] = same
+    assert validate_evidence(data) == []
+
+
+def test_invalid_session_window_reports_root_cause_without_cascading_event_errors():
+    data = valid_evidence()
+    data["session"]["completed_at"] = "2026-11-23T09:59:00+08:00"
+    errors = validate_evidence(data)
+    assert errors == ["session completed_at 不能早于 started_at"]
