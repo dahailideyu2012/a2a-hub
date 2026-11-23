@@ -54,10 +54,10 @@ def test_valid_ports_are_accepted(port: int):
 def test_env_reader_rejects_reused_credentials(tmp_path: Path):
     target = tmp_path / ".env.workbuddy-sandbox"
     target.write_text(
-        "A2A_WORKBUDDY_SANDBOX_PORT=18081\\n"
-        "A2A_API_TOKEN=" + "a" * 48 + "\\n"
-        "A2A_CHATGPT_INGRESS_TOKEN=" + "a" * 48 + "\\n"
-        "A2A_WORKBUDDY_CONNECTOR_TOKEN=" + "c" * 48 + "\\n",
+        "A2A_WORKBUDDY_SANDBOX_PORT=18081\n"
+        "A2A_API_TOKEN=" + "a" * 48 + "\n"
+        "A2A_CHATGPT_INGRESS_TOKEN=" + "a" * 48 + "\n"
+        "A2A_WORKBUDDY_CONNECTOR_TOKEN=" + "c" * 48 + "\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="invalid or reused"):
@@ -67,8 +67,8 @@ def test_env_reader_rejects_reused_credentials(tmp_path: Path):
 def test_env_reader_rejects_duplicate_keys(tmp_path: Path):
     target = tmp_path / ".env.workbuddy-sandbox"
     target.write_text(
-        "A2A_WORKBUDDY_SANDBOX_PORT=18081\\n"
-        "A2A_WORKBUDDY_SANDBOX_PORT=18082\\n",
+        "A2A_WORKBUDDY_SANDBOX_PORT=18081\n"
+        "A2A_WORKBUDDY_SANDBOX_PORT=18082\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate"):
