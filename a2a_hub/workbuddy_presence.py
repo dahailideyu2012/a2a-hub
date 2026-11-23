@@ -86,7 +86,7 @@ class WorkBuddyPresenceStore:
         current_task_id: str | None,
     ) -> bool:
         now = time.time()
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             cursor = db.execute(
                 """
                 UPDATE workbuddy_presence
