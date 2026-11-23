@@ -110,3 +110,4 @@ def test_environment_rejects_short_or_whitespace_token(tmp_path: Path):
         "A2A_WORKBUDDY_CONNECTOR_TOKEN": "short token",
     }
     assert "connector-token" in {x["id"] for x in validate_environment(env) if x["status"] == "FAIL"}
+\n\ndef test_repository_connector_package_passes():\n    checks = validate_package(DEFAULT_PACKAGE)\n    assert all(item["status"] == "PASS" for item in checks), checks\n
