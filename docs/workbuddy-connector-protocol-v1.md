@@ -78,12 +78,11 @@ logs, prompts, screenshots, or ChatGPT messages.
 
 ## Current limitation
 
-Handshake and heartbeat receipts are stateless in this initial protocol increment:
-they do not create a durable session, maintain a server-side online/offline registry,
-or launch a WorkBuddy process. Real Desktop integration still requires a supported
-client/connector to call these endpoints and a separately authorized sandbox
-round-trip. The existing test suite uses mocked clients and isolated temporary
-stores; it does not claim real Desktop acceptance.
+Handshake and heartbeat update a durable, single-connector presence record as
+described below; they do not launch a WorkBuddy process or prove a Desktop UI
+session. Real Desktop integration still requires a supported client/connector to
+call these endpoints and a separately authorized sandbox round-trip. Automated
+tests use isolated temporary stores and do not claim real Desktop acceptance.
 
 
 ## Durable presence registry (T17)
