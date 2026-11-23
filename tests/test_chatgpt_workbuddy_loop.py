@@ -25,6 +25,7 @@ def loop_client(settings, tmp_path):
     previous_store, previous_path = settings.store, settings.db_path
     settings.store = "sqlite"
     settings.db_path = str(tmp_path / "chatgpt-workbuddy-loop.sqlite3")
+    settings.workbuddy_presence_db_path = str(tmp_path / "workbuddy-presence.sqlite3")
     config._settings = settings
     registry._registry = None
     server.hub = server.Hub()
