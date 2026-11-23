@@ -55,6 +55,11 @@ def _request_json(url: str, token: str) -> Any:
         raise ObserverError("GitHub read request failed; no write was attempted") from None
 
 
+def _marker_key(task_id: str) -> str:
+    """Mirror github_result_callback._marker, including its 100-char cap."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", task_id)[:100]
+
+
 def observe(repository: str, issue_number: int, token: str, allowed_repository: str) -> dict[str, Any]:
     if not _REPO_RE.fullmatch(repository):
         raise ObserverError("repository must be an exact owner/repo value")
@@ -107,7 +112,7 @@ def observe(repository: str, issue_number: int, token: str, allowed_repository: 
         state, task_id = "WAITING_FOR_RELAY", None
     else:
         task_id = accepted[-1][1]
-        state = "ROUNDTRIP_CONFIRMED" if re.sub(r"[^A-Za-z0-9_-]", "", task_id) in completed else "WAITING_FOR_WORKBUDDY"
+        state = "ROUNDTRIP_CONFIRMED" if _marker_key(task_id) in completed else "WAITING_FOR_WORKBUDDY"
 
     return {
         "suite": "a2a-hub-live-integration-observer",
