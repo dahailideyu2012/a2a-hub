@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from a2a_hub.social import (
     ChatMessage,
     Conversation,
