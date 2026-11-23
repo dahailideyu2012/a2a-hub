@@ -320,10 +320,14 @@ async def resolve_member(
     if graph.enabled:
         if token:
             member = graph.resolve_token(token)
-            if member is None:
-                raise HTTPException(status_code=403, detail="Token 无效：不属于任何成员")
-            return member
-        if graph.any_tokens():
+            if member is not None:
+                return member
+            # The global API token remains a valid single-owner credential when
+            # members.yaml exists but no member-specific token matches it.
+            if h.settings.api_token and hmac.compare_digest(token, h.settings.api_token):
+                return graph.member_or_synthetic(graph.default_member_id)
+            raise HTTPException(status_code=403, detail="Token 无效：不属于任何成员")
+        if graph.any_tokens() or h.settings.require_auth:
             raise HTTPException(status_code=401, detail="缺少 Bearer Token")
         return graph.member_or_synthetic(graph.default_member_id)
 
