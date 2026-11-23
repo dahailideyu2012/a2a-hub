@@ -56,8 +56,11 @@ def _request_json(url: str, token: str) -> Any:
 
 
 def _marker_key(task_id: str) -> str:
-    """Mirror github_result_callback._marker, including its 100-char cap."""
-    return re.sub(r"[^A-Za-z0-9_-]", "", task_id)[:100]
+    """Mirror github_result_callback._marker, including its 100-char cap and empty guard."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", task_id)[:100]
+    if not safe:
+        raise ObserverError("accepted task identifier cannot form a result marker")
+    return safe
 
 
 def observe(repository: str, issue_number: int, token: str, allowed_repository: str) -> dict[str, Any]:
@@ -94,7 +97,14 @@ def observe(repository: str, issue_number: int, token: str, allowed_repository: 
         if len(batch) < 100:
             break
     else:
-        raise ObserverError("comment history exceeded the 1,000-comment observation limit")
+        # Distinguish exactly 1,000 comments from a history that exceeds the cap.
+        # The extra GET is read-only and accepts an empty page as the exact boundary.
+        query = urllib.parse.urlencode({"per_page": 100, "page": 11})
+        overflow = _request_json(base + "/issues/" + str(issue_number) + "/comments?" + query, token)
+        if not isinstance(overflow, list):
+            raise ObserverError("GitHub comments response is invalid")
+        if overflow:
+            raise ObserverError("comment history exceeded the 1,000-comment observation limit")
 
     accepted: list[tuple[int, str]] = []
     completed: set[str] = set()
@@ -112,7 +122,8 @@ def observe(repository: str, issue_number: int, token: str, allowed_repository: 
         state, task_id = "WAITING_FOR_RELAY", None
     else:
         task_id = accepted[-1][1]
-        state = "ROUNDTRIP_CONFIRMED" if _marker_key(task_id) in completed else "WAITING_FOR_WORKBUDDY"
+        marker_key = _marker_key(task_id)
+        state = "ROUNDTRIP_CONFIRMED" if marker_key in completed else "WAITING_FOR_WORKBUDDY"
 
     return {
         "suite": "a2a-hub-live-integration-observer",

@@ -144,7 +144,25 @@ def test_http_error_does_not_expose_response_body_or_token():
     assert "private-response-body" not in message
 
 
-def test_comment_pagination_stops_after_1000_comments():
+def test_exactly_1000_comments_are_accepted_at_boundary():
+    calls = []
+
+    def fake(url, token):
+        calls.append(url)
+        if url.endswith("/issues/12"):
+            return _issue()
+        if "page=11" in url:
+            return []
+        return [{"id": i, "body": "ordinary comment"} for i in range(100)]
+
+    with patch.object(observer, "_request_json", side_effect=fake):
+        result = observer.observe("owner/sandbox", 12, "x" * 32, "owner/sandbox")
+    assert result["result"] == "WAITING_FOR_RELAY"
+    assert result["comments_scanned"] == 1000
+    assert len(calls) == 12
+
+
+def test_comment_pagination_rejects_more_than_1000_comments():
     calls = []
 
     def fake(url, token):
@@ -156,4 +174,9 @@ def test_comment_pagination_stops_after_1000_comments():
     with patch.object(observer, "_request_json", side_effect=fake):
         with pytest.raises(observer.ObserverError, match="1,000-comment"):
             observer.observe("owner/sandbox", 12, "x" * 32, "owner/sandbox")
-    assert len(calls) == 11
+    assert len(calls) == 12
+
+
+def test_marker_key_rejects_identifier_without_safe_characters():
+    with pytest.raises(observer.ObserverError, match="cannot form a result marker"):
+        observer._marker_key("........")

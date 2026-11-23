@@ -18,14 +18,17 @@ It returns `DRY_RUN`. No GitHub token is required.
 
 Set a dedicated GitHub token with **Issues: read-only** access to the sandbox repository only, and set the exact repository allowlist:
 
-```bash
-# PowerShell
+```powershell
 $env:A2A_LIVE_TEST_REPOSITORY = "OWNER/SANDBOX"
 $env:A2A_LIVE_GITHUB_READ_TOKEN = "<dedicated-read-only-token>"
 python scripts/live_integration_observer.py --repo OWNER/SANDBOX --issue 123 --observe --confirm-read-only-github --json
 ```
 
-The observer performs GitHub GET requests only. It verifies the exact repository allowlist, an open non-PR Issue, and the `a2a-relay-enabled` label. It scans a bounded comment history and reports one of:
+The observer performs GitHub GET requests only. It verifies the exact repository allowlist, an open non-PR Issue, and the `a2a-relay-enabled` label. It scans at most 1,000 comments. Exactly 1,000 comments are accepted after an additional empty-page probe; any comment beyond that limit is rejected (fail-closed).
+
+Accepted task IDs are normalized for result-marker matching by removing characters outside `A-Z a-z 0-9 _ -` and truncating to 100 characters, matching the callback marker generator. If normalization produces an empty key, observation is blocked rather than reporting a false match.
+
+It reports one of:
 
 - `WAITING_FOR_RELAY`: no Hub acceptance comment found.
 - `WAITING_FOR_WORKBUDDY`: accepted task found, but no matching terminal result marker.
