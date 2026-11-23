@@ -117,7 +117,12 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                     if status == 401:
                         outcome, reason = "unauthenticated", "token_missing"
                     elif status == 403:
-                        outcome, reason = "denied", "token_mismatch"
+                        outcome = "denied"
+                        reason = (
+                            "connector_identity_mismatch"
+                            if exc.detail == "WorkBuddy connector identity mismatch"
+                            else "token_mismatch"
+                        )
                     elif status == 409:
                         outcome, reason = "conflict", "conflict"
                     elif status == 429:
