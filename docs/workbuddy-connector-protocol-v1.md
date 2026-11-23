@@ -78,9 +78,35 @@ logs, prompts, screenshots, or ChatGPT messages.
 
 ## Current limitation
 
-Handshake and heartbeat receipts are stateless in this initial protocol increment:
-they do not create a durable session, maintain a server-side online/offline registry,
-or launch a WorkBuddy process. Real Desktop integration still requires a supported
-client/connector to call these endpoints and a separately authorized sandbox
-round-trip. The existing test suite uses mocked clients and isolated temporary
-stores; it does not claim real Desktop acceptance.
+Handshake and heartbeat update a durable, single-connector presence record as
+described below; they do not launch a WorkBuddy process or prove a Desktop UI
+session. Real Desktop integration still requires a supported client/connector to
+call these endpoints and a separately authorized sandbox round-trip. Automated
+tests use isolated temporary stores and do not claim real Desktop acceptance.
+
+
+## Durable presence registry (T17)
+
+The Hub persists the most recent authenticated handshake and heartbeat in a
+separate SQLite database. Configure:
+
+- `A2A_WORKBUDDY_PRESENCE_DB_PATH` (default: `./data/workbuddy_presence.db`)
+- `A2A_WORKBUDDY_PRESENCE_TTL_SECONDS` (default: `90`, allowed: 30–3600)
+
+The heartbeat interval remains 30 seconds. The default 90-second TTL tolerates
+short network interruptions while allowing the Hub to report a connector offline
+after missed heartbeats. No background worker is required: online/offline is
+derived at read time from `last_seen_at`.
+
+`GET /integrations/workbuddy/v1/presence` requires the dedicated connector token.
+It returns the configured connector's online flag, effective status, client and
+protocol versions, negotiated capabilities, last heartbeat receipt, last-seen
+timestamp, and TTL. When the TTL expires, `online=false`, `status=offline`, and
+the last known status remains available as `last_status`; an expired current task
+is not exposed as active.
+
+A heartbeat is accepted only after a successful handshake has registered the
+configured connector. Presence is operational telemetry, not proof of a real
+WorkBuddy Desktop UI session or task execution. The first implementation tracks
+the single configured connector identity; multi-device registration and history
+are out of scope.

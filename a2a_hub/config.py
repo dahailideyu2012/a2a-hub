@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     workbuddy_connector_id: str = Field(default="workbuddy-personal", min_length=1, max_length=64, alias="A2A_WORKBUDDY_CONNECTOR_ID")
     workbuddy_connector_allowed_agents: str = Field(default="", alias="A2A_WORKBUDDY_CONNECTOR_ALLOWED_AGENTS")
     workbuddy_connector_lease_seconds: int = Field(default=120, ge=15, le=900, alias="A2A_WORKBUDDY_CONNECTOR_LEASE_SECONDS")
+    workbuddy_presence_db_path: str = Field(default="./data/workbuddy_presence.db", alias="A2A_WORKBUDDY_PRESENCE_DB_PATH")
+    workbuddy_presence_ttl_seconds: int = Field(default=90, ge=30, le=3600, alias="A2A_WORKBUDDY_PRESENCE_TTL_SECONDS")
     agents_file: str = Field(default="./config/agents.yaml", alias="A2A_AGENTS_FILE")
     # --- 社交层（见 docs/identity-and-binding.md）---
     #: 成员声明。**文件不存在 = 门禁自动关闭，行为与 v0.3.0 一致。**
