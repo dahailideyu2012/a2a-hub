@@ -204,3 +204,28 @@ progress/result for that canceled task. This is a polling signal, not an
 out-of-band interrupt: detection latency is bounded by the heartbeat interval
 (30 seconds by default). Lease fencing remains the final server-side protection.
 The endpoint remains backward-compatible because the response only adds fields.
+
+
+## Cooperative cancellation checkpoints (T32-B)
+
+The stdio MCP bridge exposes `workbuddy_check_task_cancellation(task_id)` for a
+task already leased by the current MCP process. It sends one authenticated
+`busy` heartbeat carrying that task ID and validates the Hub response identity,
+task ID, acceptance flag, and boolean `cancel_requested` field.
+
+- If `cancel_requested=false`, the local lease remains available and execution
+  may continue.
+- If `cancel_requested=true`, the bridge returns `should_stop=true` and
+  immediately discards its local lease. Subsequent progress/result tool calls
+  from that MCP process are blocked because the private lease is no longer held.
+- If the Hub response is missing or malformed, the check fails closed and does
+  not discard the lease; the caller must not interpret the error as a negative
+  cancellation signal.
+
+WorkBuddy should call this tool between meaningful steps of a long-running task
+and immediately stop its own work when `should_stop=true`. This is cooperative
+checkpointing only: it does not interrupt a running shell/process, does not
+create a background polling loop, and does not replace server-side lease fencing.
+The existing `workbuddy_heartbeat` remains available for ordinary liveness
+updates; the dedicated tool additionally requires a locally held task lease and
+provides a clear stop decision to the model.

@@ -360,3 +360,107 @@ def test_connection_check_fails_closed_when_final_presence_is_not_our_online_con
     assert message in result["content"][0]["text"]
     assert post_calls == ["handshake", "heartbeat"]
     assert get_calls == ["presence", "presence"]
+
+
+def test_cancellation_checkpoint_keeps_lease_when_hub_reports_not_cancelled(monkeypatch):
+    calls = []
+    with server.LEASES_LOCK:
+        server.LEASES["task-check"] = {
+            "lease_token": "private-lease", "lease_version": 7,
+            "lease_expires_at": time.time() + 120,
+        }
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        return {
+            "accepted": True, "connector_id": "workbuddy-personal",
+            "current_task_id": "task-check", "cancel_requested": False,
+            "cancel_reason": None,
+        }
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool("workbuddy_check_task_cancellation", {"task_id": "task-check"})
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["cancel_requested"] is False
+    assert payload["should_stop"] is False
+    assert payload["local_lease_discarded"] is False
+    assert "task-check" in server.LEASES
+    assert [path for path, _ in calls] == ["handshake", "heartbeat"]
+    assert calls[-1][1]["status"] == "busy"
+    assert calls[-1][1]["current_task_id"] == "task-check"
+
+
+def test_cancellation_checkpoint_discards_lease_and_blocks_later_progress(monkeypatch):
+    calls = []
+    with server.LEASES_LOCK:
+        server.LEASES["task-cancelled"] = {
+            "lease_token": "private-lease", "lease_version": 8,
+            "lease_expires_at": time.time() + 120,
+        }
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        return {
+            "accepted": True, "connector_id": "workbuddy-personal",
+            "current_task_id": "task-cancelled", "cancel_requested": True,
+            "cancel_reason": "task_cancelled_by_caller",
+        }
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool("workbuddy_check_task_cancellation", {"task_id": "task-cancelled"})
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["should_stop"] is True
+    assert payload["cancel_reason"] == "task_cancelled_by_caller"
+    assert payload["local_lease_discarded"] is True
+    assert "task-cancelled" not in server.LEASES
+
+    progress = server.call_tool("workbuddy_progress_task", {
+        "task_id": "task-cancelled", "sequence": 2, "message": "must not send",
+    })
+    assert progress["isError"] is True
+    assert [path for path, _ in calls] == ["handshake", "heartbeat"]
+
+
+def test_cancellation_checkpoint_requires_local_lease_before_network(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda path, payload: calls.append(path) or {})
+    result = server.call_tool("workbuddy_check_task_cancellation", {"task_id": "not-held"})
+    assert result["isError"] is True
+    assert "没有该任务的有效租约" in result["content"][0]["text"]
+    assert calls == []
+
+
+def test_cancellation_checkpoint_fails_closed_on_missing_boolean_and_keeps_lease(monkeypatch):
+    with server.LEASES_LOCK:
+        server.LEASES["task-unknown-cancel"] = {
+            "lease_token": "private-lease", "lease_version": 9,
+            "lease_expires_at": time.time() + 120,
+        }
+
+    def fake_post(path, payload):
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        return {
+            "accepted": True, "connector_id": "workbuddy-personal",
+            "current_task_id": "task-unknown-cancel",
+        }
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool("workbuddy_check_task_cancellation", {
+        "task_id": "task-unknown-cancel",
+    })
+    assert result["isError"] is True
+    assert "cancel_requested" in result["content"][0]["text"]
+    assert "task-unknown-cancel" in server.LEASES
+
+
+def test_cancellation_checkpoint_tool_is_registered_with_required_task_id():
+    tool = next(item for item in server.TOOLS if item["name"] == "workbuddy_check_task_cancellation")
+    assert tool["inputSchema"]["required"] == ["task_id"]
+    assert "workbuddy_check_task_cancellation" in server.TOOL_FUNCS
