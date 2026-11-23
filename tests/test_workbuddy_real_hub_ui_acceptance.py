@@ -1,39 +1,142 @@
 from __future__ import annotations
 
-import unittest
+import io
+import json
+import threading
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import MagicMock, patch
 
-from scripts.workbuddy_real_hub_ui_acceptance import proxy_action, task_text
+import pytest
 
-
-class WorkBuddyRealHubUiAcceptanceTests(unittest.TestCase):
-    def test_proxy_action_for_all_workbuddy_routes(self) -> None:
-        cases = {
-            "/integrations/workbuddy/v1/claim": "claim",
-            "/integrations/workbuddy/v1/tasks/task-1/start": "start",
-            "/integrations/workbuddy/v1/tasks/task-1/progress": "progress",
-            "/integrations/workbuddy/v1/tasks/task-1/renew": "renew",
-            "/integrations/workbuddy/v1/tasks/task-1/result": "result",
-        }
-        for path, expected in cases.items():
-            with self.subTest(path=path):
-                self.assertEqual(proxy_action(path), expected)
-
-    def test_unknown_route_is_not_misclassified(self) -> None:
-        self.assertEqual(proxy_action("/integrations/workbuddy/v1/tasks/task-1"), "unknown")
-        self.assertEqual(proxy_action("/other/path"), "unknown")
-
-    def test_task_text_extracts_only_text_parts(self) -> None:
-        task = {
-            "history": [
-                {"parts": [{"kind": "text", "text": "prompt"}, {"kind": "image", "url": "ignored"}]},
-                {"parts": [{"kind": "text", "text": "result"}]},
-            ]
-        }
-        self.assertEqual(task_text(task), "prompt\nresult")
-
-    def test_task_text_handles_empty_history(self) -> None:
-        self.assertEqual(task_text({}), "")
+from scripts import workbuddy_real_hub_ui_acceptance as ui
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_http_json_refuses_non_loopback_before_network():
+    with patch.object(urllib.request, "build_opener", side_effect=AssertionError("network must not be used")):
+        with pytest.raises(RuntimeError, match="loopback HTTP only"):
+            ui.http_json("https://example.com/api")
+
+
+def test_http_json_rejects_redirects():
+    handler = ui._NoRedirect()
+    request = urllib.request.Request("http://127.0.0.1/test")
+    assert handler.redirect_request(request, None, 302, "Found", {}, "http://127.0.0.1/other") is None
+
+
+def test_http_json_redacts_error_response_body_and_token():
+    secret = "synthetic-secret-token"
+    error = urllib.error.HTTPError(
+        "http://127.0.0.1/test", 403, "Forbidden", {}, io.BytesIO(b"private-upstream-body")
+    )
+    opener = MagicMock()
+    opener.open.side_effect = error
+    with patch.object(urllib.request, "build_opener", return_value=opener):
+        with pytest.raises(RuntimeError) as caught:
+            ui.http_json("http://127.0.0.1/test", headers={"Authorization": secret})
+    message = str(caught.value)
+    assert "HTTP 403" in message
+    assert secret not in message
+    assert "private-upstream-body" not in message
+
+
+def test_http_json_enforces_one_mib_response_limit():
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = b"x" * (1024 * 1024 + 1)
+    opener = MagicMock()
+    opener.open.return_value = response
+    with patch.object(urllib.request, "build_opener", return_value=opener):
+        with pytest.raises(RuntimeError, match="1 MiB"):
+            ui.http_json("http://127.0.0.1/test")
+    response.read.assert_called_once_with(1024 * 1024 + 1)
+
+
+def test_task_text_extracts_only_text_parts():
+    task = {"history": [
+        {"parts": [{"text": "first"}, {"data": {"secret": "not text"}}]},
+        {"parts": [{"text": "second"}]},
+    ]}
+    assert ui.task_text(task) == "first" + chr(10) + "second"
+
+
+@pytest.mark.parametrize(("path", "expected"), [
+    ("/integrations/workbuddy/v1/claim", "claim"),
+    ("/integrations/workbuddy/v1/tasks/abc/start", "start"),
+    ("/integrations/workbuddy/v1/tasks/abc/progress", "progress"),
+    ("/integrations/workbuddy/v1/tasks/abc/renew", "renew"),
+    ("/integrations/workbuddy/v1/tasks/abc/result", "result"),
+    ("/admin/secrets", "unknown"),
+])
+def test_proxy_action_classifies_only_connector_routes(path, expected):
+    assert ui.proxy_action(path) == expected
+
+
+def test_proxy_replaces_user_connector_token_with_synthetic_token():
+    captured = {}
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["token"] = self.headers.get("X-WorkBuddy-Connector-Token")
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    proxy = ui.LoopbackProxy(("127.0.0.1", 0), ui.WorkBuddyProxyHandler)
+    proxy.state = ui.ProxyState(f"http://127.0.0.1:{upstream.server_port}")
+    threads = [
+        threading.Thread(target=upstream.serve_forever, daemon=True),
+        threading.Thread(target=proxy.serve_forever, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{proxy.server_port}/integrations/workbuddy/v1/claim",
+            data=b"{}",
+            headers={"Content-Type": "application/json",
+                     "X-WorkBuddy-Connector-Token": "real-user-token-must-not-forward"},
+            method="POST",
+        )
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
+            assert response.status == 200
+            assert json.loads(response.read()) == {"ok": True}
+        assert captured["token"] == ui.WORKBUDDY_TOKEN
+        assert captured["token"] != "real-user-token-must-not-forward"
+        assert proxy.state.events[0]["action"] == "claim"
+    finally:
+        proxy.shutdown()
+        upstream.shutdown()
+        proxy.server_close()
+        upstream.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+
+def test_copy_isolated_app_does_not_copy_env_or_runtime_data(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    (source / "a2a_hub").mkdir(parents=True)
+    (source / "a2a_hub" / "server.py").write_text("safe", encoding="utf-8")
+    (source / "web").mkdir()
+    (source / "web" / "index.html").write_text("ui", encoding="utf-8")
+    (source / ".env").write_text("SECRET=do-not-copy", encoding="utf-8")
+    (source / "data").mkdir()
+    (source / "data" / "prod.sqlite3").write_text("do-not-copy", encoding="utf-8")
+    monkeypatch.setattr(ui, "ROOT", source)
+    target = ui.copy_isolated_app(tmp_path / "isolated")
+    assert (target / "a2a_hub" / "server.py").read_text(encoding="utf-8") == "safe"
+    assert (target / "web" / "index.html").exists()
+    assert not (target / ".env").exists()
+    assert not (target / "data").exists()
+
+
+def test_stop_process_none_is_already_stopped():
+    assert ui.stop_process(None) is True

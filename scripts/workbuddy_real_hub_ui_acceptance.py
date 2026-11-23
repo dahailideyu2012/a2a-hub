@@ -42,26 +42,41 @@ MAX_BODY = 32 * 1024
 DEFAULT_TIMEOUT = 600
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def http_json(url: str, *, method: str = "GET", payload: dict | None = None,
               headers: dict[str, str] | None = None, expected: tuple[int, ...] = (200,)) -> tuple[int, dict]:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("acceptance harness permits loopback HTTP only")
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=body, method=method, headers={
         "Accept": "application/json",
         **({"Content-Type": "application/json"} if body is not None else {}),
         **(headers or {}),
     })
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            status, raw = response.status, response.read(1024 * 1024)
+        with opener.open(request, timeout=8) as response:
+            status, raw = response.status, response.read(1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:
-        status, raw = exc.code, exc.read(1024 * 1024)
+        status, raw = exc.code, b""
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"{method} {parsed.path} failed: {type(exc).__name__}") from None
     if status not in expected:
-        raise RuntimeError(f"{method} {urllib.parse.urlsplit(url).path} returned HTTP {status}; expected {expected}")
-    value = json.loads(raw.decode("utf-8")) if raw else {}
+        raise RuntimeError(f"{method} {parsed.path} returned HTTP {status}; expected {expected}")
+    if len(raw) > 1024 * 1024:
+        raise RuntimeError("Hub response exceeded the 1 MiB acceptance limit")
+    try:
+        value = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeError, json.JSONDecodeError):
+        raise RuntimeError("Hub returned invalid JSON") from None
     if not isinstance(value, dict):
         raise RuntimeError("Hub returned a non-object JSON body")
     return status, value
-
 
 def copy_isolated_app(destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
@@ -174,12 +189,15 @@ class WorkBuddyProxyHandler(BaseHTTPRequestHandler):
                     "X-WorkBuddy-Connector-Token": WORKBUDDY_TOKEN,
                 },
             )
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
             try:
                 with opener.open(request, timeout=10) as response:
-                    status, raw = response.status, response.read(256 * 1024)
+                    status, raw = response.status, response.read(256 * 1024 + 1)
+                    if len(raw) > 256 * 1024:
+                        status, raw = 502, b'{"detail":"isolated Hub response exceeded the proxy limit"}'
             except urllib.error.HTTPError as exc:
-                status, raw = exc.code, exc.read(256 * 1024)
+                status = exc.code
+                raw = json.dumps({"detail": f"isolated Hub returned HTTP {status}"}).encode("utf-8")
             action = proxy_action(path)
             self.server.state.record(action, status)
             self._reply(status, raw)
@@ -217,7 +235,7 @@ def main() -> int:
                 "HTTPS_PROXY", "ALL_PROXY"):
         os.environ.pop(key, None)
     urllib.request.install_opener(
-        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     )
 
     # Reserve the configured WorkBuddy endpoint first. If it is already used,
@@ -409,7 +427,6 @@ def main() -> int:
             "task_state": status,
             "marker_present": TASK_MARKER in text,
             "calculation_present": EXPECTED_CALCULATION in text,
-            "history_text": text[-6000:],
         }
         exit_code = 0 if report["result"] == "PASS" else 1
     except KeyboardInterrupt:
