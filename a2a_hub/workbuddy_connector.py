@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -13,6 +14,29 @@ from .ports import PullTaskRepository
 from .store import task_to_wire
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
 from .github_callback_outbox import GithubCallbackOutbox
+
+
+# Protocol handshake and lightweight liveness receipts. The connector token remains
+# the sole authentication secret; the response never echoes it or the lease token.
+class HandshakeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    protocol_version: Literal["1.0"] = "1.0"
+    client_version: str = Field(default="unknown", min_length=1, max_length=64)
+    capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class HeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    heartbeat_id: str = Field(min_length=8, max_length=128)
+    status: Literal["idle", "busy", "degraded"]
+    current_task_id: str | None = Field(default=None, max_length=128)
+
+
+def _server_time() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 
 class ClaimRequest(BaseModel):
@@ -80,7 +104,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         store = store_for(hub)
         configured = {x.strip() for x in settings.workbuddy_connector_allowed_agents.split(",") if x.strip()}
         if not configured:
-            raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
+            raise HTTPException(
+                status_code=503,
+                detail="WorkBuddy connector agent allowlist is not configured",
+            )
         requested = set((body or ClaimRequest()).agent_ids)
         allowed = sorted(configured.intersection(requested)) if requested else sorted(configured)
         seconds = (body.lease_seconds if body and body.lease_seconds else settings.workbuddy_connector_lease_seconds)
@@ -212,5 +239,56 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not outbox_for(settings).retry(task_id):
             raise HTTPException(status_code=409, detail="回调不存在或当前状态不可人工重试")
         return {"task_id": task_id, "status": "pending"}
+
+
+    @router.post("/handshake")
+    async def handshake(
+        body: HandshakeRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        configured = sorted(
+            item.strip() for item in settings.workbuddy_connector_allowed_agents.split(",")
+            if item.strip()
+        )
+        if not configured:
+            raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
+        return {
+            "accepted": True,
+            "connector_id": settings.workbuddy_connector_id,
+            "protocol_version": "1.0",
+            "client_version": body.client_version,
+            "server_time": _server_time(),
+            "heartbeat_interval_seconds": 30,
+            "lease_seconds": settings.workbuddy_connector_lease_seconds,
+            "allowed_agent_ids": configured,
+            "capabilities": sorted(
+                set(body.capabilities).intersection(
+                    {"claim", "start", "renew", "progress", "result", "heartbeat"}
+                )
+            ),
+        }
+
+    @router.post("/heartbeat")
+    async def heartbeat(
+        body: HeartbeatRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        authenticate(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        return {
+            "accepted": True,
+            "connector_id": settings.workbuddy_connector_id,
+            "receipt_id": body.heartbeat_id,
+            "status": body.status,
+            "current_task_id": body.current_task_id,
+            "server_time": _server_time(),
+            "next_heartbeat_seconds": 30,
+        }
 
     return router
