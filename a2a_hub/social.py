@@ -530,6 +530,8 @@ class SocialHub:
             self._store.delete(conv_id)
         if conv_id in self._order:
             self._order.remove(conv_id)
+        if self._store is not None:
+            self._store.reorder(self._order)
         self.bus.publish(self._channel(conv_id), {"kind": "im-event", "event": "conversation-disbanded", "conversationId": conv_id})
         return True
 
@@ -602,11 +604,15 @@ class SocialHub:
     def _register(self, conv: Conversation) -> None:
         self._convs[conv.id] = conv
         self._order.append(conv.id)
+        evicted = False
         while len(self._order) > 500:
             old = self._order.pop(0)
             self._convs.pop(old, None)
             if self._store is not None:
                 self._store.delete(old)
+                evicted = True
+        if evicted and self._store is not None:
+            self._store.reorder(self._order)
         self._persist(conv)
         log.info("会话已创建 %s (%s)：%s", conv.id, conv.kind, ", ".join(conv.members))
 
