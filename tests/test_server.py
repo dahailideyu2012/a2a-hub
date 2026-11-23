@@ -8,6 +8,27 @@ import pytest
 
 
 class TestDiscovery:
+    def test_global_api_token_is_enforced_when_member_graph_has_no_member_tokens(self, client):
+        import a2a_hub.server as srv
+        from a2a_hub.relations import Member, SocialGraph
+
+        srv.hub.settings.require_auth = True
+        srv.hub.settings.api_token = "test-global-api-token"
+        srv.hub.social_graph = SocialGraph(
+            [Member(id="human:default", name="Owner", kind="human")],
+            mode="strict",
+        )
+
+        anonymous = client.get("/social/me")
+        assert anonymous.status_code == 401
+        invalid = client.get("/social/me", headers={"Authorization": "Bearer wrong-token"})
+        assert invalid.status_code == 403
+        authenticated = client.get(
+            "/social/me",
+            headers={"Authorization": "Bearer test-global-api-token"},
+        )
+        assert authenticated.status_code == 200
+
     def test_cors_does_not_reflect_untrusted_origin(self, client):
         response = client.options(
             "/health",
