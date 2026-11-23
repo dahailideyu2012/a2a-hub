@@ -387,12 +387,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+cors_origins = [
+    origin.strip()
+    for origin in hub.settings.cors_allowed_origins.split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=hub.settings.cors_allow_credentials and bool(cors_origins),
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-ChatGPT-Ingress-Token",
+        "X-WorkBuddy-Connector-Token",
+    ],
 )
 
 # 独立 ChatGPT 入口：独立 token、窄白名单与任务级回读，不暴露任意 JSON-RPC。
