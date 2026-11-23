@@ -85,6 +85,7 @@ def agents_file(tmp_path: Path) -> Path:
 def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_AGENTS_FILE", str(agents_file))
     monkeypatch.setenv("A2A_STORE", "memory")
+    monkeypatch.setenv("A2A_SOCIAL_DB_PATH", str(agents_file.parent / "social.db"))
     monkeypatch.setenv("A2A_PUBLIC_URL", "http://testserver")
     monkeypatch.setenv("A2A_API_TOKEN", "")
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_TOKEN", "test-chatgpt-ingress-token-0123456789")

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     hub_name: str = Field(default="A2A Hub", alias="A2A_HUB_NAME")
     store: str = Field(default="memory", alias="A2A_STORE")
     db_path: str = Field(default="./data/a2a_hub.db", alias="A2A_DB_PATH")
+    social_db_path: str = Field(default="./data/social.db", alias="A2A_SOCIAL_DB_PATH")
     task_timeout: int = Field(default=300, alias="A2A_TASK_TIMEOUT")
     log_level: str = Field(default="INFO", alias="A2A_LOG_LEVEL")
     api_token: str = Field(default="", alias="A2A_API_TOKEN")
@@ -91,6 +92,10 @@ class Settings(BaseSettings):
     autonomy_per_round: int = Field(default=2, alias="A2A_AUTONOMY_PER_ROUND")
     #: 每天最多发起的自主申请数（巡航侧硬预算）。
     autonomy_daily: int = Field(default=6, alias="A2A_AUTONOMY_DAILY")
+
+    def social_db_path_resolved(self) -> Path:
+        p = Path(self.social_db_path)
+        return p if p.is_absolute() else (ROOT / p).resolve()
 
     def chatgpt_ingress_db_path_resolved(self) -> Path:
         p = Path(self.chatgpt_ingress_db_path)
