@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.workbuddy_connector_doctor import (
+    DEFAULT_PACKAGE,
     EXPECTED_FIELDS,
     validate_environment,
     validate_package,
