@@ -194,7 +194,7 @@ def test_multiple_duplicate_evidence_references_are_reported_without_echoing_val
 
 
 def test_evidence_references_reject_control_characters_without_echoing_values():
-    for unsafe_ref in ("receipt:one\\nforged-log-line", "receipt:one\\tfield", "receipt:one\\x00tail", "receipt:one\\x7ftail"):
+    for unsafe_ref in ("receipt:one\nforged-log-line", "receipt:one\tfield", "receipt:one\x00tail", "receipt:one\x7ftail"):
         data = valid_evidence()
         data["events"][0]["evidence_ref"] = unsafe_ref
         errors = validate_evidence(data)
