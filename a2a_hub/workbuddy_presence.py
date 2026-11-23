@@ -52,7 +52,7 @@ class WorkBuddyPresenceStore:
         capabilities: list[str],
     ) -> None:
         now = time.time()
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """
                 INSERT INTO workbuddy_presence (
