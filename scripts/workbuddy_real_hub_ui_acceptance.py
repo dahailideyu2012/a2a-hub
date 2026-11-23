@@ -235,7 +235,7 @@ def main() -> int:
                 "HTTPS_PROXY", "ALL_PROXY"):
         os.environ.pop(key, None)
     urllib.request.install_opener(
-        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     )
 
     # Reserve the configured WorkBuddy endpoint first. If it is already used,
