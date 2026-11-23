@@ -85,6 +85,7 @@ def agents_file(tmp_path: Path) -> Path:
 def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_AGENTS_FILE", str(agents_file))
     monkeypatch.setenv("A2A_STORE", "memory")
+    monkeypatch.setenv("A2A_SOCIAL_DB_PATH", str(agents_file.parent / "social.db"))
     monkeypatch.setenv("A2A_PUBLIC_URL", "http://testserver")
     monkeypatch.setenv("A2A_API_TOKEN", "")
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_TOKEN", "test-chatgpt-ingress-token-0123456789")
@@ -100,7 +101,7 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_DB_PATH", str(agents_file.parent / "github-callback-outbox.db"))
     monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_MAX_ATTEMPTS", "12")
     monkeypatch.setenv("A2A_GITHUB_CALLBACK_OUTBOX_POLL_SECONDS", "0.2")
-    monkeypatch.delenv("A2A_REQUIRE_AUTH", raising=False)
+    monkeypatch.setenv("A2A_REQUIRE_AUTH", "false")
     # 社交层的两个文件必须指向临时目录：**测试不能依赖工作树状态**。
     # 否则部署者本机跑了 `social init`（生成 config/members.yaml）之后，
     # 那些断言「社交层未启用」的用例就会莫名其妙变红——门禁开没开
