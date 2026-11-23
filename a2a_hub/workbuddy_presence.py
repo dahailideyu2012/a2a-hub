@@ -98,7 +98,7 @@ class WorkBuddyPresenceStore:
             return cursor.rowcount == 1
 
     def get_presence(self, connector_id: str, now: float | None = None) -> dict[str, Any] | None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT * FROM workbuddy_presence WHERE connector_id = ?",
                 (connector_id,),
