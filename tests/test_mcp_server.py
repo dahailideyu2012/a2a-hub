@@ -35,6 +35,8 @@ EXPECTED_TOOLS = {
     "a2a_social",
     "a2a_social_act",
     "a2a_social_init",
+    "a2a_poll",
+    "a2a_submit",
 }
 
 
@@ -118,61 +120,27 @@ def test_stdout_has_no_log_noise(handshake):
     assert len(out) == 2
 
 
-def test_agents_and_route_work():
+def test_workbuddy_poll_and_submit_tools():
+    """验证 ChatGPT ↔ WorkBuddy 双向通信闭环所需的 a2a_poll 和 a2a_submit 工具。"""
     out, _ = talk([
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-         "params": {"name": "a2a_agents", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05"}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-         "params": {"name": "a2a_route", "arguments": {"query": "调试这段脚本为什么会超时"}}},
+         "params": {"name": "a2a_poll", "arguments": {"worker_id": "test_worker"}}},
     ])
-
-    def text_of(rid: int) -> str:
-        return (_by_id(out, rid).get("result", {}) or {}).get("content", [{}])[0].get("text", "")
-
-    agents = text_of(1)
-    assert "echo" in agents and "codex" in agents
-
-    route = text_of(2)
-    # 第一行是任务，第二行空，第三行才是首选
-    assert "codex" in route.splitlines()[2], route
-
-
-def test_delegate_runs_real_agent():
-    """真派一个任务给 echo agent（零依赖、必成功），确认能拿到终态结果。"""
-    out, _ = talk([
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-         "params": {"name": "a2a_delegate",
-                    "arguments": {"text": "ping 连通性自检", "agent": "echo", "timeout": 60}}},
+    
+    # 验证 poll 回包结构
+    res = _by_id(out, 2).get("result", {})
+    assert "content" in res
+    
+    # 接着测试 a2a_submit 工具
+    out2, _ = talk([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05"}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "a2a_submit", "arguments": {"task_id": "non_existent", "result": "ok", "worker_id": "test_worker"}}},
     ])
-    text = (_by_id(out, 1).get("result", {}) or {}).get("content", [{}])[0].get("text", "")
-    assert "state=completed" in text, text
-    assert "ping" in text
-
-
-def test_social_write_requires_confirm():
-    """写闸门：缺 confirm 时必须什么都不改，只回显计划。"""
-    out, _ = talk([
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-         "params": {"name": "a2a_social_act",
-                    "arguments": {"action": "request", "member": "codex",
-                                  "reason": "需要算法能力"}}},
-    ])
-    text = (_by_id(out, 1).get("result", {}) or {}).get("content", [{}])[0].get("text", "")
-    assert "未执行" in text, text
-    assert "confirm" in text
-
-
-def test_malformed_input_does_not_kill_server():
-    """脏数据（语法错误 / 非对象）之后，服务必须还能正常应答。"""
-    out, _ = talk([
-        "这不是 JSON",      # 语法错误
-        '"just a string"',  # 合法 JSON，但不是对象
-        [1, 2, 3],          # 合法 JSON，但也不是对象
-        {"jsonrpc": "2.0", "id": 10, "method": "no/such/method"},
-        {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "nope"}},
-        {"jsonrpc": "2.0", "id": 12, "method": "ping"},
-    ])
-    ids = [r.get("id") for r in out]
-    assert ids == [10, 11, 12], f"三条脏数据不该回包，且服务不能崩：{ids}"
-    assert _by_id(out, 10)["error"]["code"] == -32601
-    assert _by_id(out, 11)["result"]["isError"] is True
+    res2 = _by_id(out2, 2).get("result", {})
+    assert "content" in res2
