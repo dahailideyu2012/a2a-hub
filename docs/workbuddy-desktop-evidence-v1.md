@@ -85,3 +85,13 @@ T23 为 `workbuddy_connection_check` 增加一次检查的 `check_id`、本地 U
 T24 收紧 workbuddy_connection_check 的成功条件：Hub 接受单次 idle heartbeat 后，第二次 presence 查询还必须明确返回 online=true，并且 connector_id 必须与当前 Connector 配置一致。否则工具返回错误，不再把“heartbeat accepted”单独包装成完整连接检查成功。
 
 该检查仍然只是 Hub 服务端遥测与身份字段匹配，不证明 WorkBuddy Desktop UI 的真实性，也不领取或执行任务。操作者仍需在非生产环境完成 Desktop 现场验证。
+
+
+## T25 — 连接证据事件时间线校验
+
+T25 强化离线证据清单的时间一致性校验：
+- 五个事件的 observed_at 必须按清单顺序单调递增或相等；
+- 每个事件时间必须落在 session.started_at 与 session.completed_at 之间；
+- 相同时间戳允许出现，因为记录精度或客户端时钟可能导致多个步骤落在同一毫秒。
+
+该校验只检查操作者提交的时间字段是否自洽，不验证客户端时钟准确性、事件真实性、截图真伪或 Hub 回执签名。PASS 仍仅代表结构与时间线规则通过。
