@@ -33,6 +33,11 @@ def _is_nonempty(value: Any, limit: int = 200) -> bool:
     return isinstance(value, str) and 0 < len(value.strip()) <= limit and value == value.strip()
 
 
+def _is_safe_evidence_ref(value: Any) -> bool:
+    """Accept opaque references but reject control characters that can forge log lines."""
+    return _is_nonempty(value, 160) and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+
+
 def _timestamp(value: Any) -> bool:
     if not _is_nonempty(value, 64):
         return False
@@ -142,8 +147,8 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
             if event.get("source") not in ALLOWED_SOURCES:
                 errors.append(f"events[{index}] source 不受支持")
             evidence_ref = event.get("evidence_ref")
-            if not _is_nonempty(evidence_ref, 160):
-                errors.append(f"events[{index}] evidence_ref 无效")
+            if not _is_safe_evidence_ref(evidence_ref):
+                errors.append(f"events[{index}] evidence_ref 无效或包含控制字符")
             else:
                 evidence_refs.append((index, evidence_ref))
 
