@@ -59,7 +59,7 @@ def test_task_text_extracts_only_text_parts():
         {"parts": [{"text": "first"}, {"data": {"secret": "not text"}}]},
         {"parts": [{"text": "second"}]},
     ]}
-    assert ui.task_text(task) == "first\\nsecond"
+    assert ui.task_text(task) == "first" + chr(10) + "second"
 
 
 @pytest.mark.parametrize(("path", "expected"), [
