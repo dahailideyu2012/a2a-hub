@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ class WorkBuddyPresenceStore:
         self.db_path = Path(db_path)
         self.ttl_seconds = max(30, int(ttl_seconds))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS workbuddy_presence (
