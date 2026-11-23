@@ -43,16 +43,20 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    host: str = Field(default="0.0.0.0", alias="A2A_HOST")
+    host: str = Field(default="127.0.0.1", alias="A2A_HOST")
     port: int = Field(default=8080, alias="A2A_PORT")
     public_url: str = Field(default="http://localhost:8080", alias="A2A_PUBLIC_URL")
     hub_name: str = Field(default="A2A Hub", alias="A2A_HUB_NAME")
     store: str = Field(default="memory", alias="A2A_STORE")
     db_path: str = Field(default="./data/a2a_hub.db", alias="A2A_DB_PATH")
+    social_db_path: str = Field(default="./data/social.db", alias="A2A_SOCIAL_DB_PATH")
     task_timeout: int = Field(default=300, alias="A2A_TASK_TIMEOUT")
     log_level: str = Field(default="INFO", alias="A2A_LOG_LEVEL")
     api_token: str = Field(default="", alias="A2A_API_TOKEN")
-    require_auth: bool = Field(default=False, alias="A2A_REQUIRE_AUTH")
+    require_auth: bool = Field(default=True, alias="A2A_REQUIRE_AUTH")
+    # CORS is deny-by-default; configure exact origins when browser access is required.
+    cors_allowed_origins: str = Field(default="", alias="A2A_CORS_ALLOWED_ORIGINS")
+    cors_allow_credentials: bool = Field(default=False, alias="A2A_CORS_ALLOW_CREDENTIALS")
     # Dedicated ChatGPT ingress: independent credential and explicit agent allowlist.
     chatgpt_ingress_token: str = Field(default="", alias="A2A_CHATGPT_INGRESS_TOKEN")
     chatgpt_ingress_actor: str = Field(default="human:default", alias="A2A_CHATGPT_INGRESS_ACTOR")
@@ -99,6 +103,10 @@ class Settings(BaseSettings):
 
     def chatgpt_ingress_db_path_resolved(self) -> Path:
         p = Path(self.chatgpt_ingress_db_path)
+        return p if p.is_absolute() else (ROOT / p).resolve()
+
+    def social_db_path_resolved(self) -> Path:
+        p = Path(self.social_db_path)
         return p if p.is_absolute() else (ROOT / p).resolve()
 
     def agents_path(self) -> Path:
