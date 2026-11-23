@@ -15,6 +15,7 @@ services:
       # 需要本地 CLI agent 时请在宿主机直接运行（python run.py serve）
       A2A_STORE: sqlite
       A2A_DB_PATH: /app/data/a2a_hub.db
+      A2A_SOCIAL_DB_PATH: /app/data/social.db
       A2A_AGENTS_FILE: /app/config/agents.yaml
     volumes:
       - ./data:/app/data

@@ -127,6 +127,7 @@ a2a_hub/
 ├── config.py         环境变量 + agents.yaml 双来源配置，支持 ${ENV:-default} 展开
 ├── bus.py            事件总线：按 taskId 订阅 + 全局频道（SSE 的底座）
 ├── store.py          任务持久化：memory / sqlite
+├── social_store.py   会话持久化：SQLite 原子快照（消息 / 回执 / 已读状态）
 ├── registry.py       Agent 注册中心：发现、健康检查、打分路由、任务执行
 ├── relations.py      社交图谱：成员 / 关系（双向边）/ 权限分档（单向授予）/ 门禁判定 / 审计 / 圈层发现
 ├── autonomy.py       自主交友策略：§6 判定顺序（纯函数）/ 缺口信号 / 巡航循环
@@ -515,6 +516,12 @@ Conversation ──> contextId ──> 复用为会话内所有 Task 的 context
 ChatMessage  ──> 触发 Task ──> 产出 ──> 追加为新的 ChatMessage
 Delivery     ──> 一条消息在某位 agent 处的投递状态
 ```
+
+### 会话持久化与运行边界
+
+配置 `A2A_SOCIAL_DB_PATH=./data/social.db` 后，Hub 会把会话、消息、上下文 ID、投递回执和已读标记以 SQLite 原子快照保存；Docker Compose 将该文件放在现有 `/app/data` 持久卷中。重启时，未完成的投递会被标记为 `failed` 并写入系统提示，不会自动重放外部 Agent 调用，以免重复执行副作用。
+
+该 SQLite 后端面向**单 Hub 实例 / 单机持久卷**。它不是分布式数据库，不支持多个 Hub 副本共享写入，也不代表已支持 Cloudflare D1。多实例部署需要另行设计共享数据库与并发协调。
 
 ### 命令行 30 秒上手
 

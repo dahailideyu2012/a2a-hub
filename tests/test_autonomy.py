@@ -677,6 +677,9 @@ class TestAutonomyHttp:
 
         monkeypatch.setenv("A2A_MEMBERS_FILE", str(tmp_path / "missing.yaml"))
         monkeypatch.setenv("A2A_RELATIONS_FILE", str(tmp_path / "r.json"))
+        monkeypatch.setenv("A2A_SOCIAL_DB_PATH", str(tmp_path / "social.db"))
+        # This test covers legacy social-graph-disabled behavior, not production auth.
+        monkeypatch.setenv("A2A_REQUIRE_AUTH", "false")
         cfg._settings = None
         reg._registry = None
 
