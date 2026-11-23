@@ -504,6 +504,20 @@ class SqliteTaskStore(TaskStore):
                 conn.rollback()
                 raise
 
+    def is_pull_task_cancelled(self, task_id: str, connector_id: str) -> bool:
+        """Return cancellation only for a pull task assigned to this connector."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state, execution_mode, connector_id FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return bool(
+            row
+            and row[0] == TaskState.CANCELED.value
+            and row[1] == "pull"
+            and row[2] == connector_id
+        )
+
     def cancel_pull_task(self, task_id: str) -> Task:
         """Cancel a pull task without invoking an agent adapter."""
         now = time.time()
