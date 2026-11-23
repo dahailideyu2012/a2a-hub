@@ -78,3 +78,10 @@ T23 为 `workbuddy_connection_check` 增加一次检查的 `check_id`、本地 U
 - 仍然只执行 handshake、presence GET、单次 idle heartbeat、presence GET。
 - 不调用 claim/start/renew/progress/result，不领取或执行任务。
 - 这些追踪字段有助于操作者将 Desktop 现场观察与 Hub 日志进行关联，但本身不构成数字签名或真实 Desktop UI 证明。
+
+
+## T24 — 最终 Presence 身份确认
+
+T24 收紧 workbuddy_connection_check 的成功条件：Hub 接受单次 idle heartbeat 后，第二次 presence 查询还必须明确返回 online=true，并且 connector_id 必须与当前 Connector 配置一致。否则工具返回错误，不再把“heartbeat accepted”单独包装成完整连接检查成功。
+
+该检查仍然只是 Hub 服务端遥测与身份字段匹配，不证明 WorkBuddy Desktop UI 的真实性，也不领取或执行任务。操作者仍需在非生产环境完成 Desktop 现场验证。

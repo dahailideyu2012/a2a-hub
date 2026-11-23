@@ -324,3 +324,39 @@ def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_rece
     assert parsed == sorted(parsed)
     assert payload["task_claimed"] is False and payload["task_executed"] is False
     assert [call[1] for call in calls] == ["handshake", "presence", "heartbeat", "presence"]
+
+
+@pytest.mark.parametrize(
+    ("presence", "message"),
+    [
+        ({"connector_id": "workbuddy-personal", "online": False}, "未确认 online"),
+        ({"connector_id": "other-connector", "online": True}, "identity"),
+    ],
+)
+def test_connection_check_fails_closed_when_final_presence_is_not_our_online_connector(
+    monkeypatch, presence, message
+):
+    post_calls = []
+
+    def fake_post(path, payload):
+        post_calls.append(path)
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        if path == "heartbeat":
+            return {"accepted": True, "receipt_id": "hub-receipt-123"}
+        raise AssertionError(f"unexpected POST {path}")
+
+    get_calls = []
+
+    def fake_get(path):
+        get_calls.append(path)
+        return {"connector_id": "workbuddy-personal", "online": True} if len(get_calls) == 1 else presence
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+
+    assert result["isError"] is True
+    assert message in result["content"][0]["text"]
+    assert post_calls == ["handshake", "heartbeat"]
+    assert get_calls == ["presence", "presence"]

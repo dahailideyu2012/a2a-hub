@@ -125,6 +125,10 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   raise RuntimeError("Hub 未确认连接检查心跳")
  after=_get("presence")
  presence_after_observed_at=_utc_now()
+ if after.get("online") is not True:
+  raise RuntimeError("Hub 已接受心跳，但连接 presence 未确认 online")
+ if after.get("connector_id") != _connector_id():
+  raise RuntimeError("Hub presence connector identity 与当前配置不匹配")
  completed_at=_utc_now()
  return _ok({
   "connection_check":"passed",
