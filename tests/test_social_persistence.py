@@ -90,3 +90,20 @@ async def test_disband_removes_persisted_conversation(registry, tmp_path):
     recovered = SocialHub(registry, registry.bus, persistence_path=path)
     assert recovered.has(conv_id) is False
     await recovered.aclose()
+
+
+async def test_conversation_order_survives_disband_and_restart(registry, tmp_path):
+    path = tmp_path / "social.db"
+    first = SocialHub(registry, registry.bus, persistence_path=path)
+    oldest = first.open_direct("echo-a")
+    newest = first.open_direct("echo-b")
+    assert first.disband(oldest.id) is True
+    latest = first.create_group(["echo-a"], title="latest")
+    await first.aclose()
+
+    recovered = SocialHub(registry, registry.bus, persistence_path=path)
+    assert [item["id"] for item in recovered.list_conversations(USER)] == [
+        latest.id,
+        newest.id,
+    ]
+    await recovered.aclose()
