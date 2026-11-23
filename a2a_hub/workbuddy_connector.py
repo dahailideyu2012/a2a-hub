@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 from datetime import datetime, timezone
-from uuid import uuid4
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -235,6 +234,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
             "protocol_version": "1.0",
+            "client_version": body.client_version,
             "server_time": _server_time(),
             "heartbeat_interval_seconds": 30,
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
@@ -276,7 +276,7 @@ class HandshakeRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    connector_id: str = Field(min_length=1, max_length=64)
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     heartbeat_id: str = Field(min_length=8, max_length=128)
     status: Literal["idle", "busy", "degraded"]
     current_task_id: str | None = Field(default=None, max_length=128)
