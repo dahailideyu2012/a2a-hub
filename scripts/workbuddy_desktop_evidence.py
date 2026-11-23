@@ -143,6 +143,26 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
             if not _is_nonempty(event.get("evidence_ref"), 160):
                 errors.append(f"events[{index}] evidence_ref 无效")
 
+    # Event timestamps must form a chronological timeline inside the declared session.
+    if (
+        isinstance(session, dict)
+        and _timestamp(session.get("started_at"))
+        and _timestamp(session.get("completed_at"))
+        and isinstance(events, list)
+        and len(events) == len(REQUIRED_EVENTS)
+    ):
+        session_start = datetime.fromisoformat(session["started_at"].replace("Z", "+00:00"))
+        session_end = datetime.fromisoformat(session["completed_at"].replace("Z", "+00:00"))
+        observed_times = []
+        for index, event in enumerate(events):
+            if isinstance(event, dict) and _timestamp(event.get("observed_at")):
+                observed = datetime.fromisoformat(event["observed_at"].replace("Z", "+00:00"))
+                observed_times.append(observed)
+                if observed < session_start or observed > session_end:
+                    errors.append(f"events[{index}] observed_at 必须位于 session 时间范围内")
+        if len(observed_times) == len(REQUIRED_EVENTS) and observed_times != sorted(observed_times):
+            errors.append("events observed_at 必须按事件顺序单调递增或相等")
+
     attestation = data.get("attestation")
     if not isinstance(attestation, dict) or set(attestation) != {"method", "confirmed_by_operator"}:
         errors.append("attestation 必须且仅包含 method、confirmed_by_operator")

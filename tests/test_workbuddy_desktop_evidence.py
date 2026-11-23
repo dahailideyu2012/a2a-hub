@@ -109,3 +109,25 @@ def test_no_task_claim_or_execution_is_part_of_connection_proof():
         "source": "hub_receipt", "evidence_ref": "receipt:task",
     })
     assert validate_evidence(data)
+
+
+def test_event_timestamps_must_follow_declared_event_order():
+    data = valid_evidence()
+    data["events"][1]["observed_at"] = "2026-11-23T09:59:59+08:00"
+    assert any("单调递增" in error for error in validate_evidence(data))
+
+
+def test_event_timestamps_must_fall_within_session_window():
+    data = valid_evidence()
+    data["events"][0]["observed_at"] = "2026-11-23T09:59:59+08:00"
+    assert any("session 时间范围" in error for error in validate_evidence(data))
+
+    data = valid_evidence()
+    data["events"][-1]["observed_at"] = "2026-11-23T10:02:01+08:00"
+    assert any("session 时间范围" in error for error in validate_evidence(data))
+
+
+def test_equal_adjacent_event_timestamps_are_allowed():
+    data = valid_evidence()
+    data["events"][1]["observed_at"] = data["events"][0]["observed_at"]
+    assert validate_evidence(data) == []
