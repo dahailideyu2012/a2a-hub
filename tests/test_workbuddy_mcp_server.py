@@ -360,3 +360,37 @@ def test_connection_check_fails_closed_when_final_presence_is_not_our_online_con
     assert message in result["content"][0]["text"]
     assert post_calls == ["handshake", "heartbeat"]
     assert get_calls == ["presence", "presence"]
+
+
+def test_connection_check_failure_retains_safe_trace_when_final_presence_is_offline(monkeypatch):
+    calls = []
+    def fake_post(path, payload):
+        calls.append(path)
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        return {"accepted": True, "receipt_id": "hub-receipt"}
+    def fake_get(_path):
+        return {"connector_id": "workbuddy-personal", "online": False}
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert "未确认 online" in message
+    assert '"failed_stage":"presence_after"' in message
+    assert '"connection_check":"failed"' in message
+    assert '"task_claimed":false' in message and '"task_executed":false' in message
+    assert "hub-receipt" not in message
+    assert "private-token" not in message
+    assert calls == ["handshake", "heartbeat"]
+
+
+def test_connection_check_failure_retains_safe_trace_when_handshake_fails(monkeypatch):
+    monkeypatch.setattr(server, "_post", lambda _path, _payload: (_ for _ in ()).throw(RuntimeError("handshake rejected")))
+    result = server.call_tool("workbuddy_connection_check", {})
+    message = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert "handshake rejected" in message
+    assert '"failed_stage":"handshake"' in message
+    assert '"check_id":"conn-' in message
+    assert '"task_claimed":false' in message and '"task_executed":false' in message
