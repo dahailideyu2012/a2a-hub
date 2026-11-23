@@ -167,3 +167,21 @@ With `N` Uvicorn workers the effective aggregate allowance may reach `N × limit
 Use a single worker for a strict aggregate budget; shared atomic rate limiting is
 reserved for T33. The current single configured connector identity means this is
 one connector bucket, not a multi-device/token registry.
+
+
+## Structured security audit (T31)
+
+The connector emits one-line JSON audit records to the dedicated Python logger
+`a2a_hub.audit.workbuddy` at INFO level. Events cover all ten connector routes:
+claim, start, renew, progress, result, handshake, heartbeat, presence, callback
+status, and callback retry. HTTP failures are recorded with their status and a
+fixed reason code; the original exception text and response body are not logged.
+
+The record uses a closed field set: event, outcome, configured connector ID,
+HTTP status, an eight-hex-character SHA-256 token fingerprint (or `-` when no
+token was supplied), duration in milliseconds, and an optional fixed reason
+code. The raw token, lease token, task prompt, progress message, result output,
+request/response bodies, and arbitrary exception text are never audit fields.
+The logger uses its own namespace and does not configure or attach handlers to
+the root logger. Audit records are telemetry, not task events, and are never
+published to the Hub event bus.
