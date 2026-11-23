@@ -150,3 +150,78 @@ async def test_conversation_order_survives_disband_and_restart(registry, tmp_pat
         newest.id,
     ]
     await recovered.aclose()
+
+
+async def test_runtime_registration_evicts_oldest_and_keeps_500_rows(registry, tmp_path):
+    path = tmp_path / "social.db"
+    social = SocialHub(registry, registry.bus, persistence_path=path)
+
+    created = []
+    for index in range(501):
+        conv = social.create_group(["echo-a"], title=f"runtime-{index:03d}")
+        created.append(conv.id)
+
+    assert len(social._order) == 500
+    assert len(social._convs) == 500
+    assert created[0] not in social._convs
+    assert created[-1] in social._convs
+
+    rows = social._store._conn.execute(
+        "SELECT id, position FROM social_conversations ORDER BY position"
+    ).fetchall()
+    assert len(rows) == 500
+    assert rows[0] == (created[1], 0)
+    assert rows[-1] == (created[-1], 499)
+    assert [row[0] for row in rows] == social._order
+    await social.aclose()
+
+
+async def test_sqlite_store_write_failures_are_raised_and_recoverable(tmp_path):
+    import sqlite3
+
+    store = SqliteSocialStore(tmp_path / "write-failure.db")
+    now = "2026-11-23T00:00:00Z"
+    store._conn.execute(
+        """
+        CREATE TRIGGER fail_social_insert
+        BEFORE INSERT ON social_conversations
+        BEGIN
+            SELECT RAISE(ABORT, 'injected insert failure');
+        END;
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="injected insert failure"):
+        store.save("conv-fail", 0, now, "{}")
+    store._conn.execute("DROP TRIGGER fail_social_insert")
+    store.save("conv-ok", 0, now, "{}")
+
+    store._conn.execute(
+        """
+        CREATE TRIGGER fail_social_update
+        BEFORE UPDATE ON social_conversations
+        BEGIN
+            SELECT RAISE(ABORT, 'injected update failure');
+        END;
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="injected update failure"):
+        store.reorder(["conv-ok"])
+    store._conn.execute("DROP TRIGGER fail_social_update")
+
+    store._conn.execute(
+        """
+        CREATE TRIGGER fail_social_delete
+        BEFORE DELETE ON social_conversations
+        BEGIN
+            SELECT RAISE(ABORT, 'injected delete failure');
+        END;
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="injected delete failure"):
+        store.delete("conv-ok")
+    store._conn.execute("DROP TRIGGER fail_social_delete")
+
+    assert store.load() == ["{}"]
+    store.delete("conv-ok")
+    assert store.load() == []
+    store.close()
