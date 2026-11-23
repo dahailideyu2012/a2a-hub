@@ -331,6 +331,10 @@ def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_rece
     [
         ({"connector_id": "workbuddy-personal", "online": False}, "未确认 online"),
         ({"connector_id": "other-connector", "online": True}, "identity"),
+        ({"connector_id": "workbuddy-personal"}, "未确认 online"),
+        ({"online": True}, "identity"),
+        ({"connector_id": "workbuddy-personal", "online": "true"}, "未确认 online"),
+        ({"connector_id": "workbuddy-personal", "online": 1}, "未确认 online"),
     ],
 )
 def test_connection_check_fails_closed_when_final_presence_is_not_our_online_connector(
@@ -360,3 +364,31 @@ def test_connection_check_fails_closed_when_final_presence_is_not_our_online_con
     assert message in result["content"][0]["text"]
     assert post_calls == ["handshake", "heartbeat"]
     assert get_calls == ["presence", "presence"]
+
+
+def test_connection_check_failure_preserves_safe_trace_without_echoing_secrets(monkeypatch):
+    def fake_post(path, payload):
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal", "receipt_id": "safe-hs-receipt"}
+        if path == "heartbeat":
+            return {"accepted": True, "receipt_id": "safe-heartbeat-receipt"}
+        raise AssertionError(f"unexpected POST {path}")
+
+    get_count = {"value": 0}
+    def fake_get(path):
+        get_count["value"] += 1
+        if get_count["value"] == 1:
+            return {"connector_id": "workbuddy-personal", "online": True}
+        return {"connector_id": "workbuddy-personal", "online": False}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert "未确认 online" in message
+    assert "safe_trace=" in message
+    assert "check_id" in message and "failed_stage" in message
+    assert "safe-heartbeat-receipt" not in message
+    assert "x" * 48 not in message
+    assert "lease_token" not in message
