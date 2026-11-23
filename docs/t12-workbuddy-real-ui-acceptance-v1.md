@@ -14,6 +14,8 @@ This validates the WorkBuddy desktop/MCP ↔ Hub Pull connector loop. It does no
 - The harness bypasses system HTTP proxies, refuses redirects, caps HTTP responses, and redacts upstream error bodies from its report.
 - It does not edit WorkBuddy configuration, stop an existing listener, call public services, or access production data. If 127.0.0.1:8080 is already occupied, it exits BLOCKED without touching that listener.
 - The task is synthetic: calculate 37 × 41 and return a fixed marker. It must not access the internet, local files, or credentials.
+- The loopback proxy does not authenticate individual local processes: any process able to connect to 127.0.0.1:8080 during the test window can submit the synthetic test actions. This is intentionally limited to a disposable local Hub and synthetic credentials; do not run the harness on a shared or untrusted machine.
+- The proxy's fixed port is bound before the test starts, so an existing listener is never replaced. The isolated Hub selects an ephemeral port before Uvicorn binds it; a narrow port-allocation race remains possible. If another process claims that port first, startup health-check fails and the harness reports FAIL rather than using the other listener.
 
 ## Windows / WorkBuddy procedure
 
