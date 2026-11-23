@@ -15,6 +15,7 @@ HANDSHAKE_LOCK = threading.Lock()
 TOOLS = [
  {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
+ {"name":"workbuddy_connection_check","description":"执行一次连接专用检查：握手、读取 presence、发送一次 idle 心跳并复查 presence。绝不领取或执行任务。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
  {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
@@ -104,6 +105,31 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
  return _ok(_post("heartbeat",payload))
 
+
+def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
+ """Perform a single, task-free connection check and return redacted receipts."""
+ handshake=_ensure_handshake()
+ before=_get("presence")
+ heartbeat_id="hb-"+uuid.uuid4().hex
+ receipt=_post("heartbeat",{"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None})
+ if receipt.get("accepted") is not True:
+  raise RuntimeError("Hub 未确认连接检查心跳")
+ after=_get("presence")
+ return _ok({
+  "connection_check":"passed",
+  "handshake_accepted":True,
+  "connector_id":_connector_id(),
+  "presence_online_before":before.get("online") is True,
+  "heartbeat_accepted":True,
+  "heartbeat_receipt_id":receipt.get("receipt_id") or heartbeat_id,
+  "presence_online_after":after.get("online") is True,
+  "server_time":receipt.get("server_time") or after.get("server_time"),
+  "task_claimed":False,
+  "task_executed":False,
+  "note":"仅证明本次认证连接检查请求被 Hub 接受；不证明 Desktop UI 身份，也未领取或执行任务。"
+ })
+
+
 def _post_idempotent(path: str, payload: dict[str,Any]) -> dict[str,Any]:
  """Retry only operations whose server contract is idempotent.
 
@@ -181,7 +207,7 @@ def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
  with LEASES_LOCK: LEASES.pop(task_id,None)
  return _ok(result)
-TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
+TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_connection_check":tool_connection_check,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
  fn=TOOL_FUNCS.get(name)
  if fn is None: return _err("未知工具")
