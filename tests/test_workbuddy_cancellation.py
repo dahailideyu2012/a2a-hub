@@ -18,7 +18,7 @@ def _prepare(client, monkeypatch, tmp_path, suffix: str):
     store = SqliteTaskStore(str(tmp_path / f"{suffix}-tasks.db"))
     monkeypatch.setattr(server.hub.registry, "store", store)
 
-    task = Task(agentId="echo-a", metadata={"mode": "pull"})
+    task = Task(agentId="unregistered-test-agent", metadata={"mode": "pull"})
     task.history.append(Message.user("cancellation signal test"))
     store.enqueue_pull(task)
     lease = store.claim_next("workbuddy-personal", 120)
@@ -34,7 +34,7 @@ def _prepare(client, monkeypatch, tmp_path, suffix: str):
     return settings, store, task, headers
 
 
-def test_heartbeat_reports_cancellation_only_after_persisted_cancel(
+async def test_heartbeat_reports_cancellation_only_after_persisted_cancel(
     client, monkeypatch, tmp_path
 ):
     _, store, task, headers = _prepare(
@@ -53,7 +53,10 @@ def test_heartbeat_reports_cancellation_only_after_persisted_cancel(
     assert before.json()["cancel_requested"] is False
     assert before.json()["cancel_reason"] is None
 
-    canceled = store.cancel_pull_task(task.id)
+    import a2a_hub.server as server
+
+    # Exercise the same registry cancellation path used by ChatGPT's REST route.
+    canceled = await server.hub.registry.cancel(task.id)
     assert canceled.status.state.value == "canceled"
 
     after = client.post(
