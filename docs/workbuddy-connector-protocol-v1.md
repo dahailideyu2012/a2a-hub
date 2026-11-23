@@ -136,3 +136,15 @@ itself to one active lease, and exposes no arbitrary shell/command execution
 tool. Progress and result retries remain restricted to server-defined
 idempotent operations. The MCP bridge does not autonomously execute tasks:
 WorkBuddy must invoke the task tools and decide how to perform authorized work.
+
+
+## Cross-transport acceptance path (T19)
+
+The end-to-end task loop joins the separate ChatGPT and WorkBuddy credentials without sharing them:
+
+- ChatGPT submits a Pull task through the restricted ChatGPT Remote MCP `submit_task` tool.
+- WorkBuddy independently authenticates with the WorkBuddy connector token, claims one allowlisted task, and holds the lease token only in its local bridge process.
+- WorkBuddy explicitly starts the task, reports ordered progress, and submits a terminal result.
+- ChatGPT reads the same task through its ingress-owned `get_task` / `get_task_events` tools.
+
+The automated contract test `tests/test_chatgpt_workbuddy_loop.py` runs both MCP surfaces against one isolated Hub and temporary SQLite task/presence stores. It proves the software/API contract only; it does not launch WorkBuddy Desktop, simulate a user approval, or establish a production connection. No Hub-to-Desktop push is implied: WorkBuddy must pull and invoke each lifecycle tool.

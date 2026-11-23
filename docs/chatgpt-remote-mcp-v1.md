@@ -84,3 +84,18 @@ References:
 ## Release boundary
 
 This implementation is code-only on `feature/chatgpt-workbuddy-bridge-v1`. It has not been deployed, exposed publicly, connected to production credentials, or merged into `main`. Before release, run the dedicated tests, full test suite, static checks, MCP Inspector, and a real ChatGPT workspace connection test. A real ChatGPT account test is blocked until an eligible workspace and an authorized user are available.
+
+
+## Cross-transport task loop (T19)
+
+The supported Pull workflow is a sequence of explicit client actions, not a Hub-initiated push:
+
+1. ChatGPT calls `submit_task` with `mode=pull` and a stable `idempotency_key`.
+2. The Hub persists a submitted task in a `PullTaskRepository`-compatible store.
+3. The WorkBuddy MCP bridge handshakes and calls `workbuddy_claim_task`; the Hub returns one task plus a fenced lease.
+4. WorkBuddy calls `workbuddy_start_task`, may send ordered progress and renewals, then calls `workbuddy_submit_result`.
+5. ChatGPT calls `get_task` or `get_task_events` to read the persisted terminal task snapshot. The REST SSE endpoint remains available for live updates.
+
+The ChatGPT ingress token and WorkBuddy connector token are independent credentials and must never be interchanged. Lease tokens remain private to the WorkBuddy bridge process. A task prompt is untrusted content, not permission to access secrets or perform destructive operations. The connector is outbound-pull: these APIs do not prove or provide Hub-initiated Desktop execution.
+
+An automated cross-transport contract test is maintained at `tests/test_chatgpt_workbuddy_loop.py`. It routes both MCP clients through one isolated FastAPI app and temporary SQLite databases; it verifies submit → claim → start → progress → result → ChatGPT readback, idempotent replay, and credential separation. This is an integration simulation, not a real WorkBuddy Desktop or production connection test.
