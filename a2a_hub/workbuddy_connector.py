@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -237,7 +239,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "heartbeat_interval_seconds": 30,
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
             "allowed_agent_ids": configured,
-            "capabilities": ["claim", "start", "renew", "progress", "result", "heartbeat"],
+            "capabilities": sorted(set(body.capabilities).intersection({"claim", "start", "renew", "progress", "result", "heartbeat"})),
         }
 
     @router.post("/heartbeat")
@@ -264,13 +266,9 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
 
 # Protocol handshake and lightweight liveness receipts. The connector token remains
 # the sole authentication secret; the response never echoes it or the lease token.
-from datetime import datetime, timezone
-from uuid import uuid4
-
-
 class HandshakeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    connector_id: str = Field(min_length=1, max_length=64)
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     protocol_version: Literal["1.0"] = "1.0"
     client_version: str = Field(default="unknown", min_length=1, max_length=64)
     capabilities: list[str] = Field(default_factory=list, max_length=20)
