@@ -16,6 +16,7 @@ HANDSHAKE_LOCK = threading.Lock()
 TOOLS = [
  {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
+ {"name":"workbuddy_check_task_cancellation","description":"检查当前 MCP 会话持有的任务是否已被取消。执行一次认证 busy 心跳；收到取消信号时立即丢弃本地租约并返回 should_stop=true。适合长任务在子步骤之间主动检查；不启动后台轮询或中断正在运行的外部程序。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
  {"name":"workbuddy_connection_check","description":"执行一次连接专用检查：握手、读取 presence、发送一次 idle 心跳并复查 presence。绝不领取或执行任务。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
@@ -105,6 +106,51 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
  return _ok(_post("heartbeat",payload))
+
+
+
+def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
+ """Check a locally leased task's durable cancellation flag with one heartbeat."""
+ task_id=args.get("task_id")
+ if not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128:
+  raise RuntimeError("task_id 无效")
+ task_id=task_id.strip()
+ # A model cannot use this tool to probe arbitrary task IDs: the bridge must
+ # already hold the corresponding private lease in this MCP process.
+ _lease(task_id)
+ _ensure_handshake()
+ heartbeat_id="hb-"+uuid.uuid4().hex
+ response=_post("heartbeat",{
+  "connector_id":_connector_id(),
+  "heartbeat_id":heartbeat_id,
+  "status":"busy",
+  "current_task_id":task_id,
+ })
+ if response.get("accepted") is not True:
+  raise RuntimeError("Hub 未确认任务取消检查心跳")
+ if response.get("connector_id") != _connector_id() or response.get("current_task_id") != task_id:
+  raise RuntimeError("Hub 心跳回执身份或任务不匹配")
+ cancel_requested=response.get("cancel_requested")
+ if not isinstance(cancel_requested,bool):
+  raise RuntimeError("Hub 心跳响应缺少有效 cancel_requested 布尔值")
+ reason=response.get("cancel_reason")
+ if reason is not None and not isinstance(reason,str):
+  raise RuntimeError("Hub 心跳响应 cancel_reason 格式无效")
+ discarded=False
+ if cancel_requested:
+  # The task is already terminal on the Hub. Dropping the local lease prevents
+  # this MCP session from accidentally sending later progress/result mutations.
+  with LEASES_LOCK:
+   discarded=LEASES.pop(task_id,None) is not None
+ return _ok({
+  "task_id":task_id,
+  "cancel_requested":cancel_requested,
+  "should_stop":cancel_requested,
+  "cancel_reason":reason if cancel_requested else None,
+  "local_lease_discarded":discarded,
+  "heartbeat_id":heartbeat_id,
+  "note":"这是一次显式协作式检查，不是后台轮询或进程级强制中断。should_stop=true 时应立即停止当前任务，不再提交进度或结果。",
+ })
 
 
 def _utc_now() -> str:
@@ -251,7 +297,7 @@ def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
  with LEASES_LOCK: LEASES.pop(task_id,None)
  return _ok(result)
-TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_connection_check":tool_connection_check,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
+TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
  fn=TOOL_FUNCS.get(name)
  if fn is None: return _err("未知工具")
@@ -265,7 +311,7 @@ def _handle(message: dict[str,Any]) -> None:
  params=message.get("params") or {}
  if method=="initialize":
   requested=params.get("protocolVersion")
-  _write({"jsonrpc":"2.0","id":request_id,"result":{"protocolVersion":requested if requested in SUPPORTED else PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"a2a-hub-workbuddy-pull","version":"1.0.0"},"instructions":"使用 workbuddy_claim_task 领取一项任务，随后 start；模型执行任务并可用 progress/renew 更新状态，最后 submit_result。只在用户明确要求时领取一次，不要后台轮询。"}})
+  _write({"jsonrpc":"2.0","id":request_id,"result":{"protocolVersion":requested if requested in SUPPORTED else PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"a2a-hub-workbuddy-pull","version":"1.0.0"},"instructions":"使用 workbuddy_claim_task 领取一项任务，随后 start；长任务应在子步骤之间调用 workbuddy_check_task_cancellation 检查取消信号，should_stop=true 时立即停止且不再提交 progress/result；模型可用 progress/renew 更新状态，最后 submit_result。只在用户明确要求时领取一次，不要后台轮询。"}})
  elif method=="tools/list": _write({"jsonrpc":"2.0","id":request_id,"result":{"tools":TOOLS}})
  elif method=="tools/call": _write({"jsonrpc":"2.0","id":request_id,"result":call_tool(params.get("name",""),params.get("arguments") or {})})
  elif method=="ping": _write({"jsonrpc":"2.0","id":request_id,"result":{}})
