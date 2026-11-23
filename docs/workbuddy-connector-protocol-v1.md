@@ -110,3 +110,29 @@ configured connector. Presence is operational telemetry, not proof of a real
 WorkBuddy Desktop UI session or task execution. The first implementation tracks
 the single configured connector identity; multi-device registration and history
 are out of scope.
+
+
+## MCP bridge handshake and presence client (T18)
+
+The stdio bridge in `workbuddy_mcp_server.py` now performs the authenticated
+protocol handshake automatically before its first task claim. It sends the
+configured connector identity (`A2A_WORKBUDDY_CONNECTOR_ID`, default
+`workbuddy-personal`), protocol version 1.0, client version, and supported
+capabilities. The bridge fails closed if the Hub does not accept the exact
+configured identity. The successful handshake is cached for that MCP process;
+restart the process to renegotiate after changing connector configuration.
+
+Two explicit MCP tools are available:
+
+- `workbuddy_connector_status`: handshake if needed, then issue an authenticated
+  GET to `/presence`. The returned online flag is TTL-based telemetry only.
+- `workbuddy_heartbeat`: handshake if needed, then send one authenticated
+  heartbeat with status `idle`, `busy`, or `degraded`. This is a single
+  request, not a background polling loop.
+
+`workbuddy_claim_task` also ensures handshake before attempting a claim. The
+bridge still holds lease tokens only in its process-local private map, limits
+itself to one active lease, and exposes no arbitrary shell/command execution
+tool. Progress and result retries remain restricted to server-defined
+idempotent operations. The MCP bridge does not autonomously execute tasks:
+WorkBuddy must invoke the task tools and decide how to perform authorized work.
