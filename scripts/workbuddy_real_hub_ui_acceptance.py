@@ -92,6 +92,28 @@ def free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def build_readback(status: str | None, text: str) -> dict[str, Any]:
+    """Return bounded evidence only; never retain or print task history."""
+    return {
+        "task_state": status,
+        "marker_present": TASK_MARKER in text,
+        "calculation_present": EXPECTED_CALCULATION in text,
+    }
+
+
+def apply_cleanup_verdict(report: dict[str, Any], *, hub_stopped: bool,
+                          temporary_directory_cleaned: bool) -> bool:
+    """A PASS requires both child-process exit and temporary-data cleanup."""
+    report["hub_process_exited"] = hub_stopped
+    report["temporary_directory_cleanup"] = (
+        "PASS" if temporary_directory_cleaned else "FAIL"
+    )
+    if not hub_stopped or not temporary_directory_cleaned:
+        report["result"] = "FAIL"
+        return False
+    return report.get("result") == "PASS"
+
+
 def task_text(task: dict[str, Any]) -> str:
     chunks: list[str] = []
     for message in task.get("history") or []:
@@ -423,11 +445,7 @@ def main() -> int:
             "PASS" if report["checks"]["workbuddy_ui_task_completion"] == "PASS"
             and report["checks"]["workbuddy_api_sequence"] == "PASS" else "FAIL"
         )
-        report["chatgpt_readback"] = {
-            "task_state": status,
-            "marker_present": TASK_MARKER in text,
-            "calculation_present": EXPECTED_CALCULATION in text,
-        }
+        report["chatgpt_readback"] = build_readback(status, text)
         exit_code = 0 if report["result"] == "PASS" else 1
     except KeyboardInterrupt:
         report["result"] = "ABORTED"
@@ -451,13 +469,16 @@ def main() -> int:
             with proxy_state.lock:
                 report.setdefault("workbuddy_tool_events", list(proxy_state.events))
         hub_stopped = stop_process(server)
-        report["hub_process_exited"] = hub_stopped
+        cleanup_ok = True
         try:
             temp_context.cleanup()
-            report["temporary_directory_cleanup"] = "PASS"
         except OSError as exc:
-            report["temporary_directory_cleanup"] = f"FAIL: {type(exc).__name__}"
-            report["result"] = "FAIL"
+            cleanup_ok = False
+            report["temporary_directory_cleanup_error"] = type(exc).__name__
+        if not apply_cleanup_verdict(
+            report, hub_stopped=hub_stopped,
+            temporary_directory_cleaned=cleanup_ok,
+        ):
             exit_code = 1
         print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
     return exit_code
