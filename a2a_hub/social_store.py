@@ -81,6 +81,19 @@ class SqliteSocialStore:
                 self._conn.rollback()
                 raise
 
+    def reorder(self, conversation_ids: list[str]) -> None:
+        """Normalize positions after deletion/eviction to keep reload order stable."""
+        with self._lock:
+            try:
+                self._conn.executemany(
+                    "UPDATE social_conversations SET position = ? WHERE id = ?",
+                    [(position, conversation_id) for position, conversation_id in enumerate(conversation_ids)],
+                )
+                self._conn.commit()
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
