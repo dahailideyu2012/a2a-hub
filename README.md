@@ -127,6 +127,7 @@ a2a_hub/
 ├── config.py         环境变量 + agents.yaml 双来源配置，支持 ${ENV:-default} 展开
 ├── bus.py            事件总线：按 taskId 订阅 + 全局频道（SSE 的底座）
 ├── store.py          任务持久化：memory / sqlite
+├── social_store.py   会话持久化：SQLite 原子快照（消息 / 回执 / 已读状态）
 ├── registry.py       Agent 注册中心：发现、健康检查、打分路由、任务执行
 ├── relations.py      社交图谱：成员 / 关系（双向边）/ 权限分档（单向授予）/ 门禁判定 / 审计 / 圈层发现
 ├── autonomy.py       自主交友策略：§6 判定顺序（纯函数）/ 缺口信号 / 巡航循环
