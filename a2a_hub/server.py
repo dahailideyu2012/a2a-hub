@@ -134,7 +134,12 @@ class Hub:
         self.orchestrator = Orchestrator(
             self.registry, self.registry.bus, guard=self.social_graph
         )
-        self.social = SocialHub(self.registry, self.registry.bus, guard=self.social_graph)
+        self.social = SocialHub(
+            self.registry,
+            self.registry.bus,
+            guard=self.social_graph,
+            persistence_path=self.settings.social_db_path_resolved(),
+        )
         self.dispatcher = JsonRpcDispatcher(
             self.registry, self.orchestrator, self.social, graph=self.social_graph
         )
