@@ -162,3 +162,29 @@ def test_invalid_session_window_reports_root_cause_without_cascading_event_error
     data["session"]["completed_at"] = "2026-11-23T09:59:00+08:00"
     errors = validate_evidence(data)
     assert errors == ["session completed_at 不能早于 started_at"]
+
+
+def test_each_event_requires_a_unique_evidence_reference():
+    data = valid_evidence()
+    data["events"][1]["evidence_ref"] = data["events"][0]["evidence_ref"]
+    errors = validate_evidence(data)
+    assert any("evidence_ref 必须唯一" in error for error in errors)
+    assert all(data["events"][0]["evidence_ref"] not in error for error in errors)
+
+
+def test_distinct_evidence_references_pass_even_when_timestamps_are_equal():
+    data = valid_evidence()
+    shared_time = data["events"][0]["observed_at"]
+    for event in data["events"]:
+        event["observed_at"] = shared_time
+    assert validate_evidence(data) == []
+
+
+def test_multiple_duplicate_evidence_references_are_reported_without_echoing_values():
+    data = valid_evidence()
+    secret_like_reference = "private-local-evidence-pointer"
+    data["events"][1]["evidence_ref"] = secret_like_reference
+    data["events"][3]["evidence_ref"] = secret_like_reference
+    errors = validate_evidence(data)
+    assert any("events[1]、3" in error or "events[1]" in error for error in errors)
+    assert all(secret_like_reference not in error for error in errors)

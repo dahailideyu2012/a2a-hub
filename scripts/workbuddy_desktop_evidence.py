@@ -128,6 +128,7 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
     if not isinstance(events, list) or len(events) != len(REQUIRED_EVENTS):
         errors.append("events 必须按顺序包含全部 5 个连接验收事件")
     else:
+        evidence_refs: list[tuple[int, str]] = []
         for index, (event, expected_name) in enumerate(zip(events, REQUIRED_EVENTS)):
             if not isinstance(event, dict) or set(event) != {"name", "status", "observed_at", "source", "evidence_ref"}:
                 errors.append(f"events[{index}] 字段结构无效")
@@ -140,8 +141,24 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
                 errors.append(f"events[{index}] observed_at 必须是带时区的 ISO-8601 时间")
             if event.get("source") not in ALLOWED_SOURCES:
                 errors.append(f"events[{index}] source 不受支持")
-            if not _is_nonempty(event.get("evidence_ref"), 160):
+            evidence_ref = event.get("evidence_ref")
+            if not _is_nonempty(evidence_ref, 160):
                 errors.append(f"events[{index}] evidence_ref 无效")
+            else:
+                evidence_refs.append((index, evidence_ref))
+
+        # Each event must point to its own evidence item; reused references
+        # make the audit trail ambiguous even when the timeline is valid.
+        seen_refs: dict[str, int] = {}
+        duplicate_indexes: set[int] = set()
+        for index, evidence_ref in evidence_refs:
+            if evidence_ref in seen_refs:
+                duplicate_indexes.update((seen_refs[evidence_ref], index))
+            else:
+                seen_refs[evidence_ref] = index
+        if duplicate_indexes:
+            locations = "、".join(f"events[{index}]" for index in sorted(duplicate_indexes))
+            errors.append(f"{locations} evidence_ref 必须唯一，不能重复引用同一证据")
 
     # Event timestamps must form a chronological timeline inside the declared session.
     if (
