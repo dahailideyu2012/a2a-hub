@@ -141,7 +141,7 @@ def test_connector_audit_is_single_line_allowlisted_and_redacted(
         "event", "outcome", "connector_id", "status", "token_fp", "duration_ms"
     }
     for record in records:
-        assert "\\n" not in record.message
+        assert "\n" not in record.message
         payload = json.loads(record.message)
         assert set(payload) == expected_keys
         assert payload["outcome"] == "ok"
@@ -183,5 +183,5 @@ def test_connector_audit_records_auth_and_rate_limit_outcomes(
     ]
     assert records[0]["token_fp"] == "-"
     assert records[1]["token_fp"] == hashlib.sha256(wrong.encode()).hexdigest()[:8]
-    assert all("\\n" not in record.message for record in caplog.records if record.name == "a2a_hub.audit.workbuddy")
+    assert all("\n" not in record.message for record in caplog.records if record.name == "a2a_hub.audit.workbuddy")
     store.close()
