@@ -186,5 +186,7 @@ def test_multiple_duplicate_evidence_references_are_reported_without_echoing_val
     data["events"][1]["evidence_ref"] = secret_like_reference
     data["events"][3]["evidence_ref"] = secret_like_reference
     errors = validate_evidence(data)
-    assert any("events[1]、3" in error or "events[1]" in error for error in errors)
+    duplicate_error = next(error for error in errors if "evidence_ref 必须唯一" in error)
+    assert "events[1]" in duplicate_error and "events[3]" in duplicate_error
+    assert secret_like_reference not in duplicate_error
     assert all(secret_like_reference not in error for error in errors)
