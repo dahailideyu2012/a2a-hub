@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,17 @@ def _is_nonempty(value: Any, limit: int = 200) -> bool:
     return isinstance(value, str) and 0 < len(value.strip()) <= limit and value == value.strip()
 
 
+def _is_safe_text(value: Any, limit: int = 200) -> bool:
+    """Reject control, formatting, and Unicode line-separator characters in free text."""
+    if not _is_nonempty(value, limit):
+        return False
+    unsafe_categories = {"Cc", "Cf", "Zl", "Zp"}
+    return not any(unicodedata.category(char) in unsafe_categories for char in value)
+
+
 def _is_safe_evidence_ref(value: Any) -> bool:
-    """Accept opaque references but reject control characters that can forge log lines."""
-    return _is_nonempty(value, 160) and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    """Accept opaque references but reject characters that can forge log lines."""
+    return _is_safe_text(value, 160)
 
 
 def _timestamp(value: Any) -> bool:
@@ -100,7 +109,7 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
     client = data.get("client")
     if not isinstance(client, dict) or set(client) != {"product", "version"}:
         errors.append("client 必须且仅包含 product、version")
-    elif client.get("product") != "WorkBuddy Desktop" or not _is_nonempty(client.get("version"), 80):
+    elif client.get("product") != "WorkBuddy Desktop" or not _is_safe_text(client.get("version"), 80):
         errors.append("client 产品名称或版本无效")
 
     connector = data.get("connector")
@@ -122,7 +131,7 @@ def validate_evidence(data: Any, *, allow_loopback_http: bool = False) -> list[s
     if not isinstance(session, dict) or set(session) != {"id", "started_at", "completed_at"}:
         errors.append("session 必须且仅包含 id、started_at、completed_at")
     else:
-        if not _is_nonempty(session.get("id"), 128):
+        if not _is_safe_text(session.get("id"), 128):
             errors.append("session id 无效")
         if not _timestamp(session.get("started_at")) or not _timestamp(session.get("completed_at")):
             errors.append("session 时间必须是带时区的 ISO-8601 时间")
