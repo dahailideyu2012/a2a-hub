@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from a2a_hub.social import (
     ChatMessage,
-    Conversation,
     Delivery,
     DeliveryState,
     SocialHub,
