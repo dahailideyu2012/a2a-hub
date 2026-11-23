@@ -69,7 +69,7 @@ def test_claim_refuses_second_active_task_until_result_is_submitted(monkeypatch)
  second=server.tool_claim({})
  assert first["isError"] is False
  assert second["isError"] is True
- assert len(calls)==1
+ assert calls==["handshake","claim"]
  assert "已有未完成任务" in second["content"][0]["text"]
 
 
