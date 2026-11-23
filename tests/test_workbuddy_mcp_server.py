@@ -246,3 +246,45 @@ def test_heartbeat_rejects_invalid_status_before_network(monkeypatch):
     result = server.call_tool("workbuddy_heartbeat", {"status": "root"})
     assert result["isError"] is True
     assert calls == []
+
+
+def test_connection_check_is_task_free_and_returns_redacted_receipts(monkeypatch):
+    calls = []
+    def fake_post(path, payload):
+        calls.append(("POST", path, payload.copy()))
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        if path == "heartbeat":
+            return {"accepted": True, "receipt_id": payload["heartbeat_id"], "server_time": "2026-11-23T10:00:00Z"}
+        raise AssertionError(f"unexpected POST {path}")
+    def fake_get(path):
+        calls.append(("GET", path, {}))
+        return {"connector_id": "workbuddy-personal", "online": True, "server_time": "2026-11-23T10:00:00Z"}
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["connection_check"] == "passed"
+    assert payload["handshake_accepted"] is True
+    assert payload["heartbeat_accepted"] is True
+    assert payload["presence_online_after"] is True
+    assert payload["task_claimed"] is False
+    assert payload["task_executed"] is False
+    assert [call[1] for call in calls] == ["handshake", "presence", "heartbeat", "presence"]
+    assert calls[2][2]["status"] == "idle"
+    assert calls[2][2]["current_task_id"] is None
+    assert all("claim" not in call[1] for call in calls)
+    assert "lease_token" not in result["content"][0]["text"]
+
+
+def test_connection_check_fails_closed_when_heartbeat_not_accepted(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda path, payload: (
+        {"accepted": True, "connector_id": "workbuddy-personal"}
+        if path == "handshake" else {"accepted": False}
+    ))
+    monkeypatch.setattr(server, "_get", lambda _path: {"online": True})
+    result = server.call_tool("workbuddy_connection_check", {})
+    assert result["isError"] is True
+    assert "未确认" in result["content"][0]["text"]
