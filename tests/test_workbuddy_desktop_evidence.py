@@ -143,7 +143,7 @@ def test_session_window_endpoints_are_inclusive():
 
 def test_mixed_timezone_offsets_are_compared_as_absolute_instants():
     data = valid_evidence()
-    # 09:59:59Z is 17:59:59+08:00, so this is later than the first event.
+    # 02:00:01Z and 10:00:01+08:00 represent the same absolute instant.
     data["events"][1]["observed_at"] = "2026-11-23T02:00:01Z"
     data["events"][2]["observed_at"] = "2026-11-23T10:00:02+08:00"
     assert validate_evidence(data) == []
