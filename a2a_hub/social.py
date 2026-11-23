@@ -200,6 +200,20 @@ class SocialHub:
             self._convs = {cid: self._convs[cid] for cid in self._order}
         # 后台派发任务：必须持有引用，否则可能被 GC 掉
         self._inflight: set[asyncio.Task[Any]] = set()
+        # A process restart cannot safely resume an in-flight adapter call. Mark
+        # those receipts failed instead of leaving permanent "pending" indicators
+        # or automatically duplicating work.
+        for conv in list(self._convs.values()):
+            interrupted = [d for d in conv.deliveries if not d.is_terminal]
+            for delivery in interrupted:
+                delivery.state = DeliveryState.FAILED
+                delivery.error = "Hub restarted before delivery completed; resend after checking task status"
+                delivery.updatedAt = utc_now()
+            for delivery in interrupted:
+                self._system(
+                    conv,
+                    f"⚠ {delivery.agentName or delivery.agentId} 的投递因 Hub 重启中断，请确认任务状态后再重发",
+                )
 
     # ------------------------------------------------------------------ #
     # 通讯录
