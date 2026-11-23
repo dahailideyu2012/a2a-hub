@@ -148,3 +148,22 @@ The end-to-end task loop joins the separate ChatGPT and WorkBuddy credentials wi
 - ChatGPT reads the same task through its ingress-owned `get_task` / `get_task_events` tools.
 
 The automated contract test `tests/test_chatgpt_workbuddy_loop.py` runs both MCP surfaces against one isolated Hub and temporary SQLite task/presence stores. It proves the software/API contract only; it does not launch WorkBuddy Desktop, simulate a user approval, or establish a production connection. No Hub-to-Desktop push is implied: WorkBuddy must pull and invoke each lifecycle tool.
+
+
+## Connector request rate limit (T31)
+
+The Hub applies a sliding-window request budget to every authenticated WorkBuddy
+connector endpoint (claim/start/renew/progress/result, callback status/retry,
+handshake/heartbeat/presence). Configure `A2A_WORKBUDDY_CONNECTOR_RATE_LIMIT`
+(default `60`, allowed `1`–`600`) as requests per 60 seconds for the configured
+connector identity. Authentication is checked before consuming the budget; a
+missing or invalid token therefore does not consume an authenticated request slot.
+Requests over budget return HTTP `429` before opening task, presence, or callback
+storage for that endpoint.
+
+The current limiter is in-process memory, reuses the Hub's sliding-window
+implementation, and is intentionally **not shared between worker processes**.
+With `N` Uvicorn workers the effective aggregate allowance may reach `N × limit`.
+Use a single worker for a strict aggregate budget; shared atomic rate limiting is
+reserved for T33. The current single configured connector identity means this is
+one connector bucket, not a multi-device/token registry.
