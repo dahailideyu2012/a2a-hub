@@ -377,7 +377,7 @@ class ClaudeCodeAdapter(CliAgentAdapter):
     default_parser = "claude"
     default_command = (
         "claude -p {prompt} --output-format stream-json --verbose "
-        "--permission-mode bypassPermissions"
+        "--permission-mode default"
     )
 
 
