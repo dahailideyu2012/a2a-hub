@@ -95,11 +95,12 @@ def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
  return _ok(_get("presence"))
 
 def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
- _ensure_handshake()
+ # Reject malformed input locally before performing any network handshake.
  status=args.get("status")
  if status not in {"idle","busy","degraded"}: raise RuntimeError("status 必须是 idle、busy 或 degraded")
  task_id=args.get("current_task_id")
  if task_id is not None and (not isinstance(task_id,str) or len(task_id)>128): raise RuntimeError("current_task_id 无效")
+ _ensure_handshake()
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
  return _ok(_post("heartbeat",payload))
 
