@@ -83,3 +83,105 @@ def test_missing_and_invalid_tokens_do_not_consume_connector_budget(
     assert valid.status_code == 200
     assert limited.status_code == 429
     store.close()
+
+
+def test_connector_audit_is_single_line_allowlisted_and_redacted(
+    client, monkeypatch, tmp_path, caplog
+):
+    import hashlib
+    import json
+    import logging
+    from a2a_hub.models import Message, Task
+
+    _, store, token = _configure_connector(
+        monkeypatch, tmp_path, suffix="audit-redaction", limit=60
+    )
+    prompt_secret = "PRIVATE-PROMPT-DO-NOT-LOG"
+    output_secret = "PRIVATE-OUTPUT-DO-NOT-LOG"
+    task = Task(agentId="echo-a")
+    task.history.append(Message.user(prompt_secret))
+    store.enqueue_pull(task)
+
+    caplog.set_level(logging.INFO, logger="a2a_hub.audit.workbuddy")
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    claimed = client.post("/integrations/workbuddy/v1/claim", headers=headers, json={})
+    assert claimed.status_code == 200
+    lease = claimed.json()["lease"]
+    lease_token = lease["lease_token"]
+    lease_body = {
+        "lease_token": lease_token,
+        "lease_version": lease["lease_version"],
+    }
+    started = client.post(
+        f"/integrations/workbuddy/v1/tasks/{task.id}/start",
+        headers=headers,
+        json=lease_body,
+    )
+    assert started.status_code == 200
+    finished = client.post(
+        f"/integrations/workbuddy/v1/tasks/{task.id}/result",
+        headers=headers,
+        json={
+            **lease_body,
+            "result_key": "audit-result-0001",
+            "state": "completed",
+            "output": output_secret,
+        },
+    )
+    assert finished.status_code == 200
+
+    records = [
+        record for record in caplog.records
+        if record.name == "a2a_hub.audit.workbuddy"
+    ]
+    assert [json.loads(record.message)["event"] for record in records] == [
+        "claim", "start", "result"
+    ]
+    expected_keys = {
+        "event", "outcome", "connector_id", "status", "token_fp", "duration_ms"
+    }
+    for record in records:
+        assert "\\n" not in record.message
+        payload = json.loads(record.message)
+        assert set(payload) == expected_keys
+        assert payload["outcome"] == "ok"
+        assert payload["token_fp"] == hashlib.sha256(token.encode()).hexdigest()[:8]
+        for secret in (token, lease_token, prompt_secret, output_secret):
+            assert secret not in record.message
+    store.close()
+
+
+def test_connector_audit_records_auth_and_rate_limit_outcomes(
+    client, monkeypatch, tmp_path, caplog
+):
+    import hashlib
+    import json
+    import logging
+
+    _, store, token = _configure_connector(
+        monkeypatch, tmp_path, suffix="audit-denials", limit=1
+    )
+    caplog.set_level(logging.INFO, logger="a2a_hub.audit.workbuddy")
+    url = "/integrations/workbuddy/v1/claim"
+
+    assert client.post(url, json={}).status_code == 401
+    wrong = "wrong-workbuddy-token-0123456789"
+    assert client.post(
+        url, headers={"X-WorkBuddy-Connector-Token": wrong}, json={}
+    ).status_code == 403
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    assert client.post(url, headers=headers, json={}).status_code == 200
+    assert client.post(url, headers=headers, json={}).status_code == 429
+
+    records = [
+        json.loads(record.message) for record in caplog.records
+        if record.name == "a2a_hub.audit.workbuddy"
+    ]
+    assert [item["status"] for item in records] == [401, 403, 200, 429]
+    assert [item["outcome"] for item in records] == [
+        "unauthenticated", "denied", "ok", "rate_limited"
+    ]
+    assert records[0]["token_fp"] == "-"
+    assert records[1]["token_fp"] == hashlib.sha256(wrong.encode()).hexdigest()[:8]
+    assert all("\\n" not in record.message for record in caplog.records if record.name == "a2a_hub.audit.workbuddy")
+    store.close()
