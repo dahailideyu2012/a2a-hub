@@ -185,3 +185,22 @@ request/response bodies, and arbitrary exception text are never audit fields.
 The logger uses its own namespace and does not configure or attach handlers to
 the root logger. Audit records are telemetry, not task events, and are never
 published to the Hub event bus.
+
+
+## Cancellation polling contract (T32)
+
+A successful authenticated `POST /heartbeat` now includes `cancel_requested`
+(boolean) and `cancel_reason` (currently `task_cancelled_by_caller` or null).
+When the connector reports its `current_task_id`, the Hub checks the durable
+task row and returns a cancellation signal only when all three conditions hold:
+the task is in terminal `canceled` state, it is a pull-mode task, and its
+persisted connector assignment matches the server-configured connector identity.
+A missing task, a task assigned to another connector, or a non-canceled task
+returns false. The request body cannot choose the connector identity.
+
+WorkBuddy should inspect this field on each heartbeat while executing a task,
+stop local execution cooperatively when it becomes true, and submit no further
+progress/result for that canceled task. This is a polling signal, not an
+out-of-band interrupt: detection latency is bounded by the heartbeat interval
+(30 seconds by default). Lease fencing remains the final server-side protection.
+The endpoint remains backward-compatible because the response only adds fields.
