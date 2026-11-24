@@ -458,6 +458,34 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/readyz", tags=["基础"])
+async def readiness() -> Any:
+    """Readiness probe: verify the configured task repository is reachable.
+
+    /health remains a liveness endpoint; this route checks the dependency that
+    must be available before the instance receives task traffic.
+    """
+    try:
+        hub.registry.store.list(limit=1)
+    except Exception:
+        log.exception("Hub readiness storage probe failed")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "checks": {"storage": "unavailable"}},
+        )
+    enabled_agents = sum(1 for record in hub.registry.list_records() if record.spec.enabled)
+    if enabled_agents < 1:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "checks": {"storage": "ok", "agents": "none_enabled"}},
+        )
+    return {
+        "status": "ready",
+        "checks": {"storage": "ok", "agents": "configured"},
+        "agents": enabled_agents,
+    }
+
+
 @app.get("/", include_in_schema=False)
 async def root_redirect() -> Any:
     # 浏览器访问根路径时给个引导页，机器访问走 POST /（JSON-RPC）
