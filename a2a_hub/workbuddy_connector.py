@@ -95,12 +95,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     async def guard(token: str | None, settings: Any) -> None:
         authenticate(token, settings)
-        # Namespace and credential are hashed: raw secrets never reach disk.
+        # Namespace, credential, and connector identity define the bucket.
+        # The numeric budget is policy, not identity: changing it must not reset
+        # an active window. Raw credentials never reach the rate-limit database.
         import hashlib
         bucket = hashlib.sha256(
             ("workbuddy\\0" + settings.workbuddy_connector_token + "\\0"
-             + settings.workbuddy_connector_id + "\\0"
-             + str(settings.workbuddy_connector_rate_limit)).encode("utf-8")
+             + settings.workbuddy_connector_id).encode("utf-8")
         ).hexdigest()
         try:
             allowed = await asyncio.to_thread(
