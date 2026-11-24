@@ -464,3 +464,47 @@ def test_cancellation_checkpoint_tool_is_registered_with_required_task_id():
     tool = next(item for item in server.TOOLS if item["name"] == "workbuddy_check_task_cancellation")
     assert tool["inputSchema"]["required"] == ["task_id"]
     assert "workbuddy_check_task_cancellation" in server.TOOL_FUNCS
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("connector_id", "another-connector"),
+        ("current_task_id", "another-task"),
+    ],
+)
+def test_cancellation_checkpoint_fails_closed_on_mismatched_receipt(
+    monkeypatch, field, wrong_value
+):
+    task_id = "task-receipt-match"
+    with server.LEASES_LOCK:
+        server.LEASES[task_id] = {
+            "lease_token": "private-lease", "lease_version": 10,
+            "lease_expires_at": time.time() + 120,
+        }
+
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append(path)
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        receipt = {
+            "accepted": True,
+            "connector_id": "workbuddy-personal",
+            "current_task_id": task_id,
+            "cancel_requested": True,
+            "cancel_reason": "task_cancelled_by_caller",
+        }
+        receipt[field] = wrong_value
+        return receipt
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool(
+        "workbuddy_check_task_cancellation", {"task_id": task_id}
+    )
+
+    assert result["isError"] is True
+    assert "身份或任务不匹配" in result["content"][0]["text"]
+    assert task_id in server.LEASES
+    assert calls == ["handshake", "heartbeat"]
