@@ -344,4 +344,4 @@ def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_detai
     assert str(bad_path) not in response.text
     assert token not in response.text
     assert "暂不可用" in response.text
-\n
+
