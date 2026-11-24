@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     postgres_pool_max_size: int = Field(default=8, ge=1, le=64, alias="A2A_POSTGRES_POOL_MAX_SIZE")
     postgres_timeout_seconds: float = Field(default=5.0, gt=0, le=60, alias="A2A_POSTGRES_TIMEOUT_SECONDS")
     social_db_path: str = Field(default="./data/social.db", alias="A2A_SOCIAL_DB_PATH")
-    task_timeout: int = Field(default=300, alias="A2A_TASK_TIMEOUT")
+    task_timeout: int = Field(default=300, ge=1, le=86400, alias="A2A_TASK_TIMEOUT")
     log_level: str = Field(default="INFO", alias="A2A_LOG_LEVEL")
     api_token: str = Field(default="", alias="A2A_API_TOKEN")
     require_auth: bool = Field(default=True, alias="A2A_REQUIRE_AUTH")
