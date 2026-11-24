@@ -511,6 +511,23 @@ async def list_agents(refresh: bool = Query(default=False), auth: Member = Depen
     return {"count": len(hub.registry.list_records()), "agents": hub.registry.snapshot()}
 
 
+@app.get("/agents/search", tags=["发现"])
+async def search_agents(
+    q: str = Query(min_length=1, max_length=500),
+    limit: int = Query(default=10, ge=1, le=20),
+    auth: Member = Depends(resolve_member),
+) -> dict[str, Any]:
+    ranked = hub.registry.rank(q.strip(), top_k=limit)
+    return {
+        "query": q.strip(),
+        "count": len(ranked),
+        "agents": [
+            {"score": round(score, 4), "agent": record.snapshot(hub.settings.public_url)}
+            for record, score in ranked
+        ],
+    }
+
+
 @app.get("/agents/{agent_id}/.well-known/agent.json", tags=["发现"])
 @app.get("/agents/{agent_id}/.well-known/agent-card.json", tags=["发现"], include_in_schema=False)
 async def agent_card(agent_id: str) -> dict[str, Any]:
