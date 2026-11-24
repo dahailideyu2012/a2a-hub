@@ -244,3 +244,22 @@ class TestConsole:
     def test_static_assets(self, client):
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/style.css").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_internal_error_does_not_expose_exception_details(dispatcher, monkeypatch):
+    async def explode(params, scoped_agent):
+        raise RuntimeError("postgresql://user:SuperSecretPassword@db.example/prod")
+
+    monkeypatch.setattr(dispatcher, "_m_agents_list", explode)
+    response = await dispatcher.handle({
+        "jsonrpc": "2.0",
+        "id": "redaction-test",
+        "method": "agents/list",
+        "params": {},
+    })
+    error = response["error"]
+    assert error["code"] == -32603
+    assert error["message"] == "Internal server error"
+    assert "SuperSecretPassword" not in str(response)
+    assert "db.example" not in str(response)
