@@ -330,3 +330,37 @@ class TestReadiness:
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["status"] == "ok"
+
+
+class TestAgentSearchFiltering:
+    def test_search_excludes_disabled_and_unavailable_agents(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        registry = server.hub.registry
+        disabled = registry.get("echo-a")
+        unavailable = registry.get("echo-b")
+        monkeypatch.setattr(disabled.spec, "enabled", False)
+        monkeypatch.setitem(unavailable.health, "status", "unavailable")
+
+        http = client.get("/agents/search", params={"q": "代码评审", "limit": 20})
+        assert http.status_code == 200
+        http_ids = {item["agent"]["id"] for item in http.json()["agents"]}
+        assert "echo-a" not in http_ids
+        assert "echo-b" not in http_ids
+
+        rpc = client.post("/", json={
+            "jsonrpc": "2.0",
+            "id": "search-filter",
+            "method": "agents/search",
+            "params": {"query": "代码评审", "limit": 20},
+        })
+        assert rpc.status_code == 200
+        rpc_ids = {item["agent"]["id"] for item in rpc.json()["result"]["agents"]}
+        assert "echo-a" not in rpc_ids
+        assert "echo-b" not in rpc_ids
+
+    def test_search_rejects_empty_and_oversized_queries(self, client):
+        empty = client.get("/agents/search", params={"q": ""})
+        oversized = client.get("/agents/search", params={"q": "x" * 501})
+        assert empty.status_code == 422
+        assert oversized.status_code == 422
