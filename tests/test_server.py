@@ -333,31 +333,42 @@ class TestReadiness:
 
 
 class TestAgentSearchFiltering:
-    def test_search_excludes_disabled_and_unavailable_agents(self, client, monkeypatch):
+    def test_search_excludes_disabled_and_unavailable_agents(self, settings, monkeypatch):
+        # This test targets ranked-search filtering, not the independent startup
+        # health-probe lifecycle. Build the app after replacing the probe with a
+        # no-op so its background task cannot race the explicit health snapshot.
+        from fastapi.testclient import TestClient
         import a2a_hub.server as server
 
+        server.hub = server.Hub()
         registry = server.hub.registry
+
+        async def skip_startup_health_probe(force=False):
+            return {}
+
+        monkeypatch.setattr(registry, "check_health", skip_startup_health_probe)
         disabled = registry.get("echo-a")
         unavailable = registry.get("echo-b")
         monkeypatch.setattr(disabled.spec, "enabled", False)
         monkeypatch.setitem(unavailable.health, "status", "unavailable")
 
-        http = client.get("/agents/search", params={"q": "代码评审", "limit": 20})
-        assert http.status_code == 200
-        http_ids = {item["agent"]["id"] for item in http.json()["agents"]}
-        assert "echo-a" not in http_ids
-        assert "echo-b" not in http_ids
+        with TestClient(server.app) as client:
+            http = client.get("/agents/search", params={"q": "代码评审", "limit": 20})
+            assert http.status_code == 200
+            http_ids = {item["agent"]["id"] for item in http.json()["agents"]}
+            assert "echo-a" not in http_ids
+            assert "echo-b" not in http_ids
 
-        rpc = client.post("/", json={
-            "jsonrpc": "2.0",
-            "id": "search-filter",
-            "method": "agents/search",
-            "params": {"query": "代码评审", "limit": 20},
-        })
-        assert rpc.status_code == 200
-        rpc_ids = {item["agent"]["id"] for item in rpc.json()["result"]["agents"]}
-        assert "echo-a" not in rpc_ids
-        assert "echo-b" not in rpc_ids
+            rpc = client.post("/", json={
+                "jsonrpc": "2.0",
+                "id": "search-filter",
+                "method": "agents/search",
+                "params": {"query": "代码评审", "limit": 20},
+            })
+            assert rpc.status_code == 200
+            rpc_ids = {item["agent"]["id"] for item in rpc.json()["result"]["agents"]}
+            assert "echo-a" not in rpc_ids
+            assert "echo-b" not in rpc_ids
 
     def test_search_rejects_empty_and_oversized_queries(self, client):
         empty = client.get("/agents/search", params={"q": ""})
