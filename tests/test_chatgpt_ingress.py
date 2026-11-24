@@ -451,3 +451,53 @@ def test_chatgpt_ingress_limiter_storage_failure_fails_closed(client, monkeypatc
     assert response.status_code == 503
     assert "限流存储暂不可用" in response.json()["detail"]
     assert "not-a-database-directory" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("GET", f"{BASE}/tasks", {}),
+        ("POST", f"{BASE}/tasks", {"headers": {"Idempotency-Key": "route-guard-0001"}, "json": payload()}),
+        ("GET", f"{BASE}/tasks/task-missing", {}),
+        ("POST", f"{BASE}/tasks/task-missing/cancel", {}),
+        ("GET", f"{BASE}/tasks/task-missing/events", {}),
+    ],
+)
+def test_every_ingress_route_consumes_shared_rate_limit(
+    client, monkeypatch, tmp_path, method, path, kwargs
+):
+    import a2a_hub.server as server
+
+    monkeypatch.setattr(server.hub.settings, "chatgpt_ingress_rate_limit", 1)
+    monkeypatch.setattr(
+        server.hub.settings,
+        "chatgpt_ingress_rate_limit_db_path",
+        str(tmp_path / "all-ingress-routes.db"),
+    )
+    first = client.get(f"{BASE}/tasks", headers={"X-ChatGPT-Ingress-Token": TOKEN})
+    assert first.status_code == 200
+
+    request_kwargs = dict(kwargs)
+    request_headers = dict(request_kwargs.pop("headers", {}))
+    request_headers["X-ChatGPT-Ingress-Token"] = TOKEN
+    response = client.request(method, path, headers=request_headers, **request_kwargs)
+    assert response.status_code == 429
+
+
+def test_changing_ingress_budget_does_not_reset_current_window(client, monkeypatch, tmp_path):
+    import a2a_hub.server as server
+
+    monkeypatch.setattr(server.hub.settings, "chatgpt_ingress_rate_limit", 2)
+    monkeypatch.setattr(
+        server.hub.settings,
+        "chatgpt_ingress_rate_limit_db_path",
+        str(tmp_path / "stable-ingress-bucket.db"),
+    )
+    first = client.get(f"{BASE}/tasks", headers={"X-ChatGPT-Ingress-Token": TOKEN})
+    assert first.status_code == 200
+
+    # Tightening the configured budget during an active window must use the
+    # same token bucket rather than creating a new, empty bucket.
+    monkeypatch.setattr(server.hub.settings, "chatgpt_ingress_rate_limit", 1)
+    second = client.get(f"{BASE}/tasks", headers={"X-ChatGPT-Ingress-Token": TOKEN})
+    assert second.status_code == 429
