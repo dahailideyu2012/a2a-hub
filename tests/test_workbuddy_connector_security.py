@@ -14,6 +14,7 @@ def _configure_connector(monkeypatch, tmp_path, *, suffix: str, limit: int):
     monkeypatch.setattr(settings, "workbuddy_connector_id", f"workbuddy-{suffix}")
     monkeypatch.setattr(settings, "workbuddy_connector_allowed_agents", "echo-a")
     monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", limit)
+    monkeypatch.setattr(settings, "workbuddy_rate_limit_db_path", str(tmp_path / f"{suffix}-rate.db"))
     store = SqliteTaskStore(str(tmp_path / f"{suffix}.db"))
     monkeypatch.setattr(server.hub.registry, "store", store)
     return settings, store, token
@@ -48,9 +49,12 @@ def test_connector_rate_limit_runs_before_task_store_claim(client, monkeypatch, 
     third = client.post(url, headers=headers, json={})
     assert third.status_code == 200
     assert calls == 2
-    monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", 1)
     fourth = client.post(url, headers=headers, json={})
     assert fourth.status_code == 429
+    assert calls == 2
+    monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", 1)
+    fifth = client.post(url, headers=headers, json={})
+    assert fifth.status_code == 429
     assert calls == 2
     store.close()
 
@@ -259,3 +263,81 @@ def test_every_workbuddy_connector_endpoint_enforces_rate_limit(
         )
     finally:
         store.close()
+
+def test_connector_rate_limit_identity_rotates_with_token_and_connector_id(
+    client, monkeypatch, tmp_path
+):
+    settings, store, token = _configure_connector(
+        monkeypatch, tmp_path, suffix="identity-rotation", limit=1
+    )
+    url = "/integrations/workbuddy/v1/claim"
+    old_headers = {"X-WorkBuddy-Connector-Token": token}
+    assert client.post(url, headers=old_headers, json={}).status_code == 200
+
+    rotated_token = token + "-rotated"
+    monkeypatch.setattr(settings, "workbuddy_connector_token", rotated_token)
+    assert client.post(url, headers=old_headers, json={}).status_code == 403
+    new_headers = {"X-WorkBuddy-Connector-Token": rotated_token}
+    assert client.post(url, headers=new_headers, json={}).status_code == 200
+
+    monkeypatch.setattr(settings, "workbuddy_connector_id", "workbuddy-identity-rotated")
+    assert client.post(url, headers=new_headers, json={}).status_code == 200
+    store.close()
+
+
+def test_connector_rate_limit_budget_survives_router_recreation(
+    client, monkeypatch, tmp_path
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import a2a_hub.server as server
+    from a2a_hub.workbuddy_connector import build_workbuddy_connector_router
+
+    settings = server.hub.settings
+    token = "test-workbuddy-router-restart-0123456789"
+    monkeypatch.setattr(settings, "workbuddy_connector_token", token)
+    monkeypatch.setattr(settings, "workbuddy_connector_id", "workbuddy-router-restart")
+    monkeypatch.setattr(settings, "workbuddy_connector_allowed_agents", "echo-a")
+    monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", 1)
+    monkeypatch.setattr(
+        settings, "workbuddy_rate_limit_db_path", str(tmp_path / "router-restart-rate.db")
+    )
+    headers = {"X-WorkBuddy-Connector-Token": token}
+    url = "/integrations/workbuddy/v1/claim"
+
+    first = client.post(url, headers=headers, json={})
+    assert first.status_code == 200
+
+    # A fresh router has an empty in-process cache but must see the same durable budget.
+    app = FastAPI()
+    app.include_router(build_workbuddy_connector_router(lambda: server.hub))
+    with TestClient(app) as restarted_client:
+        second = restarted_client.post(url, headers=headers, json={})
+    assert second.status_code == 429
+
+
+def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_details(
+    client, monkeypatch, tmp_path
+):
+    import a2a_hub.server as server
+
+    settings = server.hub.settings
+    token = "test-workbuddy-storage-failure-0123456789"
+    bad_path = tmp_path / "rate-limit-is-a-directory"
+    bad_path.mkdir()
+    monkeypatch.setattr(settings, "workbuddy_connector_token", token)
+    monkeypatch.setattr(settings, "workbuddy_connector_id", "workbuddy-storage-failure")
+    monkeypatch.setattr(settings, "workbuddy_connector_allowed_agents", "echo-a")
+    monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", 5)
+    monkeypatch.setattr(settings, "workbuddy_rate_limit_db_path", str(bad_path))
+
+    response = client.post(
+        "/integrations/workbuddy/v1/claim",
+        headers={"X-WorkBuddy-Connector-Token": token},
+        json={},
+    )
+    assert response.status_code == 503
+    assert str(bad_path) not in response.text
+    assert token not in response.text
+    assert "暂不可用" in response.text
+\n
