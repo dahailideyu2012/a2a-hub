@@ -1043,6 +1043,10 @@ Content-Type: application/json
 
 如需将该 REST ingress 配置为可选的 ChatGPT GPT Action，见 [ChatGPT Actions 接入说明](docs/chatgpt-actions-setup.md) 与 [OpenAPI schema](docs/chatgpt-actions-openapi.json)。该 schema 只是 REST Action 契约，不是 Remote MCP；使用前必须替换 HTTPS server URL 并完成独立部署/安全审查。
 
+## V1 hardening batch (T34–T40)
+
+Shared ChatGPT ingress rate limiting, agent search, safe JSON-RPC error boundaries, timeout validation, readiness probes, and deployment constraints are documented in [the T34–T40 hardening guide](docs/v1-hardening-batch-t34-t40.md).
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：
