@@ -506,7 +506,14 @@ def bootstrap(settings: Optional[Settings] = None) -> AgentRegistry:
 
     s = settings or Settings()
     cfg = HubConfig.load(s.agents_path())
-    store = build_store(s.store, s.db_path)
+    store = build_store(
+        s.store,
+        s.db_path,
+        postgres_dsn=s.postgres_dsn,
+        postgres_pool_min_size=s.postgres_pool_min_size,
+        postgres_pool_max_size=s.postgres_pool_max_size,
+        postgres_timeout_seconds=s.postgres_timeout_seconds,
+    )
     bus = EventBus()
     _registry = AgentRegistry(s, cfg, store, bus)
     return _registry

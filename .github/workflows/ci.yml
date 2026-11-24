@@ -48,3 +48,40 @@ jobs:
 
       - name: Run isolated Docker Compose runtime acceptance
         run: python scripts/compose_runtime_acceptance.py --project a2a-hub-t7-ci
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: a2a_hub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d a2a_hub_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      A2A_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/a2a_hub_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project and PostgreSQL test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,postgres]"
+      - name: Byte-compile all sources
+        run: python -m compileall -q a2a_hub tests run.py
+      - name: Build wheel and verify packaged migration
+        run: |
+          pip wheel . --no-deps --wheel-dir dist
+          python -c "import glob,zipfile; p=glob.glob('dist/*.whl')[0]; z=zipfile.ZipFile(p); assert 'a2a_hub/migrations/postgres/001_initial.sql' in z.namelist()"
+      - name: Run complete test suite against PostgreSQL 16
+        run: pytest -q
