@@ -29,13 +29,15 @@ def _claim_in_independent_process(dsn: str, connector_id: str) -> str | None:
         store.close()
 
 
-def _claim_one_task_after_barrier(dsn: str, connector_id: str, barrier) -> str | None:
-    """Synchronize independent processes before competing for the same task."""
+def _claim_one_task_process(dsn: str, connector_id: str, barrier, result_queue) -> None:
+    """Spawn-safe worker: synchronization objects are inherited at process start."""
     store = PostgresTaskStore(dsn, migrate=False)
     try:
         barrier.wait(timeout=30)
         claim = store.claim_next(connector_id, 60, ["echo-a"])
-        return claim["task"].id if claim else None
+        result_queue.put(claim["task"].id if claim else None)
+    except BaseException as exc:
+        result_queue.put({"worker_error": type(exc).__name__, "message": str(exc)})
     finally:
         store.close()
 
@@ -309,9 +311,8 @@ def test_postgres_is_pull_task_cancelled_is_connector_scoped():
 
 
 def test_postgres_independent_processes_competing_for_one_task_have_one_winner():
-    """Regression guard: concurrent workers must never claim the same queued task."""
+    """Regression guard: six spawned processes compete for one queued task."""
     import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor
 
     worker_count = 6
     setup = PostgresTaskStore(DSN)
@@ -321,22 +322,32 @@ def test_postgres_independent_processes_competing_for_one_task_have_one_winner()
 
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(worker_count)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_claim_one_task_process,
+            args=(DSN, f"single-task-worker-{index}", barrier, result_queue),
+        )
+        for index in range(worker_count)
+    ]
     try:
-        with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:
-            futures = [
-                executor.submit(
-                    _claim_one_task_after_barrier,
-                    DSN,
-                    f"single-task-worker-{index}",
-                    barrier,
-                )
-                for index in range(worker_count)
-            ]
-            claimed_ids = [future.result(timeout=60) for future in futures]
-
-        winners = [claimed_id for claimed_id in claimed_ids if claimed_id is not None]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=60)
+        assert all(not process.is_alive() for process in processes), "worker process timed out"
+        assert all(process.exitcode == 0 for process in processes)
+        results = [result_queue.get(timeout=10) for _ in processes]
+        errors = [result for result in results if isinstance(result, dict)]
+        assert not errors, f"worker process errors: {errors}"
+        winners = [claimed_id for claimed_id in results if claimed_id is not None]
         assert winners == [task.id]
     finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        result_queue.close()
         cleanup = PostgresTaskStore(DSN)
         try:
             cleanup.delete(task.id)
