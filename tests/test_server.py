@@ -340,6 +340,14 @@ class TestAgentSearchFiltering:
         disabled = registry.get("echo-a")
         unavailable = registry.get("echo-b")
         monkeypatch.setattr(disabled.spec, "enabled", False)
+
+        # The application starts an asynchronous health probe during lifespan.
+        # Make its result deterministic as well as setting the current snapshot,
+        # otherwise a slow CI runner can overwrite this mutation mid-test.
+        async def report_unavailable():
+            return {"status": "unavailable", "detail": "test fixture"}
+
+        monkeypatch.setattr(unavailable.adapter, "health", report_unavailable)
         monkeypatch.setitem(unavailable.health, "status", "unavailable")
 
         http = client.get("/agents/search", params={"q": "代码评审", "limit": 20})
