@@ -263,3 +263,27 @@ async def test_jsonrpc_internal_error_does_not_expose_exception_details(dispatch
     assert error["message"] == "Internal server error"
     assert "SuperSecretPassword" not in str(response)
     assert "db.example" not in str(response)
+
+
+class TestAgentSearch:
+    def test_http_search_ranks_matching_agent(self, client):
+        response = client.get("/agents/search", params={"q": "代码评审", "limit": 5})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["query"] == "代码评审"
+        assert body["agents"]
+        assert body["agents"][0]["agent"]["id"] == "echo-a"
+
+    def test_http_search_rejects_invalid_limit(self, client):
+        assert client.get("/agents/search", params={"q": "writing", "limit": 0}).status_code == 422
+
+    def test_rpc_search_uses_same_ranked_registry(self, client):
+        response = client.post("/", json={
+            "jsonrpc": "2.0",
+            "id": "agent-search",
+            "method": "agents/search",
+            "params": {"query": "代码评审", "limit": 5},
+        })
+        assert response.status_code == 200
+        body = response.json()["result"]
+        assert body["agents"][0]["agent"]["id"] == "echo-a"
