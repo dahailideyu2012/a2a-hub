@@ -379,8 +379,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if decayed:
             log.info("信任衰减：%d 条长期未互动的边降级了执行类权限", len(decayed))
 
-    # 启动时做一次非阻塞健康探测，让控制台一打开就有状态
-    asyncio.create_task(hub.registry.check_health(force=True))
+    # 启动时做一次非阻塞健康探测，让控制台一打开就有状态。
+    # 保留 task 句柄，确保应用关闭时不会遗留访问 registry 的后台任务。
+    health_probe_task = asyncio.create_task(hub.registry.check_health(force=True))
+    app.state.startup_health_probe_task = health_probe_task
     # Durable GitHub callback outbox: only enabled with explicit outbound credentials.
     outbox_stop = asyncio.Event()
     outbox_task = None
@@ -405,6 +407,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if outbox_task is not None:
         outbox_stop.set()
         await outbox_task
+    # Cancel and await the non-blocking startup probe before closing registry
+    # resources. gather(return_exceptions=True) also consumes any task exception.
+    if health_probe_task is not None:
+        if not health_probe_task.done():
+            health_probe_task.cancel()
+        probe_results = await asyncio.gather(health_probe_task, return_exceptions=True)
+        for result in probe_results:
+            if isinstance(result, Exception):
+                log.warning(
+                    "启动健康探测未正常完成：%s",
+                    type(result).__name__,
+                )
+        app.state.startup_health_probe_task = None
     await hub.cruise.stop()
     await hub.social.aclose()
     await hub.registry.aclose()
