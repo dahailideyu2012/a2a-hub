@@ -34,9 +34,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
+postgres = ["psycopg[binary]>=3.2,<4", "psycopg-pool>=3.2,<4"]
 
 [project.scripts]
 a2a-hub = "a2a_hub.cli:main"
+
+[tool.setuptools.package-data]
+a2a_hub = ["migrations/postgres/*.sql"]
 
 [tool.setuptools.packages.find]
 include = ["a2a_hub*"]
