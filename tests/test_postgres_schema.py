@@ -9,6 +9,7 @@ from pathlib import Path
 
 SCHEMA = (
     Path(__file__).resolve().parents[1]
+    / "a2a_hub"
     / "migrations"
     / "postgres"
     / "001_initial.sql"
