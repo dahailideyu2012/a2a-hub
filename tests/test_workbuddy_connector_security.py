@@ -327,6 +327,13 @@ def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_detai
 
     settings = server.hub.settings
     token = "test-workbuddy-storage-failure-0123456789"
+    claim_calls = []
+
+    def forbidden_claim(*args, **kwargs):
+        claim_calls.append((args, kwargs))
+        raise AssertionError("task store must not be called when rate-limit storage fails")
+
+    monkeypatch.setattr(server.hub.registry.store, "claim_next", forbidden_claim)
     bad_path = tmp_path / "rate-limit-is-a-directory"
     bad_path.mkdir()
     monkeypatch.setattr(settings, "workbuddy_connector_token", token)
@@ -344,4 +351,5 @@ def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_detai
     assert str(bad_path) not in response.text
     assert token not in response.text
     assert "暂不可用" in response.text
+    assert claim_calls == []
 
