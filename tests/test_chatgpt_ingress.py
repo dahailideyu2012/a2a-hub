@@ -432,3 +432,22 @@ def test_chatgpt_ingress_budget_is_shared_between_independent_routers(client, mo
         second = second_client.get(f"{BASE}/tasks", headers=token_headers)
 
     assert second.status_code == 429
+
+
+def test_chatgpt_ingress_limiter_storage_failure_fails_closed(client, monkeypatch, tmp_path):
+    import a2a_hub.server as server
+
+    broken_path = tmp_path / "not-a-database-directory"
+    broken_path.mkdir()
+    monkeypatch.setattr(
+        server.hub.settings,
+        "chatgpt_ingress_rate_limit_db_path",
+        str(broken_path),
+    )
+    response = client.get(
+        f"{BASE}/tasks",
+        headers={"X-ChatGPT-Ingress-Token": TOKEN},
+    )
+    assert response.status_code == 503
+    assert "限流存储暂不可用" in response.json()["detail"]
+    assert "not-a-database-directory" not in response.text
