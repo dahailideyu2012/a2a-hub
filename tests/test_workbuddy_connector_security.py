@@ -1,6 +1,8 @@
 """WorkBuddy connector security controls (T31)."""
 from __future__ import annotations
 
+import pytest
+
 
 def _configure_connector(monkeypatch, tmp_path, *, suffix: str, limit: int):
     import a2a_hub.server as server
@@ -185,3 +187,75 @@ def test_connector_audit_records_auth_and_rate_limit_outcomes(
     assert records[1]["token_fp"] == hashlib.sha256(wrong.encode()).hexdigest()[:8]
     assert all("\n" not in record.message for record in caplog.records if record.name == "a2a_hub.audit.workbuddy")
     store.close()
+
+
+
+@pytest.mark.parametrize(
+    ("suffix", "method", "path", "payload", "expected_first"),
+    [
+        ("claim", "POST", "/integrations/workbuddy/v1/claim", {}, 200),
+        ("start", "POST", "/integrations/workbuddy/v1/tasks/missing-start/start",
+         {"lease_token": "private-lease-token-0123456789", "lease_version": 1}, 409),
+        ("renew", "POST", "/integrations/workbuddy/v1/tasks/missing-renew/renew",
+         {"lease_token": "private-lease-token-0123456789", "lease_version": 1}, 409),
+        ("progress", "POST", "/integrations/workbuddy/v1/tasks/missing-progress/progress",
+         {"lease_token": "private-lease-token-0123456789", "lease_version": 1,
+          "sequence": 1, "message": "test progress"}, 409),
+        ("result", "POST", "/integrations/workbuddy/v1/tasks/missing-result/result",
+         {"lease_token": "private-lease-token-0123456789", "lease_version": 1,
+          "result_key": "result-key-0001", "state": "completed", "output": "test"}, 409),
+        ("callback-status", "GET", "/integrations/workbuddy/v1/callbacks/missing-callback",
+         None, 404),
+        ("callback-retry", "POST", "/integrations/workbuddy/v1/callbacks/missing-callback/retry",
+         None, 409),
+        ("handshake", "POST", "/integrations/workbuddy/v1/handshake",
+         {"connector_id": "placeholder", "protocol_version": "1.0",
+          "client_version": "test-client", "capabilities": []}, 200),
+        ("heartbeat", "POST", "/integrations/workbuddy/v1/heartbeat",
+         {"connector_id": "placeholder", "heartbeat_id": "heartbeat-guard-0001",
+          "status": "idle", "current_task_id": None}, 200),
+        ("presence", "GET", "/integrations/workbuddy/v1/presence", None, 200),
+    ],
+)
+def test_every_workbuddy_connector_endpoint_enforces_rate_limit(
+    client, monkeypatch, tmp_path, suffix, method, path, payload, expected_first
+):
+    settings, store, token = _configure_connector(
+        monkeypatch, tmp_path, suffix=f"endpoint-{suffix}", limit=1
+    )
+    monkeypatch.setattr(
+        settings, "workbuddy_presence_db_path", str(tmp_path / f"{suffix}-presence.db")
+    )
+    monkeypatch.setattr(
+        settings, "github_callback_outbox_db_path", str(tmp_path / f"{suffix}-outbox.db")
+    )
+    if payload is not None and "connector_id" in payload:
+        payload = {**payload, "connector_id": settings.workbuddy_connector_id}
+
+    if suffix == "heartbeat":
+        from a2a_hub.workbuddy_presence import WorkBuddyPresenceStore
+
+        WorkBuddyPresenceStore(
+            settings.workbuddy_presence_db_path,
+            ttl_seconds=settings.workbuddy_presence_ttl_seconds,
+        ).record_handshake(
+            settings.workbuddy_connector_id, "1.0", "test-client", []
+        )
+
+    headers = {"X-WorkBuddy-Connector-Token": token}
+
+    def send():
+        if payload is None:
+            return client.request(method, path, headers=headers)
+        return client.request(method, path, headers=headers, json=payload)
+
+    try:
+        first = send()
+        second = send()
+        assert first.status_code == expected_first
+        assert second.status_code == 429, (
+            f"{method} {path} did not enforce the shared connector rate limit; "
+            f"first={first.status_code}, second={second.status_code}"
+        )
+    finally:
+        store.close()
