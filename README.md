@@ -1039,7 +1039,7 @@ Content-Type: application/json
 
 幂等键在 24 小时内有效；相同键与相同请求重放返回原任务，不同请求复用同一键返回 409。任务列表/详情/SSE 仅允许读取该 ingress ledger 登记的任务。SSE 提供当前任务快照与连接期间的事件；断线恢复后可先 GET 任务状态，再重新订阅，当前版本不承诺历史事件重放。
 
-安全边界：仅允许提交任务，以及取消该入口拥有且当前存储支持的 Pull 任务；不允许调用 social、collab、任意 JSON-RPC method 或未列入白名单的 agent。Pull 任务取消当前要求 SQLite task store。Rate limiter 为单进程滑动窗口；多 worker/多实例部署前需替换为共享限流后端。请在 TLS 反向代理后使用，不要把令牌放进 URL 或日志。
+安全边界：仅允许提交任务，以及取消该入口拥有且当前存储支持的 Pull 任务；不允许调用 social、collab、任意 JSON-RPC method 或未列入白名单的 agent。Pull 任务取消当前要求 SQLite task store。Rate limiter 使用 SQLite `BEGIN IMMEDIATE` 原子共享预算；同一 Hub 主机上的多 worker 必须指向同一 `A2A_CHATGPT_INGRESS_RATE_LIMIT_DB_PATH` 文件。跨主机部署仍需外部共享数据库，不能将各主机本地文件误认为全局限流。请在 TLS 反向代理后使用，不要把令牌放进 URL 或日志。
 
 如需将该 REST ingress 配置为可选的 ChatGPT GPT Action，见 [ChatGPT Actions 接入说明](docs/chatgpt-actions-setup.md) 与 [OpenAPI schema](docs/chatgpt-actions-openapi.json)。该 schema 只是 REST Action 契约，不是 Remote MCP；使用前必须替换 HTTPS server URL 并完成独立部署/安全审查。
 
