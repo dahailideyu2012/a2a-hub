@@ -407,13 +407,14 @@ def test_unsigned_request_cannot_supply_github_callback_context(client, tmp_path
     assert response.status_code == 403
 
 
-def test_chatgpt_ingress_budget_is_shared_between_independent_routers(client, settings, monkeypatch, tmp_path):
+def test_chatgpt_ingress_budget_is_shared_between_independent_routers(client, monkeypatch, tmp_path):
     """Separate ASGI apps (representing workers) must consume one shared budget."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     import a2a_hub.server as server
     from a2a_hub.chatgpt_ingress import build_chatgpt_ingress_router
 
+    settings = server.hub.settings
     monkeypatch.setattr(settings, "chatgpt_ingress_rate_limit", 1)
     monkeypatch.setattr(
         settings,
