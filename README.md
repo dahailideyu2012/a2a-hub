@@ -1053,6 +1053,8 @@ Readiness closure, ranked-search filtering, complete ingress route rate-limit co
 
 WorkBuddy connector rate-limit identity, credential/connector rotation, durable budget recovery, and fail-closed storage behavior are covered by [the T46–T50 guide](docs/workbuddy-rate-limit-hardening-t46-t50.md).
 
+Startup health-probe task ownership, non-blocking behavior, and shutdown cancellation are covered by [the T51–T55 lifecycle guide](docs/startup-health-probe-lifecycle-t51-t55.md).
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：
