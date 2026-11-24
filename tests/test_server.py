@@ -308,3 +308,25 @@ class TestReadiness:
         assert response.json()["status"] == "not_ready"
         assert "SensitivePassword" not in response.text
         assert "db.internal" not in response.text
+
+
+    def test_readyz_fails_when_all_agents_are_disabled_but_liveness_stays_healthy(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        records = server.hub.registry.list_records()
+        assert records
+        for record in records:
+            monkeypatch.setattr(record.spec, "enabled", False)
+
+        readiness = client.get("/readyz")
+        assert readiness.status_code == 503
+        assert readiness.json() == {
+            "status": "not_ready",
+            "checks": {"storage": "ok", "agents": "none_enabled"},
+        }
+
+        # Liveness answers whether the process is alive, not whether it can
+        # currently receive task traffic.
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "ok"
