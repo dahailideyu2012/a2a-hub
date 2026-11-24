@@ -85,6 +85,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         hint="派活前先确认「谁在线、会什么」，别凭印象点人。",
     ),
     Capability(
+        id="agent-search",
+        summary="按自然语言能力描述搜索并排序可用 agent",
+        rpc="agents/search",
+        http="GET /agents/search?q=<query>&limit=<1-20>",
+        hint="先按任务需求搜索候选 agent，再查看 Agent Card 确认能力。",
+    ),
+    Capability(
         id="ask",
         summary="派一个任务给某个 agent（不指定则按能力自动路由）",
         cli='ask "<任务>" [--agent <id>] [--as <成员>]',
