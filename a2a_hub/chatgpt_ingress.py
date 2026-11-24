@@ -336,8 +336,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     @router.get("/tasks")
     async def list_tasks(limit: int = Query(default=20, ge=1, le=100), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
-        hub, settings, ledger, limiter = runtime()
-        await guard(ingress_token, settings, limiter)
+        hub, settings, ledger, rate_store = runtime()
+        await guard(ingress_token, settings, rate_store)
         await reconcile_pending(hub, ledger, limit)
         tasks = []
         for task_id in await ledger.task_ids(limit):
@@ -347,8 +347,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     @router.get("/tasks/{task_id}")
     async def get_task(task_id: str, ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
-        hub, settings, ledger, limiter = runtime()
-        await guard(ingress_token, settings, limiter)
+        hub, settings, ledger, rate_store = runtime()
+        await guard(ingress_token, settings, rate_store)
         if not await ledger.owns_task(task_id): raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
         task = hub.registry.store.get(task_id)
         if task is None: raise HTTPException(status_code=404, detail="任务不存在或已过期")
@@ -356,8 +356,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     @router.post("/tasks/{task_id}/cancel")
     async def cancel_task(task_id: str, ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
-        hub, settings, ledger, limiter = runtime()
-        await guard(ingress_token, settings, limiter)
+        hub, settings, ledger, rate_store = runtime()
+        await guard(ingress_token, settings, rate_store)
         if not await ledger.owns_task(task_id):
             raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
         from .ports import PullTaskRepository
@@ -375,8 +375,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     @router.get("/tasks/{task_id}/events")
     async def task_events(request: Request, task_id: str, ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> StreamingResponse:
-        hub, settings, ledger, limiter = runtime()
-        await guard(ingress_token, settings, limiter)
+        hub, settings, ledger, rate_store = runtime()
+        await guard(ingress_token, settings, rate_store)
         if not await ledger.owns_task(task_id): raise HTTPException(status_code=404, detail="未找到该 ingress 任务")
         task = hub.registry.store.get(task_id)
         if task is None: raise HTTPException(status_code=404, detail="任务不存在或已过期")
