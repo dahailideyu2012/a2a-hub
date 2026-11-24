@@ -332,6 +332,36 @@ class TestReadiness:
         assert health.json()["status"] == "ok"
 
 
+def test_startup_health_probe_is_nonblocking_and_cancelled_on_shutdown(settings, monkeypatch):
+    import threading
+
+    from fastapi.testclient import TestClient
+    import a2a_hub.server as server
+
+    server.hub = server.Hub()
+    started = threading.Event()
+    adapter = server.hub.registry.get("echo-a").adapter
+
+    async def blocked_health():
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(adapter, "health", blocked_health)
+
+    with TestClient(server.app) as client:
+        # Startup must finish without waiting for a slow adapter health probe.
+        assert client.get("/health").status_code == 200
+        assert started.wait(timeout=3)
+        task = server.app.state.startup_health_probe_task
+        assert task is not None
+        assert not task.done()
+
+    # Lifespan shutdown must cancel and await the probe before closing resources.
+    assert task.done()
+    assert task.cancelled()
+    assert server.app.state.startup_health_probe_task is None
+
+
 class TestAgentSearchFiltering:
     def test_search_excludes_disabled_and_unavailable_agents(self, settings, monkeypatch):
         # This test targets ranked-search filtering, not the independent startup
