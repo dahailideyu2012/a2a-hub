@@ -1,8 +1,8 @@
-# PostgreSQL Task Store V1 — Schema Slice
+# PostgreSQL Task Store V1 — Runtime Adapter
 
-Status: **schema groundwork only; not a usable runtime backend**.
+Status: **implementation candidate on `feat/t33b-postgres-task-store-v1`; awaiting fixed-SHA independent acceptance and PostgreSQL 16 CI**.
 
-This slice adds `migrations/postgres/001_initial.sql` and static guardrail tests. It does not add a driver, connection pool, repository adapter, migration runner, PostgreSQL configuration, or production support. `A2A_STORE=postgres` must continue to fail closed.
+This implementation adds a synchronous psycopg 3 repository, bounded connection pool, packaged transactional migration, explicit `A2A_STORE=postgres` selection, and PostgreSQL 16 CI coverage. It is not approved for production deployment until independent fixed-SHA acceptance passes.
 
 ## Schema contract
 
@@ -47,4 +47,4 @@ Task creation and idempotency binding must occur in the **same PostgreSQL transa
 
 ## Current status
 
-The existing memory and SQLite backends remain the only runtime backends. This schema-only commit is not evidence of PostgreSQL syntax execution or multi-instance correctness; WorkBuddy must report that limitation explicitly.
+Memory and SQLite remain unchanged defaults. PostgreSQL is opt-in and fails closed when DSN, driver, connection, or schema validation fails. No production migration or deployment is authorized by this implementation.
