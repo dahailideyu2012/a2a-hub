@@ -43,8 +43,8 @@ def test_connector_rate_limit_runs_before_task_store_claim(client, monkeypatch, 
     assert second.status_code == 429
     assert calls == 1
 
-    # A changed limit creates a distinct bucket; restoring the old configuration
-    # returns to its still-full bucket rather than silently resetting it.
+    # Changing the numeric policy reuses the same bucket: increasing the limit
+    # grants only the additional capacity, and lowering it applies immediately.
     monkeypatch.setattr(settings, "workbuddy_connector_rate_limit", 2)
     third = client.post(url, headers=headers, json={})
     assert third.status_code == 200
