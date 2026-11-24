@@ -100,3 +100,8 @@ def test_sqlite_persists_across_instances(tmp_path):
     s2 = SqliteTaskStore(str(path))
     assert s2.get(t.id).final_text() == "持久化"
     s2.close()
+
+ 
+def test_build_store_postgres_requires_explicit_dsn_without_fallback():
+    with pytest.raises(ValueError, match="PostgreSQL DSN must not be empty"):
+        build_store("postgres", "")
