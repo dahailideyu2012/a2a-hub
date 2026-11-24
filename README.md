@@ -1047,6 +1047,10 @@ Content-Type: application/json
 
 Shared ChatGPT ingress rate limiting, agent search, safe JSON-RPC error boundaries, timeout validation, readiness probes, and deployment constraints are documented in [the T34–T40 hardening guide](docs/v1-hardening-batch-t34-t40.md).
 
+## V1 hardening batch (T41–T45)
+
+Readiness closure, ranked-search filtering, complete ingress route rate-limit coverage, and stable rate-limit identity are documented in [the T41–T45 guide](docs/v1-hardening-batch-t41-t45.md).
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：
