@@ -333,6 +333,7 @@ class TestReadiness:
 
 
 def test_startup_health_probe_is_nonblocking_and_cancelled_on_shutdown(settings, monkeypatch):
+    import asyncio
     import threading
 
     from fastapi.testclient import TestClient
