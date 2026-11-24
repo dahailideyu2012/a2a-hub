@@ -291,6 +291,7 @@ def test_connector_rate_limit_budget_survives_router_recreation(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     import a2a_hub.server as server
+    from a2a_hub.store import SqliteTaskStore
     from a2a_hub.workbuddy_connector import build_workbuddy_connector_router
 
     settings = server.hub.settings
@@ -302,6 +303,8 @@ def test_connector_rate_limit_budget_survives_router_recreation(
     monkeypatch.setattr(
         settings, "workbuddy_rate_limit_db_path", str(tmp_path / "router-restart-rate.db")
     )
+    task_store = SqliteTaskStore(str(tmp_path / "router-restart-tasks.db"))
+    monkeypatch.setattr(server.hub.registry, "store", task_store)
     headers = {"X-WorkBuddy-Connector-Token": token}
     url = "/integrations/workbuddy/v1/claim"
 
@@ -314,6 +317,7 @@ def test_connector_rate_limit_budget_survives_router_recreation(
     with TestClient(app) as restarted_client:
         second = restarted_client.post(url, headers=headers, json={})
     assert second.status_code == 429
+    task_store.close()
 
 
 def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_details(
