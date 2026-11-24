@@ -61,7 +61,7 @@ class PostgresTaskStore:
                 if migrate:
                     from psycopg.pq import TransactionStatus
 
-                    sql_path = Path(__file__).resolve().parent.parent / "migrations" / "postgres" / "001_initial.sql"
+                    sql_path = Path(__file__).resolve().parent / "migrations" / "postgres" / "001_initial.sql"
                     # The migration owns its explicit BEGIN/COMMIT boundaries.
                     # Run it in autocommit mode so psycopg does not implicitly
                     # open an outer transaction before the script's BEGIN.
