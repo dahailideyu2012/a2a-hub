@@ -1013,7 +1013,7 @@ Hub 提供独立 REST 入口 `/integrations/chatgpt/v1`，与现有 A2A Bearer T
 - `A2A_CHATGPT_INGRESS_ALLOWED_AGENTS`：逗号分隔的 agent ID 白名单；为空时拒绝提交。
 - `A2A_CHATGPT_INGRESS_ACTOR`：由服务端指定的 Hub 成员身份，绝不接受客户端自报。
 - `A2A_CHATGPT_INGRESS_DB_PATH`：幂等记录 SQLite 文件，默认 `./data/chatgpt_ingress.db`。
-- `A2A_CHATGPT_INGRESS_RATE_LIMIT`：每个 ingress token 每分钟请求数，默认 30。
+- `A2A_CHATGPT_INGRESS_RATE_LIMIT`：每个 ingress token 每分钟请求数，默认 30；通过 `A2A_CHATGPT_INGRESS_RATE_LIMIT_DB_PATH` 指向共享 SQLite 限流数据库，多 worker 必须挂载同一持久化文件。
 - `A2A_CHATGPT_INGRESS_MAX_BODY_BYTES`：请求体上限，默认 16 KiB。
 
 仅开放以下操作：
