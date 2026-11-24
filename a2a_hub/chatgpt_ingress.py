@@ -173,9 +173,9 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
     async def guard(token: str | None, settings: Any, rate_store: SQLiteRateLimitStore) -> None:
         identity = authenticate(token, settings)
         # Separate namespace and include policy; persist only a digest, never a raw token.
-        bucket = hashlib.sha256(
-            ("chatgpt-ingress\\0" + identity + "\\0" + str(settings.chatgpt_ingress_rate_limit)).encode("utf-8")
-        ).hexdigest()
+        # Keep the bucket stable when an operator changes the budget. A policy
+        # update must not create a fresh empty bucket and reset an active window.
+        bucket = hashlib.sha256(("chatgpt-ingress:" + identity).encode("utf-8")).hexdigest()
         try:
             allowed = await asyncio.to_thread(
                 rate_store.allow, bucket, settings.chatgpt_ingress_rate_limit, 60
