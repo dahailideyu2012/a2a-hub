@@ -333,7 +333,11 @@ def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_detai
         claim_calls.append((args, kwargs))
         raise AssertionError("task store must not be called when rate-limit storage fails")
 
-    monkeypatch.setattr(server.hub.registry.store, "claim_next", forbidden_claim)
+    from a2a_hub.store import SqliteTaskStore
+
+    task_store = SqliteTaskStore(str(tmp_path / "storage-failure-tasks.db"))
+    monkeypatch.setattr(server.hub.registry, "store", task_store)
+    monkeypatch.setattr(task_store, "claim_next", forbidden_claim)
     bad_path = tmp_path / "rate-limit-is-a-directory"
     bad_path.mkdir()
     monkeypatch.setattr(settings, "workbuddy_connector_token", token)
@@ -352,4 +356,5 @@ def test_connector_rate_limit_storage_failure_fails_closed_without_leaking_detai
     assert token not in response.text
     assert "暂不可用" in response.text
     assert claim_calls == []
+    task_store.close()
 
