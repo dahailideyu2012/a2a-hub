@@ -1051,6 +1051,8 @@ Shared ChatGPT ingress rate limiting, agent search, safe JSON-RPC error boundari
 
 Readiness closure, ranked-search filtering, complete ingress route rate-limit coverage, and stable rate-limit identity are documented in [the T41–T45 guide](docs/v1-hardening-batch-t41-t45.md).
 
+WorkBuddy connector rate-limit identity, credential/connector rotation, durable budget recovery, and fail-closed storage behavior are covered by [the T46–T50 guide](docs/workbuddy-rate-limit-hardening-t46-t50.md).
+
 ## 与 MCP 的关系
 
 两者互补，不是替代：
