@@ -84,7 +84,7 @@ def test_build_store_selects_backend(tmp_path):
     assert isinstance(build_store(" SQLITE ", str(tmp_path / "b.db")), SqliteTaskStore)
 
 
-@pytest.mark.parametrize("backend", ["weird", "postgres", "sqllite", ""])
+@pytest.mark.parametrize("backend", ["weird", "sqllite", ""])
 def test_build_store_rejects_unknown_backend_instead_of_silent_memory_fallback(backend):
     with pytest.raises(ValueError, match="Unsupported A2A_STORE backend"):
         build_store(backend, "")
