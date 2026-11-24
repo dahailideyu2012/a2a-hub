@@ -29,6 +29,17 @@ def _claim_in_independent_process(dsn: str, connector_id: str) -> str | None:
         store.close()
 
 
+def _claim_one_task_after_barrier(dsn: str, connector_id: str, barrier) -> str | None:
+    """Synchronize independent processes before competing for the same task."""
+    store = PostgresTaskStore(dsn, migrate=False)
+    try:
+        barrier.wait(timeout=30)
+        claim = store.claim_next(connector_id, 60, ["echo-a"])
+        return claim["task"].id if claim else None
+    finally:
+        store.close()
+
+
 def test_postgres_pull_lifecycle_and_idempotent_replay():
     store = PostgresTaskStore(DSN)
     task = Task(agentId="echo-a")
@@ -294,3 +305,40 @@ def test_postgres_is_pull_task_cancelled_is_connector_scoped():
     finally:
         store.delete(task.id)
         store.close()
+
+
+
+def test_postgres_independent_processes_competing_for_one_task_have_one_winner():
+    """Regression guard: concurrent workers must never claim the same queued task."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    worker_count = 6
+    setup = PostgresTaskStore(DSN)
+    task = Task(agentId="echo-a")
+    setup.enqueue_pull(task)
+    setup.close()
+
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(worker_count)
+    try:
+        with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:
+            futures = [
+                executor.submit(
+                    _claim_one_task_after_barrier,
+                    DSN,
+                    f"single-task-worker-{index}",
+                    barrier,
+                )
+                for index in range(worker_count)
+            ]
+            claimed_ids = [future.result(timeout=60) for future in futures]
+
+        winners = [claimed_id for claimed_id in claimed_ids if claimed_id is not None]
+        assert winners == [task.id]
+    finally:
+        cleanup = PostgresTaskStore(DSN)
+        try:
+            cleanup.delete(task.id)
+        finally:
+            cleanup.close()
