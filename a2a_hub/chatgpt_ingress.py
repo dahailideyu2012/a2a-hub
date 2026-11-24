@@ -1,7 +1,6 @@
 """Restricted REST ingress for ChatGPT; deliberately not a Remote MCP server."""
 from __future__ import annotations
 import asyncio, hashlib, hmac, json, logging, re, sqlite3, time
-from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Callable, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -10,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .bus import STREAM_END
 from .store import task_to_wire
 from .ports import RepositoryConflictError, RepositoryNotFoundError
+from .rate_limit_store import SQLiteRateLimitStore
 
 log = logging.getLogger("a2a_hub.chatgpt_ingress")
 _IDEMPOTENCY_TTL = 24 * 60 * 60
@@ -135,21 +135,6 @@ class IngressLedger:
                 return [str(row[0]) for row in rows]
             finally: conn.close()
 
-class SlidingWindowLimiter:
-    """Per-process limiter; use shared storage before multi-worker deployment."""
-    def __init__(self, limit: int, window_seconds: int = 60) -> None:
-        self.limit, self.window = max(1, int(limit)), window_seconds
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = asyncio.Lock()
-    async def allow(self, identity: str) -> bool:
-        now = time.monotonic()
-        async with self._lock:
-            hits = self._hits[identity]
-            while hits and now - hits[0] >= self.window: hits.popleft()
-            if len(hits) >= self.limit: return False
-            hits.append(now)
-            return True
-
 def _sse(data: Any, event: str) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
@@ -170,24 +155,36 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
     """Resolve Hub/settings per request so app/test reconfiguration remains isolated."""
     router = APIRouter(prefix="/integrations/chatgpt/v1", tags=["ChatGPT ingress"])
     ledgers: dict[str, IngressLedger] = {}
-    limiters: dict[tuple[str, str, int], SlidingWindowLimiter] = {}
+    rate_stores: dict[str, SQLiteRateLimitStore] = {}
     def runtime():
         hub = get_hub()
         settings = hub.settings
         db_path = str(settings.chatgpt_ingress_db_path_resolved())
         ledger = ledgers.setdefault(db_path, IngressLedger(db_path))
-        limiter_key = (db_path, settings.chatgpt_ingress_token, settings.chatgpt_ingress_rate_limit)
-        limiter = limiters.setdefault(limiter_key, SlidingWindowLimiter(settings.chatgpt_ingress_rate_limit))
-        return hub, settings, ledger, limiter
+        rate_path = str(settings.chatgpt_ingress_rate_limit_db_path_resolved())
+        rate_store = rate_stores.setdefault(rate_path, SQLiteRateLimitStore(rate_path))
+        return hub, settings, ledger, rate_store
     def authenticate(token: str | None, settings: Any) -> str:
         expected = settings.chatgpt_ingress_token
         if not expected or len(expected) < 32: raise HTTPException(status_code=503, detail="ChatGPT ingress 尚未配置有效的高熵令牌（至少 32 个字符）")
         if not token: raise HTTPException(status_code=401, detail="缺少 X-ChatGPT-Ingress-Token")
         if not hmac.compare_digest(token, expected): raise HTTPException(status_code=403, detail="Ingress token 无效")
         return hashlib.sha256(expected.encode("utf-8")).hexdigest()
-    async def guard(token: str | None, settings: Any, limiter: SlidingWindowLimiter) -> None:
+    async def guard(token: str | None, settings: Any, rate_store: SQLiteRateLimitStore) -> None:
         identity = authenticate(token, settings)
-        if not await limiter.allow(identity): raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+        # Separate namespace and include policy; persist only a digest, never a raw token.
+        bucket = hashlib.sha256(
+            ("chatgpt-ingress\\0" + identity + "\\0" + str(settings.chatgpt_ingress_rate_limit)).encode("utf-8")
+        ).hexdigest()
+        try:
+            allowed = await asyncio.to_thread(
+                rate_store.allow, bucket, settings.chatgpt_ingress_rate_limit, 60
+            )
+        except Exception as exc:
+            log.error("ChatGPT ingress rate-limit storage unavailable")
+            raise HTTPException(status_code=503, detail="限流存储暂不可用，请稍后重试") from exc
+        if not allowed:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
 
     async def reconcile_pending(hub: Any, ledger: IngressLedger, limit: int = 100) -> None:
         """Repair accepted tasks whose separate ingress-ledger completion was interrupted."""
@@ -232,8 +229,8 @@ def build_chatgpt_ingress_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     @router.post("/tasks")
     async def submit_task(request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), ingress_token: str | None = Header(default=None, alias="X-ChatGPT-Ingress-Token")) -> dict[str, Any]:
-        hub, settings, ledger, limiter = runtime()
-        await guard(ingress_token, settings, limiter)
+        hub, settings, ledger, rate_store = runtime()
+        await guard(ingress_token, settings, rate_store)
         if not idempotency_key or not _KEY_RE.fullmatch(idempotency_key):
             raise HTTPException(status_code=422, detail="必须提供 8-128 位有效 Idempotency-Key")
         if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
