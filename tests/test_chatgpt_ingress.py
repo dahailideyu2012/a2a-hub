@@ -431,3 +431,29 @@ def test_chatgpt_ingress_budget_is_shared_between_independent_routers(client, se
         second = second_client.get(f"{BASE}/tasks", headers=token_headers)
 
     assert second.status_code == 429
+
+
+def test_chatgpt_ingress_budget_is_shared_between_independent_routers(client, settings, monkeypatch, tmp_path):
+    """Separate ASGI apps (representing workers) must consume one shared budget."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import a2a_hub.server as server
+    from a2a_hub.chatgpt_ingress import build_chatgpt_ingress_router
+
+    monkeypatch.setattr(settings, "chatgpt_ingress_rate_limit", 1)
+    monkeypatch.setattr(
+        settings,
+        "chatgpt_ingress_rate_limit_db_path",
+        str(tmp_path / "shared-ingress-limits.db"),
+    )
+    token_headers = {"X-ChatGPT-Ingress-Token": TOKEN}
+
+    first = client.get(f"{BASE}/tasks", headers=token_headers)
+    assert first.status_code == 200
+
+    second_app = FastAPI()
+    second_app.include_router(build_chatgpt_ingress_router(lambda: server.hub))
+    with TestClient(second_app) as second_client:
+        second = second_client.get(f"{BASE}/tasks", headers=token_headers)
+
+    assert second.status_code == 429
