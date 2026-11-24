@@ -341,7 +341,9 @@ class AgentRegistry:
         scored = [
             (r, self.score(r, query))
             for r in self._records.values()
-            if (r.spec.enabled or not only_enabled) and r.spec.auto_route
+            if (r.spec.enabled or not only_enabled)
+            and r.spec.auto_route
+            and r.health.get("status") != "unavailable"
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
