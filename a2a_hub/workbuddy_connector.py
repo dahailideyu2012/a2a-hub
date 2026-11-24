@@ -17,7 +17,7 @@ from .store import task_to_wire
 from .github_result_callback import GithubResultDeliveryError, deliver_github_issue_result
 from .github_callback_outbox import GithubCallbackOutbox
 from .workbuddy_presence import WorkBuddyPresenceStore
-from .chatgpt_ingress import SlidingWindowLimiter
+from .rate_limit_store import SQLiteRateLimitStore
 from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
 
 
@@ -69,7 +69,7 @@ class ResultRequest(LeaseRequest):
 
 def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
     router = APIRouter(prefix="/integrations/workbuddy/v1", tags=["WorkBuddy connector"])
-    limiters: dict[tuple[str, str, int], SlidingWindowLimiter] = {}
+    rate_stores: dict[str, SQLiteRateLimitStore] = {}
 
     def runtime():
         hub = get_hub()
@@ -85,23 +85,33 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         if not hmac.compare_digest(token, settings.workbuddy_connector_token):
             raise HTTPException(status_code=403, detail="WorkBuddy connector token 无效")
 
-    def limiter_for(settings: Any) -> SlidingWindowLimiter:
-        # Include the credential in the in-memory key so credential/limit rotation
-        # cannot inherit another configuration's bucket. The token is never logged.
-        key = (
-            settings.workbuddy_connector_token,
-            settings.workbuddy_connector_id,
-            settings.workbuddy_connector_rate_limit,
-        )
-        limiter = limiters.get(key)
-        if limiter is None:
-            limiter = SlidingWindowLimiter(settings.workbuddy_connector_rate_limit)
-            limiters[key] = limiter
-        return limiter
+    def rate_store_for(settings: Any) -> SQLiteRateLimitStore:
+        path = str(settings.workbuddy_rate_limit_db_path_resolved())
+        store = rate_stores.get(path)
+        if store is None:
+            store = SQLiteRateLimitStore(path)
+            rate_stores[path] = store
+        return store
 
     async def guard(token: str | None, settings: Any) -> None:
         authenticate(token, settings)
-        if not await limiter_for(settings).allow(settings.workbuddy_connector_id):
+        # Namespace and credential are hashed: raw secrets never reach disk.
+        import hashlib
+        bucket = hashlib.sha256(
+            ("workbuddy\\0" + settings.workbuddy_connector_token + "\\0"
+             + settings.workbuddy_connector_id + "\\0"
+             + str(settings.workbuddy_connector_rate_limit)).encode("utf-8")
+        ).hexdigest()
+        try:
+            allowed = await asyncio.to_thread(
+                rate_store_for(settings).allow,
+                bucket,
+                settings.workbuddy_connector_rate_limit,
+                60,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="限流存储暂不可用，请稍后重试") from exc
+        if not allowed:
             raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
 
     def audited(event: str):
