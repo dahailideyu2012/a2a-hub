@@ -183,7 +183,7 @@ class JsonRpcDispatcher:
                 id=req_id,
                 error=JsonRpcError(
                     code=JsonRpcErrorCodes.INTERNAL_ERROR,
-                    message=f"{type(exc).__name__}: {exc}",
+                    message="Internal server error",
                 ),
             ).model_dump(exclude_none=True)
 
