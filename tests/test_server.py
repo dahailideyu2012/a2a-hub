@@ -287,3 +287,24 @@ class TestAgentSearch:
         assert response.status_code == 200
         body = response.json()["result"]
         assert body["agents"][0]["agent"]["id"] == "echo-a"
+
+
+class TestReadiness:
+    def test_readyz_reports_storage_and_agent_readiness(self, client):
+        response = client.get("/readyz")
+        assert response.status_code == 200
+        assert response.json()["status"] == "ready"
+        assert response.json()["checks"] == {"storage": "ok", "agents": "configured"}
+
+    def test_readyz_fails_closed_without_leaking_storage_exception(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        def broken_list(limit=100):
+            raise RuntimeError("postgresql://user:SensitivePassword@db.internal/prod")
+
+        monkeypatch.setattr(server.hub.registry.store, "list", broken_list)
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.json()["status"] == "not_ready"
+        assert "SensitivePassword" not in response.text
+        assert "db.internal" not in response.text
