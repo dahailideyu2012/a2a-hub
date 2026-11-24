@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from typing import Any, AsyncIterator, Callable, Optional
@@ -340,7 +341,9 @@ class AgentRegistry:
         scored = [
             (r, self.score(r, query))
             for r in self._records.values()
-            if (r.spec.enabled or not only_enabled) and r.spec.auto_route
+            if (r.spec.enabled or not only_enabled)
+            and r.spec.auto_route
+            and r.health.get("status") != "unavailable"
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
@@ -448,7 +451,9 @@ class AgentRegistry:
         rec = self.get(agent_id)
         message = Message.user(prompt, contextId=context_id)
         task = self.new_task(agent_id, message, context_id, metadata)
-        limit = timeout or self.settings.task_timeout
+        limit = float(self.settings.task_timeout if timeout is None else timeout)
+        if not math.isfinite(limit) or limit <= 0:
+            raise ValueError("task timeout must be a finite positive number")
 
         async def drain() -> None:
             async for _ in self.execute(rec, task, message):

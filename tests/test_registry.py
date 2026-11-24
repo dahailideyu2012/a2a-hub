@@ -139,3 +139,10 @@ def test_snapshot_shape(registry):
     snap = registry.snapshot()
     a = next(s for s in snap if s["id"] == "echo-a")
     assert {"id", "name", "type", "health", "skills", "url", "stats"} <= set(a)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+async def test_run_blocking_rejects_invalid_timeout(registry, timeout):
+    with pytest.raises(ValueError, match="finite positive"):
+        await registry.run_blocking("echo-a", "invalid timeout", timeout=timeout)

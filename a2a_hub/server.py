@@ -458,6 +458,34 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/readyz", tags=["基础"])
+async def readiness() -> Any:
+    """Readiness probe: verify the configured task repository is reachable.
+
+    /health remains a liveness endpoint; this route checks the dependency that
+    must be available before the instance receives task traffic.
+    """
+    try:
+        hub.registry.store.list(limit=1)
+    except Exception:
+        log.exception("Hub readiness storage probe failed")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "checks": {"storage": "unavailable"}},
+        )
+    enabled_agents = sum(1 for record in hub.registry.list_records() if record.spec.enabled)
+    if enabled_agents < 1:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "checks": {"storage": "ok", "agents": "none_enabled"}},
+        )
+    return {
+        "status": "ready",
+        "checks": {"storage": "ok", "agents": "configured"},
+        "agents": enabled_agents,
+    }
+
+
 @app.get("/", include_in_schema=False)
 async def root_redirect() -> Any:
     # 浏览器访问根路径时给个引导页，机器访问走 POST /（JSON-RPC）
@@ -509,6 +537,23 @@ async def list_agents(refresh: bool = Query(default=False), auth: Member = Depen
     if refresh:
         await hub.registry.check_health(force=True)
     return {"count": len(hub.registry.list_records()), "agents": hub.registry.snapshot()}
+
+
+@app.get("/agents/search", tags=["发现"])
+async def search_agents(
+    q: str = Query(min_length=1, max_length=500),
+    limit: int = Query(default=10, ge=1, le=20),
+    auth: Member = Depends(resolve_member),
+) -> dict[str, Any]:
+    ranked = hub.registry.rank(q.strip(), top_k=limit)
+    return {
+        "query": q.strip(),
+        "count": len(ranked),
+        "agents": [
+            {"score": round(score, 4), "agent": record.snapshot(hub.settings.public_url)}
+            for record, score in ranked
+        ],
+    }
 
 
 @app.get("/agents/{agent_id}/.well-known/agent.json", tags=["发现"])

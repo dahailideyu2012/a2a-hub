@@ -93,6 +93,7 @@ def settings(agents_file: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_ACTOR", "human:default")
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_DB_PATH", str(agents_file.parent / "chatgpt-ingress.db"))
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_RATE_LIMIT", "30")
+    monkeypatch.setenv("A2A_CHATGPT_INGRESS_RATE_LIMIT_DB_PATH", str(agents_file.parent / "chatgpt-ingress-rate-limit.db"))
     monkeypatch.setenv("A2A_CHATGPT_INGRESS_MAX_BODY_BYTES", "16384")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "test-workbuddy-connector-token-0123456789")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")

@@ -183,7 +183,7 @@ class JsonRpcDispatcher:
                 id=req_id,
                 error=JsonRpcError(
                     code=JsonRpcErrorCodes.INTERNAL_ERROR,
-                    message=f"{type(exc).__name__}: {exc}",
+                    message="Internal server error",
                 ),
             ).model_dump(exclude_none=True)
 
@@ -213,6 +213,7 @@ class JsonRpcDispatcher:
             "tasks/cancel",
             "tasks/resubscribe",
             "agents/list",
+            "agents/search",
             "agents/card",
             "agents/health",
             "collab/run",
@@ -477,6 +478,28 @@ class JsonRpcDispatcher:
         from .capabilities import manifest
 
         return manifest(base_url=params.get("baseUrl") or "")
+
+    async def _m_agents_search(
+        self, params: dict[str, Any], scoped_agent: Optional[str]
+    ) -> dict[str, Any]:
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 500:
+            raise A2AError(
+                JsonRpcErrorCodes.INVALID_PARAMS,
+                "agents/search requires a non-empty query of at most 500 characters",
+            )
+        raw_limit = params.get("limit", 10)
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 1 <= raw_limit <= 20:
+            raise A2AError(JsonRpcErrorCodes.INVALID_PARAMS, "limit must be an integer from 1 to 20")
+        ranked = self.registry.rank(query.strip(), top_k=raw_limit)
+        return {
+            "query": query.strip(),
+            "count": len(ranked),
+            "agents": [
+                {"score": round(score, 4), "agent": record.snapshot(self.registry.settings.public_url)}
+                for record, score in ranked
+            ],
+        }
 
     async def _m_agents_card(
         self, params: dict[str, Any], scoped_agent: Optional[str]

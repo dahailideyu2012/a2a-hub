@@ -244,3 +244,89 @@ class TestConsole:
     def test_static_assets(self, client):
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/style.css").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_internal_error_does_not_expose_exception_details(dispatcher, monkeypatch):
+    async def explode(params, scoped_agent):
+        raise RuntimeError("postgresql://user:SuperSecretPassword@db.example/prod")
+
+    monkeypatch.setattr(dispatcher, "_m_agents_list", explode)
+    response = await dispatcher.handle({
+        "jsonrpc": "2.0",
+        "id": "redaction-test",
+        "method": "agents/list",
+        "params": {},
+    })
+    error = response["error"]
+    assert error["code"] == -32603
+    assert error["message"] == "Internal server error"
+    assert "SuperSecretPassword" not in str(response)
+    assert "db.example" not in str(response)
+
+
+class TestAgentSearch:
+    def test_http_search_ranks_matching_agent(self, client):
+        response = client.get("/agents/search", params={"q": "代码评审", "limit": 5})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["query"] == "代码评审"
+        assert body["agents"]
+        assert body["agents"][0]["agent"]["id"] == "echo-a"
+
+    def test_http_search_rejects_invalid_limit(self, client):
+        assert client.get("/agents/search", params={"q": "writing", "limit": 0}).status_code == 422
+
+    def test_rpc_search_uses_same_ranked_registry(self, client):
+        response = client.post("/", json={
+            "jsonrpc": "2.0",
+            "id": "agent-search",
+            "method": "agents/search",
+            "params": {"query": "代码评审", "limit": 5},
+        })
+        assert response.status_code == 200
+        body = response.json()["result"]
+        assert body["agents"][0]["agent"]["id"] == "echo-a"
+
+
+class TestReadiness:
+    def test_readyz_reports_storage_and_agent_readiness(self, client):
+        response = client.get("/readyz")
+        assert response.status_code == 200
+        assert response.json()["status"] == "ready"
+        assert response.json()["checks"] == {"storage": "ok", "agents": "configured"}
+
+    def test_readyz_fails_closed_without_leaking_storage_exception(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        def broken_list(limit=100):
+            raise RuntimeError("postgresql://user:SensitivePassword@db.internal/prod")
+
+        monkeypatch.setattr(server.hub.registry.store, "list", broken_list)
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.json()["status"] == "not_ready"
+        assert "SensitivePassword" not in response.text
+        assert "db.internal" not in response.text
+
+
+    def test_readyz_fails_when_all_agents_are_disabled_but_liveness_stays_healthy(self, client, monkeypatch):
+        import a2a_hub.server as server
+
+        records = server.hub.registry.list_records()
+        assert records
+        for record in records:
+            monkeypatch.setattr(record.spec, "enabled", False)
+
+        readiness = client.get("/readyz")
+        assert readiness.status_code == 503
+        assert readiness.json() == {
+            "status": "not_ready",
+            "checks": {"storage": "ok", "agents": "none_enabled"},
+        }
+
+        # Liveness answers whether the process is alive, not whether it can
+        # currently receive task traffic.
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "ok"
