@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     chatgpt_ingress_allowed_agents: str = Field(default="", alias="A2A_CHATGPT_INGRESS_ALLOWED_AGENTS")
     chatgpt_ingress_db_path: str = Field(default="./data/chatgpt_ingress.db", alias="A2A_CHATGPT_INGRESS_DB_PATH")
     chatgpt_ingress_rate_limit: int = Field(default=30, ge=1, le=600, alias="A2A_CHATGPT_INGRESS_RATE_LIMIT")
+    chatgpt_ingress_rate_limit_db_path: str = Field(default="./data/chatgpt_ingress_rate_limit.db", alias="A2A_CHATGPT_INGRESS_RATE_LIMIT_DB_PATH")
     chatgpt_ingress_max_body_bytes: int = Field(default=16384, ge=1024, le=1048576, alias="A2A_CHATGPT_INGRESS_MAX_BODY_BYTES")
     # Optional GitHub Issue relay signature verification; independent from ingress and WorkBuddy tokens.
     github_relay_hmac_secret: str = Field(default="", alias="A2A_GITHUB_RELAY_HMAC_SECRET")
@@ -112,6 +113,10 @@ class Settings(BaseSettings):
 
     def chatgpt_ingress_db_path_resolved(self) -> Path:
         p = Path(self.chatgpt_ingress_db_path)
+        return p if p.is_absolute() else (ROOT / p).resolve()
+
+    def chatgpt_ingress_rate_limit_db_path_resolved(self) -> Path:
+        p = Path(self.chatgpt_ingress_rate_limit_db_path)
         return p if p.is_absolute() else (ROOT / p).resolve()
 
     def workbuddy_rate_limit_db_path_resolved(self) -> Path:
