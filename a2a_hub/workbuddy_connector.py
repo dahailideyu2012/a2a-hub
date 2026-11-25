@@ -541,11 +541,16 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             heartbeat_interval_seconds=settings.workbuddy_heartbeat_interval_seconds,
             presence_ttl_seconds=settings.workbuddy_presence_ttl_seconds,
         )
+        recovery_state = (
+            "offline"
+            if events["last_error_code"] is not None or events["reconnect_attempt"] > 0
+            else health["state"]
+        )
         return {
             "connector_id": state["connector_id"],
-            "connection_state": health["state"],
-            "online": state["online"],
-            "status": state["status"],
+            "connection_state": recovery_state,
+            "online": state["online"] and recovery_state == "online",
+            "status": "offline" if recovery_state == "offline" else state["status"],
             "protocol_version": state["protocol_version"],
             "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
             "client_version": state["client_version"],
@@ -560,7 +565,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "last_error_at": events["last_error_at"],
             "reconnect_attempt": events["reconnect_attempt"],
             "recovery": recovery_advice({
-                "connection_state": health["state"],
+                "connection_state": recovery_state,
                 "reconnect_attempt": events["reconnect_attempt"],
                 "last_error_code": events["last_error_code"],
             }),
