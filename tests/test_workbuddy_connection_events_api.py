@@ -140,3 +140,33 @@ def test_error_reporting_accepts_only_allowlisted_codes_and_strict_shape(client,
     })
     assert extra.status_code == 422
     assert diagnostics(client).json()["last_error_code"] is None
+
+def test_fatal_error_after_handshake_overrides_stale_online_presence(client, monkeypatch, tmp_path):
+    configure(monkeypatch, tmp_path)
+    assert handshake(client).status_code == 200
+    assert report_error(client, "authentication_failed").status_code == 200
+    body = diagnostics(client).json()
+    assert body["connection_state"] == "offline"
+    assert body["online"] is False
+    assert body["recovery"]["action"] == "operator_intervention"
+    assert body["recovery"]["reason"] == "authentication_failed"
+
+
+def test_rejected_duplicate_heartbeat_does_not_clear_error_events(client, monkeypatch, tmp_path):
+    configure(monkeypatch, tmp_path)
+    assert handshake(client).status_code == 200
+    payload = {
+        "connector_id": "workbuddy-personal",
+        "heartbeat_id": "heartbeat-events-0002",
+        "heartbeat_seq": 2,
+        "status": "idle",
+        "current_task_id": None,
+    }
+    assert client.post(f"{BASE}/heartbeat", headers=headers(), json=payload).status_code == 200
+    assert report_error(client, "timeout").status_code == 200
+    duplicate = client.post(f"{BASE}/heartbeat", headers=headers(), json=payload)
+    assert duplicate.status_code == 409
+    body = diagnostics(client).json()
+    assert body["last_error_code"] == "timeout"
+    assert body["connection_state"] == "offline"
+    assert body["recovery"]["reason"] == "timeout"
