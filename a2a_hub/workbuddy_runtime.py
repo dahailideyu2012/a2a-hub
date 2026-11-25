@@ -234,3 +234,56 @@ class ConnectorRuntimeStore:
             "last_error_at": state["last_error_at"],
             "connection_epoch": state["connection_epoch"],
         }
+
+def recovery_advice(snapshot: dict[str, Any], *, now: float | None = None,
+                    max_attempts: int = 8, base_seconds: float = 2.0,
+                    max_seconds: float = 300.0) -> dict[str, Any]:
+    """Return bounded, side-effect-free recovery guidance for diagnostics.
+
+    This function never opens a connection, sends a heartbeat, claims a task,
+    or starts a background retry loop.
+    """
+    if not isinstance(snapshot, dict):
+        raise ValueError("snapshot must be a mapping")
+    state = snapshot.get("connection_state")
+    if state not in {"online", "degraded", "offline"}:
+        raise ValueError("connection_state must be online, degraded, or offline")
+    attempts = snapshot.get("reconnect_attempt", 0)
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
+        raise ValueError("reconnect_attempt must be a non-negative integer")
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    current = time.time() if now is None else float(now)
+    if not math.isfinite(current):
+        raise ValueError("recovery time must be finite")
+    error_code = snapshot.get("last_error_code")
+    if error_code is not None and error_code not in CONNECTOR_ERROR_CODES:
+        raise ValueError("unsupported connector error code")
+    remaining = max(0, max_attempts - attempts)
+    if state == "online":
+        return {"action": "none", "retry_allowed": False, "retry_after_seconds": 0,
+                "retry_at": None, "attempts_remaining": remaining,
+                "reason": "connection_healthy", "automatic_actions_enabled": False}
+    if error_code in {"authentication_failed", "protocol_mismatch"}:
+        return {"action": "operator_intervention", "retry_allowed": False,
+                "retry_after_seconds": None, "retry_at": None,
+                "attempts_remaining": remaining, "reason": error_code,
+                "automatic_actions_enabled": False}
+    if state == "degraded":
+        return {"action": "heartbeat_probe", "retry_allowed": False,
+                "retry_after_seconds": None, "retry_at": None,
+                "attempts_remaining": remaining,
+                "reason": "heartbeat_late_but_within_presence_ttl",
+                "automatic_actions_enabled": False}
+    if attempts >= max_attempts:
+        return {"action": "operator_intervention", "retry_allowed": False,
+                "retry_after_seconds": None, "retry_at": None,
+                "attempts_remaining": 0, "reason": "retry_budget_exhausted",
+                "automatic_actions_enabled": False}
+    delay = reconnect_delay(attempts, base_seconds=base_seconds,
+                            max_seconds=max_seconds, jitter_ratio=0.0, random_value=0.5)
+    return {"action": "reconnect", "retry_allowed": True,
+            "retry_after_seconds": delay, "retry_at": current + delay,
+            "attempts_remaining": remaining,
+            "reason": error_code or "connection_offline",
+            "automatic_actions_enabled": False}
