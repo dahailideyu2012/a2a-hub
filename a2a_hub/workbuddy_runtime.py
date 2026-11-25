@@ -59,8 +59,9 @@ def reconnect_delay(attempt: int, *, base_seconds: float = 1.0,
     """Bounded exponential backoff with optional jitter."""
     if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
         raise ValueError("attempt must be a non-negative integer")
-    if (not math.isfinite(base_seconds) or not math.isfinite(max_seconds)
-            or base_seconds <= 0 or max_seconds < base_seconds):
+    if not math.isfinite(base_seconds) or not math.isfinite(max_seconds):
+        raise ValueError("backoff bounds must be finite")
+    if base_seconds <= 0 or max_seconds < base_seconds:
         raise ValueError("invalid backoff bounds")
     if not math.isfinite(jitter_ratio) or not 0 <= jitter_ratio <= 1:
         raise ValueError("jitter_ratio must be between 0 and 1")
