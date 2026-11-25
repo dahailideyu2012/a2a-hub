@@ -65,7 +65,9 @@ def reconnect_delay(attempt: int, *, base_seconds: float = 1.0,
     if not math.isfinite(jitter_ratio) or not 0 <= jitter_ratio <= 1:
         raise ValueError("jitter_ratio must be between 0 and 1")
     sample = random.random() if random_value is None else float(random_value)
-    if not math.isfinite(sample) or not 0 <= sample <= 1:
+    if not math.isfinite(sample):
+        raise ValueError("random_value must be finite")
+    if not 0 <= sample <= 1:
         raise ValueError("random_value must be between 0 and 1")
     ceiling = min(max_seconds, base_seconds * (2 ** min(attempt, 30)))
     return min(max_seconds, max(0.0, ceiling * (1 + jitter_ratio * (2 * sample - 1))))
