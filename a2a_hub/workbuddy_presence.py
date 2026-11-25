@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 
+MAX_RECONNECT_ATTEMPTS = 8
+
+
 class WorkBuddyPresenceStore:
     """Persist connector liveness; online is derived from the heartbeat TTL."""
 
@@ -34,6 +37,14 @@ class WorkBuddyPresenceStore:
                 )
                 """
             )
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS workbuddy_connection_events (
+                    connector_id TEXT PRIMARY KEY,
+                    last_error_code TEXT,
+                    last_error_at REAL,
+                    reconnect_attempt INTEGER NOT NULL DEFAULT 0
+                )
+            """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(workbuddy_presence)")}
             if "last_heartbeat_seq" not in columns:
                 db.execute("ALTER TABLE workbuddy_presence ADD COLUMN last_heartbeat_seq INTEGER")
@@ -83,6 +94,13 @@ class WorkBuddyPresenceStore:
                     now,
                 ),
             )
+            db.execute("""
+                INSERT INTO workbuddy_connection_events
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
+                VALUES (?, NULL, NULL, 0)
+                ON CONFLICT(connector_id) DO UPDATE SET
+                    last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0
+            """, (connector_id,))
 
     def record_heartbeat(
         self,
@@ -119,7 +137,62 @@ class WorkBuddyPresenceStore:
                     (status, current_task_id, heartbeat_id, heartbeat_seq, now,
                      connector_id, heartbeat_seq),
                 )
-            return cursor.rowcount == 1
+            accepted = cursor.rowcount == 1
+            if accepted:
+                db.execute("""
+                    INSERT INTO workbuddy_connection_events
+                        (connector_id, last_error_code, last_error_at, reconnect_attempt)
+                    VALUES (?, NULL, NULL, 0)
+                    ON CONFLICT(connector_id) DO UPDATE SET
+                        last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0
+                """, (connector_id,))
+            return accepted
+
+    def record_error(self, connector_id: str, error_code: str) -> None:
+        """Persist only a bounded error category, never raw exception text."""
+        allowed = {
+            "network_unreachable", "timeout", "authentication_failed",
+            "protocol_mismatch", "hub_unavailable", "unknown",
+        }
+        if not isinstance(error_code, str) or error_code not in allowed:
+            raise ValueError("unsupported connector error code")
+        now = time.time()
+        with closing(self._connect()) as db, db:
+            db.execute("""
+                INSERT INTO workbuddy_connection_events
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(connector_id) DO UPDATE SET
+                    last_error_code=excluded.last_error_code,
+                    last_error_at=excluded.last_error_at
+            """, (connector_id, error_code, now))
+
+    def record_reconnect_attempt(self, connector_id: str) -> int:
+        """Atomically increment the durable retry counter."""
+        with closing(self._connect()) as db, db:
+            db.execute("""
+                INSERT INTO workbuddy_connection_events
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
+                VALUES (?, NULL, NULL, 1)
+                ON CONFLICT(connector_id) DO UPDATE SET
+                    reconnect_attempt=MIN(reconnect_attempt+1, 8)
+            """, (connector_id,))
+            row = db.execute(
+                "SELECT reconnect_attempt FROM workbuddy_connection_events WHERE connector_id=?",
+                (connector_id,),
+            ).fetchone()
+            return int(row["reconnect_attempt"])
+
+    def get_runtime_events(self, connector_id: str) -> dict[str, Any]:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT last_error_code, last_error_at, reconnect_attempt "
+                "FROM workbuddy_connection_events WHERE connector_id=?",
+                (connector_id,),
+            ).fetchone()
+        if row is None:
+            return {"last_error_code": None, "last_error_at": None, "reconnect_attempt": 0}
+        return dict(row)
 
     def get_presence(self, connector_id: str, now: float | None = None) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:
