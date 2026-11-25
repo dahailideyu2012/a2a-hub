@@ -1254,6 +1254,12 @@ timestamp validation, stable per-comment idempotency keys, and the existing
 Hub ingress/agent allowlists.
 
 
+## WorkBuddy connector runtime operations (T64–T70)
+
+Additive local runtime-state migrations, derived liveness snapshots, allowlisted error
+categories, connection epochs, and concurrent reconnect-counter guarantees are covered
+by [the T64–T70 follow-up guide](docs/workbuddy-connector-resilience-t57-t63.md).
+
 ## WorkBuddy sandbox connector check (T56)
 
 The loopback-only `python scripts/workbuddy_sandbox.py connector-check` command validates the isolated Hub handshake, presence, and persisted idle heartbeat receipt without claiming a task or launching WorkBuddy Desktop. See [the T56 sandbox connector-check guide](docs/workbuddy-sandbox-connector-check-v1.md).
