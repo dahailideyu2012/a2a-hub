@@ -201,8 +201,9 @@ def test_runtime_error_metadata_uses_only_allowlisted_codes(tmp_path):
 
 def test_handshake_increments_connection_epoch_and_clears_error(tmp_path):
     store = ConnectorRuntimeStore(tmp_path / "epoch.db", "workbuddy-a")
-    store.record_error("timeout")
+    store.record_handshake("1.0", "client-a")
     store.record_heartbeat("heartbeat-epoch-0001", received_at=100.0)
+    store.record_error("timeout")
     store.record_handshake("1.0", "client-a")
     assert store.load()["connection_epoch"] == 1
     assert store.load()["last_error_code"] is None
