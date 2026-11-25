@@ -17,6 +17,11 @@ SANDBOX_DIR = ROOT / "deploy" / "test"
 ENV_FILE = SANDBOX_DIR / ".env.workbuddy-sandbox"
 COMPOSE_FILE = SANDBOX_DIR / "workbuddy-sandbox.compose.yaml"
 DEFAULT_PORT = 18081
+SANDBOX_CONNECTOR_ID = "workbuddy-desktop-sandbox"
+SANDBOX_CLIENT_VERSION = "a2a-workbuddy-sandbox/1.0.0"
+CONNECTOR_HANDSHAKE_PATH = "/integrations/workbuddy/v1/handshake"
+CONNECTOR_HEARTBEAT_PATH = "/integrations/workbuddy/v1/heartbeat"
+CONNECTOR_PRESENCE_PATH = "/integrations/workbuddy/v1/presence"
 SANDBOX_PROMPT = (
     "A2A-HUB-WORKBUDDY-SANDBOX-CANARY: reply with exactly "
     "WORKBUDDY_SANDBOX_OK and do not access files, networks, credentials, "
@@ -121,6 +126,133 @@ def _request_json(method: str, path: str, port: int, token: str,
         connection.close()
 
 
+
+def _connector_request_json(
+    method: str,
+    path: str,
+    port: int,
+    token: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call one fixed WorkBuddy connector endpoint on loopback only."""
+    if path not in {
+        CONNECTOR_HANDSHAKE_PATH,
+        CONNECTOR_HEARTBEAT_PATH,
+        CONNECTOR_PRESENCE_PATH,
+    }:
+        raise ValueError("unsupported sandbox connector endpoint")
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {
+        "X-WorkBuddy-Connector-Token": token,
+        "Accept": "application/json",
+    }
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        raw = response.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            raise RuntimeError("sandbox Hub connector response exceeded 64 KiB")
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"sandbox Hub returned HTTP {response.status}")
+        try:
+            result = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("sandbox Hub returned invalid connector JSON") from None
+        if not isinstance(result, dict):
+            raise RuntimeError("sandbox Hub returned an invalid connector response")
+        return result
+    finally:
+        connection.close()
+
+
+def connector_check(path: Path = ENV_FILE) -> dict[str, Any]:
+    """Verify the isolated Hub handshake/presence/heartbeat loop without claiming work."""
+    settings = load_env_file(path)
+    port = int(settings["A2A_WORKBUDDY_SANDBOX_PORT"])
+    token = settings["A2A_WORKBUDDY_CONNECTOR_TOKEN"]
+    connector_id = SANDBOX_CONNECTOR_ID
+
+    handshake = _connector_request_json(
+        "POST",
+        CONNECTOR_HANDSHAKE_PATH,
+        port,
+        token,
+        {
+            "connector_id": connector_id,
+            "protocol_version": "1.0",
+            "client_version": SANDBOX_CLIENT_VERSION,
+            "capabilities": ["heartbeat"],
+        },
+    )
+    if (
+        handshake.get("accepted") is not True
+        or handshake.get("connector_id") != connector_id
+        or handshake.get("protocol_version") != "1.0"
+    ):
+        raise RuntimeError("sandbox Hub did not accept the configured connector handshake")
+    capabilities = handshake.get("capabilities")
+    if not isinstance(capabilities, list) or "heartbeat" not in capabilities:
+        raise RuntimeError("sandbox Hub did not negotiate the heartbeat capability")
+
+    initial_presence = _connector_request_json(
+        "GET", CONNECTOR_PRESENCE_PATH, port, token
+    )
+    if (
+        initial_presence.get("connector_id") != connector_id
+        or initial_presence.get("online") is not True
+    ):
+        raise RuntimeError("sandbox Hub did not report the connector online after handshake")
+
+    heartbeat_id = "sandbox-hb-" + secrets.token_hex(16)
+    heartbeat = _connector_request_json(
+        "POST",
+        CONNECTOR_HEARTBEAT_PATH,
+        port,
+        token,
+        {
+            "connector_id": connector_id,
+            "heartbeat_id": heartbeat_id,
+            "status": "idle",
+            "current_task_id": None,
+        },
+    )
+    if (
+        heartbeat.get("accepted") is not True
+        or heartbeat.get("connector_id") != connector_id
+        or heartbeat.get("receipt_id") != heartbeat_id
+        or heartbeat.get("status") != "idle"
+        or heartbeat.get("current_task_id") is not None
+    ):
+        raise RuntimeError("sandbox Hub did not return a matching idle heartbeat receipt")
+
+    final_presence = _connector_request_json(
+        "GET", CONNECTOR_PRESENCE_PATH, port, token
+    )
+    if (
+        final_presence.get("connector_id") != connector_id
+        or final_presence.get("online") is not True
+        or final_presence.get("status") != "idle"
+        or final_presence.get("last_heartbeat_id") != heartbeat_id
+        or final_presence.get("current_task_id") is not None
+    ):
+        raise RuntimeError("sandbox Hub did not persist the heartbeat receipt")
+
+    return {
+        "status": "PASS",
+        "connector_id": connector_id,
+        "protocol_version": "1.0",
+        "presence": "online",
+        "heartbeat_status": "idle",
+        "heartbeat_receipt_persisted": True,
+        "task_claimed": False,
+        "desktop_process_verified": False,
+    }
+
+
 def seed_task(path: Path = ENV_FILE) -> dict[str, str]:
     settings = load_env_file(path)
     result = _request_json(
@@ -166,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("seed")
     status = sub.add_parser("status")
     status.add_argument("task_id")
+    sub.add_parser("connector-check")
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
@@ -189,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "status":
             print(json.dumps(read_task(args.task_id), ensure_ascii=False))
+            return 0
+        if args.command == "connector-check":
+            print(json.dumps(connector_check(), ensure_ascii=False))
             return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"BLOCKED: {exc}", file=sys.stderr)

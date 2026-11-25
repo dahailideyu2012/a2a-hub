@@ -1252,3 +1252,8 @@ is intentionally inactive until merged to the default branch and configured
 with repository Actions variables/secrets. It uses a separate HMAC secret,
 timestamp validation, stable per-comment idempotency keys, and the existing
 Hub ingress/agent allowlists.
+
+
+## WorkBuddy sandbox connector check (T56)
+
+The loopback-only `python scripts/workbuddy_sandbox.py connector-check` command validates the isolated Hub handshake, presence, and persisted idle heartbeat receipt without claiming a task or launching WorkBuddy Desktop. See [the T56 sandbox connector-check guide](docs/workbuddy-sandbox-connector-check-v1.md).
