@@ -45,3 +45,18 @@ def test_heartbeat_sequence_rejects_reordered_requests_and_reports_receipt(clien
     diagnostics = client.get(f"{BASE}/diagnostics", headers=_headers())
     assert diagnostics.status_code == 200
     assert diagnostics.json()["last_heartbeat_seq"] == 8
+
+
+def test_heartbeat_sequence_requires_strict_positive_integer(client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    handshake = client.post(f"{BASE}/handshake", headers=_headers(), json={
+        "connector_id": "workbuddy-personal", "protocol_version": "1.0",
+        "client_version": "strict-sequence-test", "capabilities": ["heartbeat"],
+    })
+    assert handshake.status_code == 200
+    for invalid in (0, -1, True, 1.5, "2"):
+        response = client.post(f"{BASE}/heartbeat", headers=_headers(), json={
+            "connector_id": "workbuddy-personal", "heartbeat_id": "heartbeat-invalid",
+            "heartbeat_seq": invalid, "status": "idle",
+        })
+        assert response.status_code == 422
