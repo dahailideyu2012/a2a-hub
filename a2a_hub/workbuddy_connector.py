@@ -47,6 +47,20 @@ def _server_time() -> str:
 
 
 
+class ConnectionErrorRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    error_code: Literal[
+        "network_unreachable", "timeout", "authentication_failed",
+        "protocol_mismatch", "hub_unavailable", "unknown",
+    ]
+
+
+class ReconnectAttemptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
 class ClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_ids: list[str] = Field(default_factory=list, max_length=50)
@@ -361,6 +375,32 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         return {"task_id": task_id, "status": "pending"}
 
 
+    @router.post("/connection-events/error")
+    @audited("connection_error")
+    async def report_connection_error(
+        body: ConnectionErrorRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        await guard(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        presence_for(settings).record_error(settings.workbuddy_connector_id, body.error_code)
+        return {"accepted": True, "error_code": body.error_code}
+
+    @router.post("/connection-events/reconnect-attempt")
+    @audited("reconnect_attempt")
+    async def report_reconnect_attempt(
+        body: ReconnectAttemptRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        await guard(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        attempt = presence_for(settings).record_reconnect_attempt(settings.workbuddy_connector_id)
+        return {"accepted": True, "reconnect_attempt": attempt}
+
     @router.post("/handshake")
     @audited("handshake")
     async def handshake(
@@ -474,7 +514,9 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
     ) -> dict[str, Any]:
         _, settings = runtime()
         await guard(connector_token, settings)
-        state = presence_for(settings).get_presence(settings.workbuddy_connector_id)
+        presence_store = presence_for(settings)
+        state = presence_store.get_presence(settings.workbuddy_connector_id)
+        events = presence_store.get_runtime_events(settings.workbuddy_connector_id)
         if state is None:
             return {
                 "connector_id": settings.workbuddy_connector_id,
@@ -484,8 +526,15 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                 "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
                 "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
-                "recovery": recovery_advice({"connection_state": "offline"}),
-                "diagnostics_version": 2,
+                "last_error_code": events["last_error_code"],
+                "last_error_at": events["last_error_at"],
+                "reconnect_attempt": events["reconnect_attempt"],
+                "recovery": recovery_advice({
+                    "connection_state": "offline",
+                    "reconnect_attempt": events["reconnect_attempt"],
+                    "last_error_code": events["last_error_code"],
+                }),
+                "diagnostics_version": 3,
             }
         health = classify_connection_age(
             state.get("seconds_since_seen"),
@@ -507,12 +556,15 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "seconds_since_seen": health["seconds_since_seen"],
             "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+            "last_error_code": events["last_error_code"],
+            "last_error_at": events["last_error_at"],
+            "reconnect_attempt": events["reconnect_attempt"],
             "recovery": recovery_advice({
                 "connection_state": health["state"],
-                "reconnect_attempt": int(state.get("reconnect_attempt", 0) or 0),
-                "last_error_code": state.get("last_error_code"),
+                "reconnect_attempt": events["reconnect_attempt"],
+                "last_error_code": events["last_error_code"],
             }),
-            "diagnostics_version": 2,
+            "diagnostics_version": 3,
         }
 
     return router
