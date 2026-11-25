@@ -130,7 +130,8 @@ class ConnectorRuntimeStore:
             self._ensure_row(db)
             db.execute("""UPDATE connector_runtime_state SET protocol_version=?, client_version=?,
                 connection_state='online', last_server_time=?, reconnect_attempt=0,
-                last_error_code=NULL, last_error_at=NULL, connection_epoch=connection_epoch+1,
+                last_error_code=NULL, last_error_at=NULL, last_heartbeat_id=NULL,
+                last_heartbeat_at=NULL, connection_epoch=connection_epoch+1,
                 updated_at=? WHERE connector_id=?""",
                 (protocol, client_version, server_time, now, self.connector_id))
 
@@ -215,6 +216,8 @@ class ConnectorRuntimeStore:
         if state["connection_state"] == "offline":
             health["state"] = "offline"
             health["stale"] = True
+        elif state["connection_state"] == "degraded" and health["state"] == "online":
+            health["state"] = "degraded"
         return {
             "connector_id": self.connector_id,
             "connection_state": health["state"],
