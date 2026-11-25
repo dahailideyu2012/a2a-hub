@@ -68,10 +68,10 @@ def test_fatal_error_report_before_handshake_reaches_diagnostics(client, monkeyp
 def test_retry_attempt_counter_is_persisted_and_budget_is_enforced(client, monkeypatch, tmp_path):
     configure(monkeypatch, tmp_path)
     assert report_error(client, "timeout").status_code == 200
-    for expected in range(1, 9):
+    for index in range(1, 11):
         response = report_attempt(client)
         assert response.status_code == 200
-        assert response.json()["reconnect_attempt"] == expected
+        assert response.json()["reconnect_attempt"] == min(index, 8)
     body = diagnostics(client).json()
     assert body["reconnect_attempt"] == 8
     assert body["recovery"]["action"] == "operator_intervention"
