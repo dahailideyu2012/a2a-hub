@@ -38,6 +38,7 @@ def emit(
     event: Literal[
         "claim", "start", "renew", "progress", "result", "handshake",
         "heartbeat", "presence", "diagnostics", "callback_status", "callback_retry",
+        "connection_error", "reconnect_attempt",
     ],
     outcome: Literal[
         "ok", "denied", "unauthenticated", "rate_limited",
