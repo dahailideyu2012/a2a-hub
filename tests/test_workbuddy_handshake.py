@@ -90,7 +90,8 @@ def test_handshake_rejects_unsupported_protocol_and_unknown_fields(client, monke
         headers=auth(),
         json={"connector_id": "workbuddy-personal", "protocol_version": "2.0"},
     )
-    assert unsupported.status_code == 422
+    assert unsupported.status_code == 426
+    assert unsupported.headers["x-workbuddy-supported-protocols"] == "1.0"
     extra = client.post(
         f"{BASE}/handshake",
         headers=auth(),

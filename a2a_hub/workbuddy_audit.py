@@ -11,7 +11,7 @@ AUDIT = logging.getLogger("a2a_hub.audit.workbuddy")
 
 _EVENTS = {
     "claim", "start", "renew", "progress", "result", "handshake",
-    "heartbeat", "presence", "callback_status", "callback_retry",
+    "heartbeat", "presence", "diagnostics", "callback_status", "callback_retry",
 }
 _OUTCOMES = {
     "ok", "denied", "unauthenticated", "rate_limited",
@@ -36,7 +36,7 @@ def fingerprint(token: str | None) -> str:
 def emit(
     event: Literal[
         "claim", "start", "renew", "progress", "result", "handshake",
-        "heartbeat", "presence", "callback_status", "callback_retry",
+        "heartbeat", "presence", "diagnostics", "callback_status", "callback_retry",
     ],
     outcome: Literal[
         "ok", "denied", "unauthenticated", "rate_limited",
