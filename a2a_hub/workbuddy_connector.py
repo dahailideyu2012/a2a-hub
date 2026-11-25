@@ -482,7 +482,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                 "online": False,
                 "reason": "handshake_not_seen",
                 "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
-                "heartbeat_interval_seconds": 30,
+                "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
                 "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
             }
         health = classify_connection_age(
@@ -503,7 +503,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "last_heartbeat_seq": state["last_heartbeat_seq"],
             "last_seen_at": state["last_seen_at"],
             "seconds_since_seen": health["seconds_since_seen"],
-            "heartbeat_interval_seconds": 30,
+            "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
         }
 
