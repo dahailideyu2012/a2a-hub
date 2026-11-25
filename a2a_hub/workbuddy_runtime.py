@@ -30,7 +30,8 @@ def classify_connection_age(seconds_since_seen: float | int | None, *,
         age, state = None, "offline"
     else:
         age = max(0.0, float(seconds_since_seen))
-        if age <= heartbeat_interval_seconds * 2:
+        online_threshold = min(heartbeat_interval_seconds * 2, presence_ttl_seconds)
+        if age <= online_threshold:
             state = "online"
         elif age <= presence_ttl_seconds:
             state = "degraded"
@@ -101,7 +102,12 @@ class ConnectorRuntimeStore:
             raise ValueError("invalid heartbeat ID")
         now = time.time() if received_at is None else float(received_at)
         with closing(self._connect()) as db, db:
-            self._ensure_row(db)
+            row = db.execute(
+                "SELECT protocol_version FROM connector_runtime_state WHERE connector_id=?",
+                (self.connector_id,),
+            ).fetchone()
+            if row is None or not row["protocol_version"]:
+                raise ValueError("handshake required before recording heartbeat")
             db.execute("""UPDATE connector_runtime_state SET connection_state='online',
                 last_heartbeat_id=?, last_heartbeat_at=?, reconnect_attempt=0,
                 updated_at=? WHERE connector_id=?""",
