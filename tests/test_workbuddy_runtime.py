@@ -190,7 +190,7 @@ def test_runtime_error_metadata_uses_only_allowlisted_codes(tmp_path):
     assert snapshot["connection_state"] == "offline"
     assert snapshot["last_error_code"] == "timeout"
     assert snapshot["last_error_at"] is not None
-    for unsafe in ("password=secret", "token", "raw traceback", ""):
+    for unsafe in ("password=secret", "token", "raw traceback", "", ["timeout"]):
         with pytest.raises(ValueError):
             store.record_error(unsafe)
     assert CONNECTOR_ERROR_CODES == {
@@ -202,9 +202,13 @@ def test_runtime_error_metadata_uses_only_allowlisted_codes(tmp_path):
 def test_handshake_increments_connection_epoch_and_clears_error(tmp_path):
     store = ConnectorRuntimeStore(tmp_path / "epoch.db", "workbuddy-a")
     store.record_error("timeout")
+    store.record_heartbeat("heartbeat-epoch-0001", received_at=100.0)
     store.record_handshake("1.0", "client-a")
     assert store.load()["connection_epoch"] == 1
     assert store.load()["last_error_code"] is None
+    assert store.load()["last_heartbeat_id"] is None
+    assert store.load()["last_heartbeat_at"] is None
+    assert store.snapshot(now=101)["connection_state"] == "offline"
     store.record_handshake("1.0", "client-a")
     assert store.load()["connection_epoch"] == 2
 
