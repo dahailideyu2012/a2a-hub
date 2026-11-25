@@ -20,6 +20,7 @@ from .workbuddy_presence import WorkBuddyPresenceStore
 from .rate_limit_store import SQLiteRateLimitStore
 from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
 from .workbuddy_runtime import SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age
+from .workbuddy_capabilities import negotiate_capabilities
 
 
 # Protocol handshake and lightweight liveness receipts. The connector token remains
@@ -377,11 +378,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         )
         if not configured:
             raise HTTPException(status_code=503, detail="WorkBuddy connector agent allowlist is not configured")
-        negotiated_capabilities = sorted(
-            set(body.capabilities).intersection(
-                {"claim", "start", "renew", "progress", "result", "heartbeat"}
-            )
-        )
+        try:
+            negotiated_capabilities, unsupported_capabilities = negotiate_capabilities(body.capabilities)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         presence_for(settings).record_handshake(
             settings.workbuddy_connector_id,
             negotiated_protocol,
@@ -400,6 +400,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
             "allowed_agent_ids": configured,
             "capabilities": negotiated_capabilities,
+            "unsupported_capabilities": unsupported_capabilities,
         }
 
     @router.post("/heartbeat")
