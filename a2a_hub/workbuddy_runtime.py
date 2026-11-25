@@ -155,7 +155,7 @@ class ConnectorRuntimeStore:
 
     def record_error(self, error_code: str) -> None:
         """Persist only a bounded error category, never raw exception text or credentials."""
-        if error_code not in CONNECTOR_ERROR_CODES:
+        if not isinstance(error_code, str) or error_code not in CONNECTOR_ERROR_CODES:
             raise ValueError("unsupported connector error code")
         now = time.time()
         with closing(self._connect()) as db, db:
