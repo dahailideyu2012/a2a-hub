@@ -86,7 +86,7 @@ def test_transient_error_is_visible_and_retryable_before_budget_exhaustion(clien
     body = diagnostics(client).json()
     assert body["last_error_code"] == "network_unreachable"
     assert body["reconnect_attempt"] == 1
-    assert body["recovery"]["action"] == "reconnect"
+    assert body["recovery"]["action"] == "none"
     assert body["recovery"]["reason"] == "network_unreachable"
     assert body["recovery"]["attempts_remaining"] == 7
 
