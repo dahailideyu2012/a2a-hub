@@ -19,6 +19,7 @@ from .github_callback_outbox import GithubCallbackOutbox
 from .workbuddy_presence import WorkBuddyPresenceStore
 from .rate_limit_store import SQLiteRateLimitStore
 from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
+from .workbuddy_runtime import SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age
 
 
 # Protocol handshake and lightweight liveness receipts. The connector token remains
@@ -26,7 +27,7 @@ from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprin
 class HandshakeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    protocol_version: Literal["1.0"] = "1.0"
+    protocol_version: str = Field(default="1.0", min_length=1, max_length=16, pattern=r"^\d+\.\d+$")
     client_version: str = Field(default="unknown", min_length=1, max_length=64)
     capabilities: list[str] = Field(default_factory=list, max_length=20)
 
@@ -364,6 +365,12 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         await guard(connector_token, settings)
         if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
             raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        try:
+            negotiated_protocol = negotiate_protocol(body.protocol_version)
+        except ValueError:
+            raise HTTPException(status_code=426,
+                detail="Unsupported WorkBuddy connector protocol version",
+                headers={"X-WorkBuddy-Supported-Protocols": ", ".join(SUPPORTED_PROTOCOL_VERSIONS)}) from None
         configured = sorted(
             item.strip() for item in settings.workbuddy_connector_allowed_agents.split(",")
             if item.strip()
@@ -377,14 +384,15 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         )
         presence_for(settings).record_handshake(
             settings.workbuddy_connector_id,
-            body.protocol_version,
+            negotiated_protocol,
             body.client_version,
             negotiated_capabilities,
         )
         return {
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
-            "protocol_version": "1.0",
+            "protocol_version": negotiated_protocol,
+            "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
             "client_version": body.client_version,
             "server_time": _server_time(),
             "heartbeat_interval_seconds": 30,
@@ -447,5 +455,44 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                 "ttl_seconds": settings.workbuddy_presence_ttl_seconds,
             }
         return state
+
+    @router.get("/diagnostics")
+    @audited("diagnostics")
+    async def diagnostics(
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        await guard(connector_token, settings)
+        state = presence_for(settings).get_presence(settings.workbuddy_connector_id)
+        if state is None:
+            return {
+                "connector_id": settings.workbuddy_connector_id,
+                "connection_state": "offline",
+                "online": False,
+                "reason": "handshake_not_seen",
+                "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "heartbeat_interval_seconds": 30,
+                "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+            }
+        health = classify_connection_age(
+            state.get("seconds_since_seen"),
+            heartbeat_interval_seconds=30,
+            presence_ttl_seconds=settings.workbuddy_presence_ttl_seconds,
+        )
+        return {
+            "connector_id": state["connector_id"],
+            "connection_state": health["state"],
+            "online": state["online"],
+            "status": state["status"],
+            "protocol_version": state["protocol_version"],
+            "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            "client_version": state["client_version"],
+            "capabilities": state["capabilities"],
+            "last_heartbeat_id": state["last_heartbeat_id"],
+            "last_seen_at": state["last_seen_at"],
+            "seconds_since_seen": health["seconds_since_seen"],
+            "heartbeat_interval_seconds": 30,
+            "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+        }
 
     return router
