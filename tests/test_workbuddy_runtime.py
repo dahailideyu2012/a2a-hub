@@ -127,3 +127,9 @@ def test_handshake_rejects_unsupported_protocol_with_426(client, monkeypatch, tm
               "client_version": "test-client", "capabilities": ["heartbeat"]})
     assert response.status_code == 426
     assert response.headers["x-workbuddy-supported-protocols"] == "1.0"
+
+
+def test_runtime_heartbeat_requires_prior_handshake(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "no-handshake.db", "workbuddy-a")
+    with pytest.raises(ValueError, match="handshake"):
+        store.record_heartbeat("heartbeat-0001")
