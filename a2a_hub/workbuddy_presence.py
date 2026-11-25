@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 
+MAX_RECONNECT_ATTEMPTS = 8
+
+
 class WorkBuddyPresenceStore:
     """Persist connector liveness; online is derived from the heartbeat TTL."""
 
@@ -172,7 +175,7 @@ class WorkBuddyPresenceStore:
                     (connector_id, last_error_code, last_error_at, reconnect_attempt)
                 VALUES (?, NULL, NULL, 1)
                 ON CONFLICT(connector_id) DO UPDATE SET
-                    reconnect_attempt=reconnect_attempt+1
+                    reconnect_attempt=MIN(reconnect_attempt+1, 8)
             """, (connector_id,))
             row = db.execute(
                 "SELECT reconnect_attempt FROM workbuddy_connection_events WHERE connector_id=?",
