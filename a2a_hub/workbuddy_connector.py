@@ -37,6 +37,7 @@ class HeartbeatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     heartbeat_id: str = Field(min_length=8, max_length=128)
+    heartbeat_seq: int | None = Field(default=None, ge=1, strict=True)
     status: Literal["idle", "busy", "degraded"]
     current_task_id: str | None = Field(default=None, max_length=128)
 
@@ -418,9 +419,13 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             body.heartbeat_id,
             body.status,
             body.current_task_id,
+            body.heartbeat_seq,
         )
         if not recorded:
-            raise HTTPException(status_code=409, detail="WorkBuddy connector must complete handshake before heartbeat")
+            raise HTTPException(
+                status_code=409,
+                detail="WorkBuddy connector must complete handshake and heartbeat sequence must increase",
+            )
         cancel_requested = False
         if body.current_task_id and isinstance(hub.registry.store, PullTaskRepository):
             cancel_requested = hub.registry.store.is_pull_task_cancelled(
@@ -430,6 +435,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "accepted": True,
             "connector_id": settings.workbuddy_connector_id,
             "receipt_id": body.heartbeat_id,
+            "heartbeat_seq": body.heartbeat_seq,
             "status": body.status,
             "current_task_id": body.current_task_id,
             "cancel_requested": cancel_requested,
@@ -490,6 +496,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "client_version": state["client_version"],
             "capabilities": state["capabilities"],
             "last_heartbeat_id": state["last_heartbeat_id"],
+            "last_heartbeat_seq": state["last_heartbeat_seq"],
             "last_seen_at": state["last_seen_at"],
             "seconds_since_seen": health["seconds_since_seen"],
             "heartbeat_interval_seconds": 30,

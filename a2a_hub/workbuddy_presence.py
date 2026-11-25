@@ -28,11 +28,15 @@ class WorkBuddyPresenceStore:
                     status TEXT NOT NULL,
                     current_task_id TEXT,
                     last_heartbeat_id TEXT,
+                    last_heartbeat_seq INTEGER,
                     first_seen_at REAL NOT NULL,
                     last_seen_at REAL NOT NULL
                 )
                 """
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(workbuddy_presence)")}
+            if "last_heartbeat_seq" not in columns:
+                db.execute("ALTER TABLE workbuddy_presence ADD COLUMN last_heartbeat_seq INTEGER")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=10)
@@ -57,8 +61,9 @@ class WorkBuddyPresenceStore:
                 """
                 INSERT INTO workbuddy_presence (
                     connector_id, protocol_version, client_version, capabilities_json,
-                    status, current_task_id, last_heartbeat_id, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, 'idle', NULL, NULL, ?, ?)
+                    status, current_task_id, last_heartbeat_id, last_heartbeat_seq,
+                    first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, 'idle', NULL, NULL, NULL, ?, ?)
                 ON CONFLICT(connector_id) DO UPDATE SET
                     protocol_version=excluded.protocol_version,
                     client_version=excluded.client_version,
@@ -66,6 +71,7 @@ class WorkBuddyPresenceStore:
                     status='idle',
                     current_task_id=NULL,
                     last_heartbeat_id=NULL,
+                    last_heartbeat_seq=NULL,
                     last_seen_at=excluded.last_seen_at
                 """,
                 (
@@ -84,17 +90,35 @@ class WorkBuddyPresenceStore:
         heartbeat_id: str,
         status: str,
         current_task_id: str | None,
+        heartbeat_seq: int | None = None,
     ) -> bool:
+        if heartbeat_seq is not None and (
+            isinstance(heartbeat_seq, bool) or not isinstance(heartbeat_seq, int) or heartbeat_seq < 1
+        ):
+            raise ValueError("heartbeat sequence must be a positive integer")
         now = time.time()
         with closing(self._connect()) as db, db:
-            cursor = db.execute(
-                """
-                UPDATE workbuddy_presence
-                SET status = ?, current_task_id = ?, last_heartbeat_id = ?, last_seen_at = ?
-                WHERE connector_id = ?
-                """,
-                (status, current_task_id, heartbeat_id, now, connector_id),
-            )
+            if heartbeat_seq is None:
+                cursor = db.execute(
+                    """
+                    UPDATE workbuddy_presence
+                    SET status = ?, current_task_id = ?, last_heartbeat_id = ?, last_seen_at = ?
+                    WHERE connector_id = ?
+                    """,
+                    (status, current_task_id, heartbeat_id, now, connector_id),
+                )
+            else:
+                cursor = db.execute(
+                    """
+                    UPDATE workbuddy_presence
+                    SET status = ?, current_task_id = ?, last_heartbeat_id = ?,
+                        last_heartbeat_seq = ?, last_seen_at = ?
+                    WHERE connector_id = ?
+                      AND (last_heartbeat_seq IS NULL OR last_heartbeat_seq < ?)
+                    """,
+                    (status, current_task_id, heartbeat_id, heartbeat_seq, now,
+                     connector_id, heartbeat_seq),
+                )
             return cursor.rowcount == 1
 
     def get_presence(self, connector_id: str, now: float | None = None) -> dict[str, Any] | None:
@@ -115,6 +139,7 @@ class WorkBuddyPresenceStore:
             "last_status": row["status"],
             "current_task_id": row["current_task_id"] if online else None,
             "last_heartbeat_id": row["last_heartbeat_id"],
+            "last_heartbeat_seq": row["last_heartbeat_seq"],
             "protocol_version": row["protocol_version"],
             "client_version": row["client_version"],
             "capabilities": json.loads(row["capabilities_json"]),
