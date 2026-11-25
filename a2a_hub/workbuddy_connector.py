@@ -19,7 +19,7 @@ from .github_callback_outbox import GithubCallbackOutbox
 from .workbuddy_presence import WorkBuddyPresenceStore
 from .rate_limit_store import SQLiteRateLimitStore
 from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
-from .workbuddy_runtime import SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age
+from .workbuddy_runtime import (SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age, recovery_advice)
 from .workbuddy_capabilities import negotiate_capabilities
 
 
@@ -484,6 +484,8 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                 "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
                 "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+                "recovery": recovery_advice({"connection_state": "offline"}),
+                "diagnostics_version": 2,
             }
         health = classify_connection_age(
             state.get("seconds_since_seen"),
@@ -505,6 +507,12 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "seconds_since_seen": health["seconds_since_seen"],
             "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+            "recovery": recovery_advice({
+                "connection_state": health["state"],
+                "reconnect_attempt": int(state.get("reconnect_attempt", 0) or 0),
+                "last_error_code": state.get("last_error_code"),
+            }),
+            "diagnostics_version": 2,
         }
 
     return router
