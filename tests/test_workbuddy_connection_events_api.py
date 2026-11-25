@@ -100,7 +100,9 @@ def test_handshake_clears_prior_error_and_retry_history(client, monkeypatch, tmp
     assert body["last_error_code"] is None
     assert body["last_error_at"] is None
     assert body["reconnect_attempt"] == 0
-    assert body["recovery"]["action"] == "reconnect"
+    # A successful handshake restores online health after clearing prior events.
+    assert body["connection_state"] == "online"
+    assert body["recovery"]["action"] == "none"
 
 
 def test_successful_heartbeat_clears_error_and_retry_history(client, monkeypatch, tmp_path):
