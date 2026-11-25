@@ -29,3 +29,16 @@ ConnectorRuntimeStore is a separate client-side state primitive for a future run
 These are reusable state/policy primitives. This change does not claim a running
 WorkBuddy Desktop agent, an autonomous reconnect daemon, a real Desktop session,
 or live task execution. No production credentials are stored or used.
+
+
+## Follow-up operations batch (T64–T70)
+
+- T64 closes the TTL-cap boundary test gap: when twice the heartbeat interval exceeds the configured TTL, the online window is capped at the TTL.
+- T65 introduces additive SQLite schema migration (schema version 2) for error metadata and connection epochs; existing rows remain readable.
+- T66 adds a read-only derived health snapshot (online/degraded/offline) without mutating persisted heartbeat state.
+- T67 stores only allowlisted error categories, never raw exception messages, tracebacks, or credentials.
+- T68 tracks connection epochs and clears transient error metadata after a successful handshake/heartbeat.
+- T69 verifies the reconnect-attempt counter remains atomic under concurrent callers.
+- T70 adds regression coverage for migration, redaction, non-finite timing inputs, snapshot behavior, and disconnect/re-handshake transitions.
+
+The runtime snapshot is a local library primitive; it is not a background monitor and does not initiate network reconnection.
