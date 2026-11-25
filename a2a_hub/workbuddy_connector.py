@@ -80,6 +80,10 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
         expected = settings.workbuddy_connector_token
         if not expected or len(expected) < 32:
             raise HTTPException(status_code=503, detail="WorkBuddy connector 尚未配置有效的独立令牌（至少 32 个字符）")
+        interval = settings.workbuddy_heartbeat_interval_seconds
+        ttl = settings.workbuddy_presence_ttl_seconds
+        if interval < 5 or interval > 300 or ttl < 30 or ttl > 3600 or ttl < interval:
+            raise HTTPException(status_code=503, detail="WorkBuddy heartbeat interval/TTL configuration is invalid")
         return hub, settings
 
     def authenticate(token: str | None, settings: Any) -> None:
@@ -396,7 +400,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
             "client_version": body.client_version,
             "server_time": _server_time(),
-            "heartbeat_interval_seconds": 30,
+            "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
             "lease_seconds": settings.workbuddy_connector_lease_seconds,
             "allowed_agent_ids": configured,
@@ -441,7 +445,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "cancel_requested": cancel_requested,
             "cancel_reason": "task_cancelled_by_caller" if cancel_requested else None,
             "server_time": _server_time(),
-            "next_heartbeat_seconds": 30,
+            "next_heartbeat_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
         }
 
@@ -478,12 +482,12 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
                 "online": False,
                 "reason": "handshake_not_seen",
                 "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
-                "heartbeat_interval_seconds": 30,
+                "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
                 "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
             }
         health = classify_connection_age(
             state.get("seconds_since_seen"),
-            heartbeat_interval_seconds=30,
+            heartbeat_interval_seconds=settings.workbuddy_heartbeat_interval_seconds,
             presence_ttl_seconds=settings.workbuddy_presence_ttl_seconds,
         )
         return {
@@ -499,7 +503,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             "last_heartbeat_seq": state["last_heartbeat_seq"],
             "last_seen_at": state["last_seen_at"],
             "seconds_since_seen": health["seconds_since_seen"],
-            "heartbeat_interval_seconds": 30,
+            "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
             "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
         }
 

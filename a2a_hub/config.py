@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     workbuddy_connector_rate_limit: int = Field(default=60, ge=1, le=600, alias="A2A_WORKBUDDY_CONNECTOR_RATE_LIMIT")
     workbuddy_rate_limit_db_path: str = Field(default="./data/workbuddy_rate_limit.db", alias="A2A_WORKBUDDY_RATE_LIMIT_DB_PATH")
     workbuddy_presence_db_path: str = Field(default="./data/workbuddy_presence.db", alias="A2A_WORKBUDDY_PRESENCE_DB_PATH")
+    workbuddy_heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300, alias="A2A_WORKBUDDY_HEARTBEAT_INTERVAL_SECONDS")
     workbuddy_presence_ttl_seconds: int = Field(default=90, ge=30, le=3600, alias="A2A_WORKBUDDY_PRESENCE_TTL_SECONDS")
     agents_file: str = Field(default="./config/agents.yaml", alias="A2A_AGENTS_FILE")
     # --- 社交层（见 docs/identity-and-binding.md）---
