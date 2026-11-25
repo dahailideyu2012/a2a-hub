@@ -1,9 +1,11 @@
-"""T57-T63 WorkBuddy connector resilience and diagnostics regression tests."""
+"""T57-T70 WorkBuddy connector resilience and runtime operations regression tests."""
 from __future__ import annotations
+import math
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from a2a_hub.workbuddy_runtime import (
-    ConnectorRuntimeStore, SUPPORTED_PROTOCOL_VERSIONS,
+    CONNECTOR_ERROR_CODES, ConnectorRuntimeStore, SUPPORTED_PROTOCOL_VERSIONS,
     classify_connection_age, negotiate_protocol, reconnect_delay,
 )
 
@@ -41,6 +43,24 @@ def test_connection_health_ttl_boundaries(age, expected):
                                     presence_ttl_seconds=90)["state"] == expected
 
 
+def test_online_threshold_never_exceeds_shorter_presence_ttl():
+    assert classify_connection_age(
+        90, heartbeat_interval_seconds=60, presence_ttl_seconds=90
+    )["state"] == "online"
+    assert classify_connection_age(
+        90.01, heartbeat_interval_seconds=60, presence_ttl_seconds=90
+    )["state"] == "offline"
+
+
+def test_health_and_backoff_reject_non_finite_values():
+    with pytest.raises(ValueError, match="finite"):
+        classify_connection_age(math.nan)
+    with pytest.raises(ValueError, match="finite"):
+        reconnect_delay(1, random_value=math.nan)
+    with pytest.raises(ValueError, match="finite"):
+        reconnect_delay(1, base_seconds=math.inf)
+
+
 def test_reconnect_backoff_is_exponential_bounded_and_jittered():
     assert reconnect_delay(0, random_value=0.5) == 1
     assert reconnect_delay(1, random_value=0.5) == 2
@@ -58,6 +78,14 @@ def test_reconnect_attempt_counter_is_durable(tmp_path):
     assert store.record_reconnect_attempt() == 1
     assert store.record_reconnect_attempt() == 2
     assert ConnectorRuntimeStore(path, "workbuddy-a").load()["reconnect_attempt"] == 2
+
+
+def test_reconnect_attempt_counter_is_atomic_under_concurrency(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "concurrent.db", "workbuddy-a")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        values = list(pool.map(lambda _: store.record_reconnect_attempt(), range(48)))
+    assert sorted(values) == list(range(1, 49))
+    assert store.load()["reconnect_attempt"] == 48
 
 
 def test_protocol_negotiation_is_explicit_and_fail_closed():
@@ -133,3 +161,87 @@ def test_runtime_heartbeat_requires_prior_handshake(tmp_path):
     store = ConnectorRuntimeStore(tmp_path / "no-handshake.db", "workbuddy-a")
     with pytest.raises(ValueError, match="handshake"):
         store.record_heartbeat("heartbeat-0001")
+
+
+def test_existing_runtime_database_migrates_additively(tmp_path):
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE connector_runtime_state (
+            connector_id TEXT PRIMARY KEY, protocol_version TEXT, client_version TEXT,
+            connection_state TEXT NOT NULL DEFAULT 'offline', last_server_time TEXT,
+            last_heartbeat_id TEXT, last_heartbeat_at REAL,
+            reconnect_attempt INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+        )""")
+        db.execute("""INSERT INTO connector_runtime_state
+            (connector_id, protocol_version, client_version, connection_state, updated_at)
+            VALUES ('workbuddy-a', '1.0', 'legacy-client', 'online', 100)""")
+    restored = ConnectorRuntimeStore(path, "workbuddy-a").load()
+    assert restored["client_version"] == "legacy-client"
+    assert restored["last_error_code"] is None
+    assert restored["connection_epoch"] == 0
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_runtime_error_metadata_uses_only_allowlisted_codes(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "errors.db", "workbuddy-a")
+    store.record_error("timeout")
+    snapshot = store.snapshot(now=1000)
+    assert snapshot["connection_state"] == "offline"
+    assert snapshot["last_error_code"] == "timeout"
+    assert snapshot["last_error_at"] is not None
+    for unsafe in ("password=secret", "token", "raw traceback", "", ["timeout"]):
+        with pytest.raises(ValueError):
+            store.record_error(unsafe)
+    assert CONNECTOR_ERROR_CODES == {
+        "network_unreachable", "timeout", "authentication_failed",
+        "protocol_mismatch", "hub_unavailable", "unknown",
+    }
+
+
+def test_handshake_increments_connection_epoch_and_clears_error(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "epoch.db", "workbuddy-a")
+    store.record_handshake("1.0", "client-a")
+    store.record_heartbeat("heartbeat-epoch-0001", received_at=100.0)
+    store.record_error("timeout")
+    store.record_handshake("1.0", "client-a")
+    assert store.load()["connection_epoch"] == 2
+    assert store.load()["last_error_code"] is None
+    assert store.load()["last_heartbeat_id"] is None
+    assert store.load()["last_heartbeat_at"] is None
+    assert store.snapshot(now=101)["connection_state"] == "offline"
+    store.record_handshake("1.0", "client-a")
+    assert store.load()["connection_epoch"] == 3
+
+
+def test_snapshot_derives_health_without_mutating_persisted_state(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "snapshot.db", "workbuddy-a")
+    store.record_handshake("1.0", "client-a")
+    store.record_heartbeat("heartbeat-0001", received_at=100.0)
+    online = store.snapshot(now=130, heartbeat_interval_seconds=30, presence_ttl_seconds=90)
+    assert online["connection_state"] == "online"
+    degraded = store.snapshot(now=161, heartbeat_interval_seconds=30, presence_ttl_seconds=90)
+    assert degraded["connection_state"] == "degraded"
+    offline = store.snapshot(now=191, heartbeat_interval_seconds=30, presence_ttl_seconds=90)
+    assert offline["connection_state"] == "offline"
+    assert store.load()["connection_state"] == "online"
+
+
+def test_snapshot_redacts_storage_fields(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "snapshot-redacted.db", "workbuddy-a")
+    store.record_handshake("1.0", "client-a")
+    snapshot = store.snapshot()
+    assert "token" not in snapshot
+    assert "secret" not in snapshot
+    assert "lease_token" not in snapshot
+    assert "password" not in snapshot
+
+
+def test_mark_disconnected_remains_offline_until_new_handshake(tmp_path):
+    store = ConnectorRuntimeStore(tmp_path / "disconnect.db", "workbuddy-a")
+    store.record_handshake("1.0", "client-a")
+    store.record_heartbeat("heartbeat-0001", received_at=100.0)
+    store.mark_disconnected()
+    assert store.snapshot(now=101)["connection_state"] == "offline"
+    store.record_handshake("1.0", "client-a")
+    assert store.snapshot(now=101)["connection_state"] == "offline"
