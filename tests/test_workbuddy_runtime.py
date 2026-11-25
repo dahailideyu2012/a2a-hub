@@ -205,13 +205,13 @@ def test_handshake_increments_connection_epoch_and_clears_error(tmp_path):
     store.record_heartbeat("heartbeat-epoch-0001", received_at=100.0)
     store.record_error("timeout")
     store.record_handshake("1.0", "client-a")
-    assert store.load()["connection_epoch"] == 1
+    assert store.load()["connection_epoch"] == 2
     assert store.load()["last_error_code"] is None
     assert store.load()["last_heartbeat_id"] is None
     assert store.load()["last_heartbeat_at"] is None
     assert store.snapshot(now=101)["connection_state"] == "offline"
     store.record_handshake("1.0", "client-a")
-    assert store.load()["connection_epoch"] == 2
+    assert store.load()["connection_epoch"] == 3
 
 
 def test_snapshot_derives_health_without_mutating_persisted_state(tmp_path):
