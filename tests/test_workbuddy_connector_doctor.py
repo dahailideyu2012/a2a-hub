@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.workbuddy_connector_doctor import (
     DEFAULT_PACKAGE,
     EXPECTED_FIELDS,
+    main,
     validate_environment,
     validate_package,
 )
@@ -22,9 +23,9 @@ def _package(tmp_path: Path) -> Path:
     }), encoding="utf-8")
     (root / "token-schema.json").write_text(json.dumps({
         "fields": [
-            {"key": "A2A_HUB_MCP_SERVER_PATH", "type": "text"},
-            {"key": "A2A_WORKBUDDY_HUB_URL", "type": "text"},
-            {"key": "A2A_WORKBUDDY_CONNECTOR_TOKEN", "type": "password"},
+            {"key": "A2A_HUB_MCP_SERVER_PATH", "type": "text", "required": True, "label": "本机脚本路径", "label_en": "Local script path"},
+            {"key": "A2A_WORKBUDDY_HUB_URL", "type": "text", "required": True, "label": "Hub 地址", "label_en": "Hub URL"},
+            {"key": "A2A_WORKBUDDY_CONNECTOR_TOKEN", "type": "password", "required": True, "label": "Connector Token", "label_en": "Connector Token"},
         ]
     }), encoding="utf-8")
     (root / "mcp.json").write_text(json.dumps({
@@ -229,3 +230,71 @@ def test_environment_non_string_values_fail_closed_without_exception(tmp_path: P
         checks = validate_environment({**valid, **override})
         assert check_id in {x["id"] for x in checks if x["status"] == "FAIL"}
         assert all(isinstance(x["status"], str) for x in checks)
+
+
+def test_package_enforces_strict_semver_for_minimum_and_package_versions(tmp_path: Path):
+    root = _package(tmp_path)
+    meta_path = root / "connector-meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    valid = ("0.0.0", "4.23.0", "4.23.0-rc.1", "4.23.0+build.5", "4.23.0-rc.1+build.5")
+    invalid = (
+        "", "latest", "4.23", "v4.23.0", "04.23.0", "4.23.00",
+        "4.23.0-", "4.23.0+", "4.23.0--", "4.23.0-a..b",
+        "4.23.0-01", "4.23.0-rc.01", "4.23.0+build..5",
+    )
+    for version in valid:
+        meta["minWorkbuddyVersion"] = version
+        meta["version"] = "1.0.0"
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        assert "metadata" not in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}, version
+    for version in invalid:
+        meta["minWorkbuddyVersion"] = version
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        assert "metadata" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}, version
+    meta["minWorkbuddyVersion"] = "4.23.0"
+    for version in invalid:
+        meta["version"] = version
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        assert "metadata" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}, version
+
+
+def test_package_rejects_duplicate_json_object_keys(tmp_path: Path):
+    root = _package(tmp_path)
+    meta_path = root / "connector-meta.json"
+    meta_path.write_text(
+        '{"name":"first","name":"second","source":"netivora-a2a-workbuddy",'
+        '"type":"mcp","auth_mode":"token","minWorkbuddyVersion":"4.23.0"}',
+        encoding="utf-8",
+    )
+    failures = {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+    assert "json:connector-meta.json" in failures
+
+
+def test_package_enforces_token_field_contract(tmp_path: Path):
+    root = _package(tmp_path)
+    schema_path = root / "token-schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["fields"][0]["required"] = False
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    assert "token-field-contract" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+    schema["fields"][0]["required"] = True
+    schema["fields"][1]["label_en"] = " "
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    assert "token-field-contract" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+    schema["fields"][1]["label_en"] = "Hub URL"
+    schema["fields"][1]["type"] = "password"
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    assert "token-field-contract" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+
+def test_json_output_has_versioned_stable_envelope(capsys):
+    exit_code = main(["--json"])
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert output["schema_version"] == 1
+    assert output["status"] == "PASS"
+    assert isinstance(output["passed"], int)
+    assert output["failed"] == 0
+    assert all(set(item) == {"id", "status", "message"} for item in output["checks"])
