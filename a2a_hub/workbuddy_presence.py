@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import closing
 import time
@@ -42,9 +43,27 @@ class WorkBuddyPresenceStore:
                     connector_id TEXT PRIMARY KEY,
                     last_error_code TEXT,
                     last_error_at REAL,
-                    reconnect_attempt INTEGER NOT NULL DEFAULT 0
+                    reconnect_attempt INTEGER NOT NULL DEFAULT 0,
+                    recovery_revision INTEGER NOT NULL DEFAULT 0,
+                    decision_snapshot_id TEXT,
+                    decision_disposition TEXT,
+                    decision_at REAL
                 )
             """)
+            event_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(workbuddy_connection_events)")
+            }
+            if "recovery_revision" not in event_columns:
+                db.execute(
+                    "ALTER TABLE workbuddy_connection_events "
+                    "ADD COLUMN recovery_revision INTEGER NOT NULL DEFAULT 0"
+                )
+            if "decision_snapshot_id" not in event_columns:
+                db.execute("ALTER TABLE workbuddy_connection_events ADD COLUMN decision_snapshot_id TEXT")
+            if "decision_disposition" not in event_columns:
+                db.execute("ALTER TABLE workbuddy_connection_events ADD COLUMN decision_disposition TEXT")
+            if "decision_at" not in event_columns:
+                db.execute("ALTER TABLE workbuddy_connection_events ADD COLUMN decision_at REAL")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(workbuddy_presence)")}
             if "last_heartbeat_seq" not in columns:
                 db.execute("ALTER TABLE workbuddy_presence ADD COLUMN last_heartbeat_seq INTEGER")
@@ -96,10 +115,12 @@ class WorkBuddyPresenceStore:
             )
             db.execute("""
                 INSERT INTO workbuddy_connection_events
-                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
-                VALUES (?, NULL, NULL, 0)
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt, recovery_revision)
+                VALUES (?, NULL, NULL, 0, 1)
                 ON CONFLICT(connector_id) DO UPDATE SET
-                    last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0
+                    last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0,
+                    recovery_revision=workbuddy_connection_events.recovery_revision+1,
+                    decision_snapshot_id=NULL, decision_disposition=NULL, decision_at=NULL
             """, (connector_id,))
 
     def record_heartbeat(
@@ -141,10 +162,12 @@ class WorkBuddyPresenceStore:
             if accepted:
                 db.execute("""
                     INSERT INTO workbuddy_connection_events
-                        (connector_id, last_error_code, last_error_at, reconnect_attempt)
-                    VALUES (?, NULL, NULL, 0)
+                        (connector_id, last_error_code, last_error_at, reconnect_attempt, recovery_revision)
+                    VALUES (?, NULL, NULL, 0, 1)
                     ON CONFLICT(connector_id) DO UPDATE SET
-                        last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0
+                        last_error_code=NULL, last_error_at=NULL, reconnect_attempt=0,
+                        recovery_revision=workbuddy_connection_events.recovery_revision+1,
+                        decision_snapshot_id=NULL, decision_disposition=NULL, decision_at=NULL
                 """, (connector_id,))
             return accepted
 
@@ -160,11 +183,13 @@ class WorkBuddyPresenceStore:
         with closing(self._connect()) as db, db:
             db.execute("""
                 INSERT INTO workbuddy_connection_events
-                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
-                VALUES (?, ?, ?, 0)
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt, recovery_revision)
+                VALUES (?, ?, ?, 0, 1)
                 ON CONFLICT(connector_id) DO UPDATE SET
                     last_error_code=excluded.last_error_code,
-                    last_error_at=excluded.last_error_at
+                    last_error_at=excluded.last_error_at,
+                    recovery_revision=workbuddy_connection_events.recovery_revision+1,
+                    decision_snapshot_id=NULL, decision_disposition=NULL, decision_at=NULL
             """, (connector_id, error_code, now))
 
     def record_reconnect_attempt(self, connector_id: str) -> int:
@@ -172,10 +197,12 @@ class WorkBuddyPresenceStore:
         with closing(self._connect()) as db, db:
             db.execute("""
                 INSERT INTO workbuddy_connection_events
-                    (connector_id, last_error_code, last_error_at, reconnect_attempt)
-                VALUES (?, NULL, NULL, 1)
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt, recovery_revision)
+                VALUES (?, NULL, NULL, 1, 1)
                 ON CONFLICT(connector_id) DO UPDATE SET
-                    reconnect_attempt=MIN(reconnect_attempt+1, 8)
+                    reconnect_attempt=MIN(reconnect_attempt+1, 8),
+                    recovery_revision=workbuddy_connection_events.recovery_revision+1,
+                    decision_snapshot_id=NULL, decision_disposition=NULL, decision_at=NULL
             """, (connector_id,))
             row = db.execute(
                 "SELECT reconnect_attempt FROM workbuddy_connection_events WHERE connector_id=?",
@@ -186,13 +213,56 @@ class WorkBuddyPresenceStore:
     def get_runtime_events(self, connector_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
             row = db.execute(
-                "SELECT last_error_code, last_error_at, reconnect_attempt "
+                "SELECT last_error_code, last_error_at, reconnect_attempt, recovery_revision, "
+                "decision_snapshot_id, decision_disposition, decision_at "
                 "FROM workbuddy_connection_events WHERE connector_id=?",
                 (connector_id,),
             ).fetchone()
         if row is None:
-            return {"last_error_code": None, "last_error_at": None, "reconnect_attempt": 0}
+            return {
+                "last_error_code": None,
+                "last_error_at": None,
+                "reconnect_attempt": 0,
+                "recovery_revision": 0,
+                "decision_snapshot_id": None,
+                "decision_disposition": None,
+                "decision_at": None,
+            }
         return dict(row)
+
+    def record_recovery_decision(
+        self,
+        connector_id: str,
+        expected_revision: int,
+        snapshot_id: str,
+        disposition: str,
+    ) -> tuple[bool, float]:
+        """Persist an operator decision only if the observed recovery revision is current."""
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("recovery revision must be a non-negative integer")
+        if not isinstance(snapshot_id, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+            raise ValueError("invalid recovery snapshot ID")
+        if disposition not in {"acknowledged", "deferred", "dismissed"}:
+            raise ValueError("unsupported recovery decision")
+        now = time.time()
+        with closing(self._connect()) as db, db:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO workbuddy_connection_events
+                    (connector_id, last_error_code, last_error_at, reconnect_attempt, recovery_revision)
+                VALUES (?, NULL, NULL, 0, 0)
+                """,
+                (connector_id,),
+            )
+            cursor = db.execute(
+                """
+                UPDATE workbuddy_connection_events
+                SET decision_snapshot_id=?, decision_disposition=?, decision_at=?
+                WHERE connector_id=? AND recovery_revision=?
+                """,
+                (snapshot_id, disposition, now, connector_id, expected_revision),
+            )
+            return cursor.rowcount == 1, now
 
     def get_presence(self, connector_id: str, now: float | None = None) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:
