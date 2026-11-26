@@ -227,8 +227,18 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
 
     def diagnostics_payload(settings: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
         presence_store = presence_for(settings)
-        state = presence_store.get_presence(settings.workbuddy_connector_id)
-        events = presence_store.get_runtime_events(settings.workbuddy_connector_id)
+        # Read presence and event revision as a consistent snapshot. The final
+        # revision compare-and-set rejects any mutation that happens afterwards.
+        state = None
+        events: dict[str, Any] = {}
+        for _ in range(3):
+            before = presence_store.get_runtime_events(settings.workbuddy_connector_id)
+            state = presence_store.get_presence(settings.workbuddy_connector_id)
+            events = presence_store.get_runtime_events(settings.workbuddy_connector_id)
+            if before["recovery_revision"] == events["recovery_revision"]:
+                break
+        else:
+            raise HTTPException(status_code=503, detail="WorkBuddy recovery state is changing; retry diagnostics")
         if state is None:
             recovery_state = "offline"
             recovery = recovery_advice({
