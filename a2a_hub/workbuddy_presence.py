@@ -237,7 +237,7 @@ class WorkBuddyPresenceStore:
         snapshot_id: str,
         disposition: str,
     ) -> tuple[bool, float]:
-        """Persist an operator decision only if the observed recovery revision is current."""
+        """Persist one operator decision for a current snapshot; exact retries are idempotent."""
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
             raise ValueError("recovery revision must be a non-negative integer")
         if not isinstance(snapshot_id, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
@@ -246,6 +246,7 @@ class WorkBuddyPresenceStore:
             raise ValueError("unsupported recovery decision")
         now = time.time()
         with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute(
                 """
                 INSERT OR IGNORE INTO workbuddy_connection_events
@@ -254,6 +255,19 @@ class WorkBuddyPresenceStore:
                 """,
                 (connector_id,),
             )
+            row = db.execute(
+                """
+                SELECT recovery_revision, decision_snapshot_id, decision_disposition, decision_at
+                FROM workbuddy_connection_events WHERE connector_id=?
+                """,
+                (connector_id,),
+            ).fetchone()
+            if row is None or int(row["recovery_revision"]) != expected_revision:
+                return False, now
+            if row["decision_snapshot_id"] == snapshot_id:
+                if row["decision_disposition"] == disposition and row["decision_at"] is not None:
+                    return True, float(row["decision_at"])
+                return False, now
             cursor = db.execute(
                 """
                 UPDATE workbuddy_connection_events
@@ -263,6 +277,7 @@ class WorkBuddyPresenceStore:
                 (snapshot_id, disposition, now, connector_id, expected_revision),
             )
             return cursor.rowcount == 1, now
+
 
     def get_presence(self, connector_id: str, now: float | None = None) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:
