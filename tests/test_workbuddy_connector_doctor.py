@@ -173,3 +173,59 @@ def test_environment_rejects_malformed_ipv6_and_whitespace(tmp_path: Path):
 def test_environment_accepts_https_root_with_optional_slash(tmp_path: Path):
     for url in ("https://hub.example.test", "https://hub.example.test/"):
         assert all(x["status"] == "PASS" for x in validate_environment(_valid_env(tmp_path, url)))
+
+
+def test_package_rejects_empty_or_malformed_minimum_workbuddy_version(tmp_path: Path):
+    root = _package(tmp_path)
+    meta_path = root / "connector-meta.json"
+    for version in ("", "   ", "latest", "4.23"):
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["minWorkbuddyVersion"] = version
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        failures = {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+        assert "metadata" in failures, version
+
+
+def test_package_rejects_unknown_metadata_and_token_schema_fields(tmp_path: Path):
+    root = _package(tmp_path)
+    meta_path = root / "connector-meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["unexpectedSecret"] = "must-not-be-accepted"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert "metadata-keys" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+    root = _package(tmp_path / "second")
+    schema_path = root / "token-schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["fields"][0]["default"] = "embedded-secret"
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    assert "token-field-keys" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+
+def test_package_rejects_unknown_mcp_fields(tmp_path: Path):
+    root = _package(tmp_path)
+    config_path = root / "mcp.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mcpServers"]["netivora-a2a-workbuddy"]["cwd"] = "/tmp/untrusted"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    assert "mcp-server-keys" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+
+
+def test_environment_non_string_values_fail_closed_without_exception(tmp_path: Path):
+    script = tmp_path / "workbuddy_mcp_server.py"
+    script.write_text("# test", encoding="utf-8")
+    valid = {
+        "A2A_HUB_MCP_SERVER_PATH": str(script),
+        "A2A_WORKBUDDY_HUB_URL": "https://hub.example.test",
+        "A2A_WORKBUDDY_CONNECTOR_TOKEN": "s" * 48,
+    }
+    cases = (
+        {"A2A_HUB_MCP_SERVER_PATH": 123},
+        {"A2A_WORKBUDDY_HUB_URL": 123},
+        {"A2A_WORKBUDDY_CONNECTOR_TOKEN": None},
+    )
+    expected = ("local-script", "hub-url", "connector-token")
+    for override, check_id in zip(cases, expected):
+        checks = validate_environment({**valid, **override})
+        assert check_id in {x["id"] for x in checks if x["status"] == "FAIL"}
+        assert all(isinstance(x["status"], str) for x in checks)

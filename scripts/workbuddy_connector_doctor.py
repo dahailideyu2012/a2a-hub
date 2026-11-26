@@ -22,6 +22,16 @@ EXPECTED_FIELDS = {
     "A2A_WORKBUDDY_CONNECTOR_TOKEN",
 }
 PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+VERSION = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
+META_KEYS = {
+    "name", "name_zh", "name_en", "description", "description_zh", "description_en",
+    "source", "type", "auth_mode", "version", "minWorkbuddyVersion",
+    "examples_zh", "examples_en",
+}
+TOKEN_SCHEMA_KEYS = {"title", "title_en", "description", "description_en", "docUrl", "docLabel", "fields"}
+TOKEN_FIELD_KEYS = {"key", "label", "label_en", "type", "required", "description", "description_en", "placeholder"}
+MCP_ROOT_KEYS = {"mcpServers"}
+MCP_SERVER_KEYS = {"type", "command", "args", "env", "timeout"}
 
 
 def _read_json(path: Path, checks: list[dict[str, str]]) -> dict[str, Any]:
@@ -68,27 +78,39 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
     _check(checks, "icon", (package / "icon.svg").is_file(), "连接器图标存在", "缺少 icon.svg")
 
     source = meta.get("source")
+    min_version = meta.get("minWorkbuddyVersion")
+    _check(checks, "metadata-keys", set(meta).issubset(META_KEYS),
+           "连接器元信息没有未知字段", "connector-meta.json 包含未识别字段")
     _check(checks, "metadata", meta.get("type") == "mcp" and meta.get("auth_mode") == "token"
            and isinstance(source, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", source))
-           and isinstance(meta.get("minWorkbuddyVersion"), str),
-           "连接器元信息包含 MCP/Token 模式、合法 source 和最低版本",
+           and isinstance(min_version, str) and bool(VERSION.fullmatch(min_version)),
+           "连接器元信息包含 MCP/Token 模式、合法 source 和非空语义版本",
            "connector-meta.json 的 type/auth_mode/source/minWorkbuddyVersion 不符合规范")
 
+    _check(checks, "token-schema-keys", set(token_schema).issubset(TOKEN_SCHEMA_KEYS),
+           "凭据表单没有未知顶层字段", "token-schema.json 包含未识别顶层字段")
     fields = token_schema.get("fields")
-    field_keys = [item.get("key") for item in fields if isinstance(item, dict)] if isinstance(fields, list) else []
+    field_objects = fields if isinstance(fields, list) and all(isinstance(item, dict) for item in fields) else []
+    field_keys = [item.get("key") for item in field_objects]
     _check(checks, "token-fields", isinstance(fields, list) and len(fields) == 3 and len(field_keys) == 3 and set(field_keys) == EXPECTED_FIELDS,
            "凭据表单包含且仅包含三个必需字段，且没有重复项",
            "token-schema.json 必须恰好包含三个不重复的必需字段")
+    _check(checks, "token-field-keys", len(field_objects) == 3 and all(set(item).issubset(TOKEN_FIELD_KEYS) for item in field_objects),
+           "凭据字段没有未知属性", "token-schema.json 的字段对象包含未识别属性")
     token_field = next((item for item in fields if isinstance(item, dict) and item.get("key") == "A2A_WORKBUDDY_CONNECTOR_TOKEN"), {}) if isinstance(fields, list) else {}
     _check(checks, "token-secret-type", token_field.get("type") == "password",
            "Connector Token 使用 password 输入类型", "Connector Token 字段必须使用 password 类型")
 
+    _check(checks, "mcp-root-keys", set(mcp).issubset(MCP_ROOT_KEYS),
+           "MCP 配置没有未知顶层字段", "mcp.json 包含未识别顶层字段")
     servers = mcp.get("mcpServers")
     server_values = list(servers.values()) if isinstance(servers, dict) else []
     _check(checks, "mcp-server-count", isinstance(servers, dict) and list(servers) == ["netivora-a2a-workbuddy"],
            "mcp.json 仅包含预期的 NETIVORA MCP Server",
            "mcp.json 必须且只能包含 netivora-a2a-workbuddy")
     server = server_values[0] if len(server_values) == 1 and isinstance(server_values[0], dict) else {}
+    _check(checks, "mcp-server-keys", bool(server) and set(server).issubset(MCP_SERVER_KEYS),
+           "MCP Server 配置没有未知属性", "MCP Server 配置包含未识别属性")
     expected_args = [
         "-c",
         "import os,runpy; runpy.run_path(os.environ['A2A_HUB_MCP_SERVER_PATH'], run_name='__main__')",
@@ -105,16 +127,18 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
     return checks
 
 
-def validate_environment(env: dict[str, str] | None = None, allow_loopback_http: bool = False) -> list[dict[str, str]]:
-    """Check required local settings; values are deliberately never included in output."""
+def validate_environment(env: dict[str, Any] | None = None, allow_loopback_http: bool = False) -> list[dict[str, str]]:
+    """Check required local settings; malformed programmatic values fail closed."""
     values = os.environ if env is None else env
     checks: list[dict[str, str]] = []
-    script_value = values.get("A2A_HUB_MCP_SERVER_PATH", "").strip()
+    raw_script = values.get("A2A_HUB_MCP_SERVER_PATH", "")
+    script_value = raw_script.strip() if isinstance(raw_script, str) else ""
     script_path = Path(script_value).expanduser() if script_value else None
     _check(checks, "local-script", bool(script_path and script_path.is_file() and script_path.name == "workbuddy_mcp_server.py"),
            "本机 MCP 脚本路径存在且文件名正确", "A2A_HUB_MCP_SERVER_PATH 必须指向存在的 workbuddy_mcp_server.py")
 
-    hub_url = values.get("A2A_WORKBUDDY_HUB_URL", "").strip()
+    raw_hub_url = values.get("A2A_WORKBUDDY_HUB_URL", "")
+    hub_url = raw_hub_url.strip() if isinstance(raw_hub_url, str) else ""
     try:
         parsed = urlsplit(hub_url)
         hostname = parsed.hostname
@@ -140,7 +164,8 @@ def validate_environment(env: dict[str, str] | None = None, allow_loopback_http:
            "Hub 地址格式有效（不会发起网络请求）",
            "A2A_WORKBUDDY_HUB_URL 必须是 HTTPS 根地址；仅显式允许时可使用 localhost HTTP，且不得含凭据、查询或片段")
 
-    token = values.get("A2A_WORKBUDDY_CONNECTOR_TOKEN", "")
+    raw_token = values.get("A2A_WORKBUDDY_CONNECTOR_TOKEN", "")
+    token = raw_token if isinstance(raw_token, str) else ""
     token_ok = len(token) >= 32 and not any(ch.isspace() for ch in token)
     _check(checks, "connector-token", token_ok,
            "独立 Connector Token 已配置且长度符合要求（值已隐藏）",
