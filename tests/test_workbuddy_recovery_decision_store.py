@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 
 from a2a_hub.workbuddy_presence import WorkBuddyPresenceStore
@@ -118,3 +120,11 @@ def test_concurrent_conflicting_decisions_allow_only_one_winner(tmp_path):
     events = store.get_runtime_events(CONNECTOR)
     assert events["decision_snapshot_id"] == SNAPSHOT
     assert events["decision_disposition"] in {"acknowledged", "dismissed"}
+
+
+
+def test_store_rejects_non_string_or_unknown_dispositions(tmp_path):
+    store = WorkBuddyPresenceStore(tmp_path / "presence.db")
+    for value in (None, [], "execute"):
+        with pytest.raises(ValueError, match="recovery decision"):
+            store.record_recovery_decision(CONNECTOR, 0, SNAPSHOT, value)
