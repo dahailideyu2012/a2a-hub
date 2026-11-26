@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import json, os, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
+import json, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +18,8 @@ TOOLS = [
  {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
  {"name":"workbuddy_check_task_cancellation","description":"检查当前 MCP 会话持有的任务是否已被取消。执行一次认证 busy 心跳；收到取消信号时立即丢弃本地租约并返回 should_stop=true。适合长任务在子步骤之间主动检查；不启动后台轮询或中断正在运行的外部程序。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
  {"name":"workbuddy_connection_check","description":"执行一次连接专用检查：握手、读取 presence、发送一次 idle 心跳并复查 presence。绝不领取或执行任务。","inputSchema":{"type":"object","properties":{},"required":[]}},
+ {"name":"workbuddy_recovery_diagnostics","description":"只读读取 Hub 当前恢复诊断和 recovery_snapshot_id；不触发握手、心跳、重连或任务操作。用于在用户指示下记录人工处理决定。","inputSchema":{"type":"object","properties":{},"required":[]}},
+ {"name":"workbuddy_record_recovery_decision","description":"仅在用户/操作员明确决定后，记录当前诊断快照的 acknowledged、deferred 或 dismissed 决定。必须先读取 workbuddy_recovery_diagnostics；过期快照会被拒绝。本工具只记录回执，绝不执行 reconnect、heartbeat probe、claim 或任务。","inputSchema":{"type":"object","properties":{"snapshot_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},"disposition":{"type":"string","enum":["acknowledged","deferred","dismissed"]}},"required":["snapshot_id","disposition"]}},
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
  {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
@@ -96,6 +98,44 @@ def _ensure_handshake() -> dict[str,Any]:
 def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
  return _ok(_get("presence"))
+
+def tool_recovery_diagnostics(_args: dict[str,Any]) -> dict[str,Any]:
+ # Diagnostics must not handshake: a handshake intentionally clears prior error/retry
+ # history, which would hide the state this read-only tool is meant to inspect.
+ result=_get("diagnostics")
+ if result.get("connector_id") != _connector_id():
+  raise RuntimeError("Hub diagnostics connector identity mismatch")
+ snapshot_id=result.get("recovery_snapshot_id")
+ if not isinstance(snapshot_id,str) or not re.fullmatch(r"[0-9a-f]{64}",snapshot_id):
+  raise RuntimeError("Hub diagnostics response lacks a valid recovery snapshot ID")
+ if result.get("diagnostics_version") != 4:
+  raise RuntimeError("Hub diagnostics version 4 is required for recovery decisions")
+ return _ok(result)
+
+
+def tool_record_recovery_decision(args: dict[str,Any]) -> dict[str,Any]:
+ snapshot_id=args.get("snapshot_id")
+ disposition=args.get("disposition")
+ if not isinstance(snapshot_id,str) or not re.fullmatch(r"[0-9a-f]{64}",snapshot_id):
+  raise RuntimeError("snapshot_id 必须是 64 位小写十六进制")
+ if disposition not in {"acknowledged","deferred","dismissed"}:
+  raise RuntimeError("disposition 必须是 acknowledged、deferred 或 dismissed")
+ # This endpoint records only an operator decision. It does not handshake or
+ # perform the recommended recovery action, and it never touches task APIs.
+ result=_post("recovery/decision",{
+  "connector_id":_connector_id(),
+  "snapshot_id":snapshot_id,
+  "disposition":disposition,
+ })
+ if (result.get("accepted") is not True
+     or result.get("connector_id") != _connector_id()
+     or result.get("snapshot_id") != snapshot_id
+     or result.get("disposition") != disposition
+     or result.get("action_executed") is not False
+     or result.get("automatic_actions_enabled") is not False):
+  raise RuntimeError("Hub recovery decision receipt failed closed validation")
+ return _ok(result)
+
 
 def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  # Reject malformed input locally before performing any network handshake.
@@ -297,7 +337,7 @@ def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
  with LEASES_LOCK: LEASES.pop(task_id,None)
  return _ok(result)
-TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
+TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_recovery_diagnostics":tool_recovery_diagnostics,"workbuddy_record_recovery_decision":tool_record_recovery_decision,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
  fn=TOOL_FUNCS.get(name)
  if fn is None: return _err("未知工具")
