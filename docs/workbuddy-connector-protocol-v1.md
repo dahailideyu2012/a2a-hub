@@ -172,9 +172,9 @@ one connector bucket, not a multi-device/token registry.
 ## Structured security audit (T31)
 
 The connector emits one-line JSON audit records to the dedicated Python logger
-`a2a_hub.audit.workbuddy` at INFO level. Events cover all ten connector routes:
+`a2a_hub.audit.workbuddy` at INFO level. Events cover the authenticated connector routes:
 claim, start, renew, progress, result, handshake, heartbeat, presence, callback
-status, and callback retry. HTTP failures are recorded with their status and a
+status/retry, connection-error reporting, reconnect-attempt reporting, and recovery-decision receipts. HTTP failures are recorded with their status and a
 fixed reason code; the original exception text and response body are not logged.
 
 The record uses a closed field set: event, outcome, configured connector ID,
@@ -229,3 +229,51 @@ create a background polling loop, and does not replace server-side lease fencing
 The existing `workbuddy_heartbeat` remains available for ordinary liveness
 updates; the dedicated tool additionally requires a locally held task lease and
 provides a clear stop decision to the model.
+
+
+
+## Operator-in-the-loop recovery decisions (T106–T112)
+
+The authenticated `GET /integrations/workbuddy/v1/diagnostics` response is
+version 4 and adds:
+
+- `recovery_snapshot_id`: a stable 64-character SHA-256 identifier for the
+  current redacted recovery snapshot;
+- `operator_decision`: the most recent decision for that exact snapshot, or
+  null when no current decision exists.
+
+The MCP bridge exposes two task-free tools:
+
+- `workbuddy_recovery_diagnostics` reads diagnostics without performing a
+  handshake. This is deliberate: a successful handshake clears previous error
+  and retry history, so a diagnostics read must not silently reset the state
+  being inspected.
+- `workbuddy_record_recovery_decision` records one of `acknowledged`,
+  `deferred`, or `dismissed` for a supplied snapshot ID. Invoke it only after
+  the user/operator has explicitly chosen a disposition.
+
+The REST request is `POST /integrations/workbuddy/v1/recovery/decision`:
+
+```json
+{
+  "connector_id": "workbuddy-personal",
+  "snapshot_id": "<64-character recovery_snapshot_id>",
+  "disposition": "deferred"
+}
+```
+
+The endpoint uses the dedicated connector token, verifies the configured
+connector identity, rejects unknown fields, and applies the existing connector
+rate limit. The Hub uses a monotonic recovery revision and an atomic SQLite
+compare-and-set. If the connection state changes after diagnostics was read,
+the request returns HTTP 409 and the caller must fetch a fresh snapshot. An
+exact retry of the same disposition is idempotent; a different disposition for
+the same snapshot conflicts.
+
+A decision receipt is an audit record only. `acknowledged` does not mean a
+reconnect or heartbeat probe was executed, and `deferred`/`dismissed` do not
+change the recovery policy. The response always sets
+`action_executed=false` and `automatic_actions_enabled=false`. No automatic
+network action, task claim, task execution, or background worker is added.
+Diagnostics and decision tools do not expose lease tokens, connector tokens,
+raw exception text, task prompts, or result payloads.

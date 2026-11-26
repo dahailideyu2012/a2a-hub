@@ -508,3 +508,99 @@ def test_cancellation_checkpoint_fails_closed_on_mismatched_receipt(
     assert "身份或任务不匹配" in result["content"][0]["text"]
     assert task_id in server.LEASES
     assert calls == ["handshake", "heartbeat"]
+
+
+def test_recovery_diagnostics_is_read_only_and_does_not_trigger_handshake(monkeypatch):
+    calls = []
+    snapshot_id = "a" * 64
+    monkeypatch.setattr(server, "_post", lambda *_args: (_ for _ in ()).throw(AssertionError("no POST expected")))
+    monkeypatch.setattr(server, "_get", lambda path: calls.append(path) or {
+        "connector_id": "workbuddy-personal",
+        "diagnostics_version": 4,
+        "recovery_snapshot_id": snapshot_id,
+        "connection_state": "offline",
+        "recovery": {"action": "reconnect", "automatic_actions_enabled": False},
+        "operator_decision": None,
+    })
+
+    result = server.call_tool("workbuddy_recovery_diagnostics", {})
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["recovery_snapshot_id"] == snapshot_id
+    assert calls == ["diagnostics"]
+    assert "workbuddy_claim_task" not in calls
+
+
+def test_record_recovery_decision_posts_only_receipt_and_validates_response(monkeypatch):
+    calls = []
+    snapshot_id = "b" * 64
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        return {
+            "accepted": True,
+            "connector_id": "workbuddy-personal",
+            "snapshot_id": snapshot_id,
+            "disposition": "deferred",
+            "recorded_at": "2026-11-26T00:00:00+00:00",
+            "action_executed": False,
+            "automatic_actions_enabled": False,
+        }
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool("workbuddy_record_recovery_decision", {
+        "snapshot_id": snapshot_id,
+        "disposition": "deferred",
+    })
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["action_executed"] is False
+    assert calls == [("recovery/decision", {
+        "connector_id": "workbuddy-personal",
+        "snapshot_id": snapshot_id,
+        "disposition": "deferred",
+    })]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"snapshot_id": "short", "disposition": "acknowledged"},
+        {"snapshot_id": "c" * 64, "disposition": "execute"},
+    ],
+)
+def test_record_recovery_decision_rejects_invalid_input_before_network(monkeypatch, arguments):
+    calls = []
+    monkeypatch.setattr(server, "_post", lambda *args: calls.append(args) or {})
+    result = server.call_tool("workbuddy_record_recovery_decision", arguments)
+    assert result["isError"] is True
+    assert calls == []
+
+
+def test_record_recovery_decision_fails_closed_on_mismatched_receipt(monkeypatch):
+    snapshot_id = "d" * 64
+    monkeypatch.setattr(server, "_post", lambda _path, _payload: {
+        "accepted": True,
+        "connector_id": "another-connector",
+        "snapshot_id": snapshot_id,
+        "disposition": "acknowledged",
+        "action_executed": False,
+        "automatic_actions_enabled": False,
+    })
+    result = server.call_tool("workbuddy_record_recovery_decision", {
+        "snapshot_id": snapshot_id,
+        "disposition": "acknowledged",
+    })
+    assert result["isError"] is True
+    assert "failed closed" in result["content"][0]["text"]
+
+
+def test_recovery_operator_tools_are_registered_with_strict_schema():
+    by_name = {tool["name"]: tool for tool in server.TOOLS}
+    assert "workbuddy_recovery_diagnostics" in by_name
+    assert "workbuddy_record_recovery_decision" in by_name
+    schema = by_name["workbuddy_record_recovery_decision"]["inputSchema"]
+    assert schema["required"] == ["snapshot_id", "disposition"]
+    assert schema["properties"]["disposition"]["enum"] == [
+        "acknowledged", "deferred", "dismissed"
+    ]

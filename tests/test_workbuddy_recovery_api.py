@@ -21,7 +21,9 @@ def test_no_handshake_diagnostics_include_safe_recovery_envelope(client, monkeyp
     response = client.get(f"{BASE}/diagnostics", headers=_headers())
     assert response.status_code == 200
     body = response.json()
-    assert body["diagnostics_version"] == 3
+    assert body["diagnostics_version"] == 4
+    assert len(body["recovery_snapshot_id"]) == 64
+    assert body["operator_decision"] is None
     assert body["connection_state"] == "offline"
     assert body["recovery"]["action"] == "reconnect"
     assert body["recovery"]["retry_allowed"] is True

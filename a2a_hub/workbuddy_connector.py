@@ -19,7 +19,7 @@ from .github_callback_outbox import GithubCallbackOutbox
 from .workbuddy_presence import WorkBuddyPresenceStore
 from .rate_limit_store import SQLiteRateLimitStore
 from .workbuddy_audit import emit as emit_audit, fingerprint as token_fingerprint
-from .workbuddy_runtime import (SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age, recovery_advice)
+from .workbuddy_runtime import (SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol, classify_connection_age, recovery_advice, recovery_snapshot_id)
 from .workbuddy_capabilities import negotiate_capabilities
 
 
@@ -59,6 +59,13 @@ class ConnectionErrorRequest(BaseModel):
 class ReconnectAttemptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class RecoveryDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    snapshot_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    disposition: Literal["acknowledged", "deferred", "dismissed"]
 
 
 class ClaimRequest(BaseModel):
@@ -217,6 +224,125 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             from .config import ROOT
             path = (ROOT / path).resolve()
         return WorkBuddyPresenceStore(path, ttl_seconds=settings.workbuddy_presence_ttl_seconds)
+
+    def diagnostics_payload(settings: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
+        presence_store = presence_for(settings)
+        # Read presence and event revision as a consistent snapshot. The final
+        # revision compare-and-set rejects any mutation that happens afterwards.
+        state = None
+        events: dict[str, Any] = {}
+        for _ in range(3):
+            before = presence_store.get_runtime_events(settings.workbuddy_connector_id)
+            state = presence_store.get_presence(settings.workbuddy_connector_id)
+            events = presence_store.get_runtime_events(settings.workbuddy_connector_id)
+            if before["recovery_revision"] == events["recovery_revision"]:
+                break
+        else:
+            raise HTTPException(status_code=503, detail="WorkBuddy recovery state is changing; retry diagnostics")
+        if state is None:
+            recovery_state = "offline"
+            recovery = recovery_advice({
+                "connection_state": recovery_state,
+                "reconnect_attempt": events["reconnect_attempt"],
+                "last_error_code": events["last_error_code"],
+            })
+            payload: dict[str, Any] = {
+                "connector_id": settings.workbuddy_connector_id,
+                "connection_state": recovery_state,
+                "online": False,
+                "reason": "handshake_not_seen",
+                "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
+                "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+                "last_error_code": events["last_error_code"],
+                "last_error_at": events["last_error_at"],
+                "reconnect_attempt": events["reconnect_attempt"],
+                "recovery": recovery,
+            }
+            stable_snapshot = {
+                "connector_id": settings.workbuddy_connector_id,
+                "connection_state": recovery_state,
+                "recovery_action": recovery["action"],
+                "recovery_reason": recovery["reason"],
+                "last_error_code": events["last_error_code"],
+                "last_error_at": events["last_error_at"],
+                "reconnect_attempt": events["reconnect_attempt"],
+                "last_heartbeat_id": None,
+                "last_heartbeat_seq": None,
+                "last_seen_at": None,
+                "protocol_version": None,
+                "client_version": None,
+                "recovery_revision": events["recovery_revision"],
+            }
+        else:
+            health = classify_connection_age(
+                state.get("seconds_since_seen"),
+                heartbeat_interval_seconds=settings.workbuddy_heartbeat_interval_seconds,
+                presence_ttl_seconds=settings.workbuddy_presence_ttl_seconds,
+            )
+            recovery_state = (
+                "offline"
+                if events["last_error_code"] is not None or events["reconnect_attempt"] > 0
+                else health["state"]
+            )
+            recovery = recovery_advice({
+                "connection_state": recovery_state,
+                "reconnect_attempt": events["reconnect_attempt"],
+                "last_error_code": events["last_error_code"],
+            })
+            payload = {
+                "connector_id": state["connector_id"],
+                "connection_state": recovery_state,
+                "online": state["online"] and recovery_state == "online",
+                "status": "offline" if recovery_state == "offline" else state["status"],
+                "protocol_version": state["protocol_version"],
+                "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "client_version": state["client_version"],
+                "capabilities": state["capabilities"],
+                "last_heartbeat_id": state["last_heartbeat_id"],
+                "last_heartbeat_seq": state["last_heartbeat_seq"],
+                "last_seen_at": state["last_seen_at"],
+                "seconds_since_seen": health["seconds_since_seen"],
+                "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
+                "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
+                "last_error_code": events["last_error_code"],
+                "last_error_at": events["last_error_at"],
+                "reconnect_attempt": events["reconnect_attempt"],
+                "recovery": recovery,
+            }
+            stable_snapshot = {
+                "connector_id": state["connector_id"],
+                "connection_state": recovery_state,
+                "recovery_action": recovery["action"],
+                "recovery_reason": recovery["reason"],
+                "last_error_code": events["last_error_code"],
+                "last_error_at": events["last_error_at"],
+                "reconnect_attempt": events["reconnect_attempt"],
+                "last_heartbeat_id": state["last_heartbeat_id"],
+                "last_heartbeat_seq": state["last_heartbeat_seq"],
+                "last_seen_at": state["last_seen_at"],
+                "protocol_version": state["protocol_version"],
+                "client_version": state["client_version"],
+                "recovery_revision": events["recovery_revision"],
+            }
+        snapshot_id = recovery_snapshot_id(stable_snapshot)
+        operator_decision = None
+        if (
+            events["decision_snapshot_id"] == snapshot_id
+            and events["decision_disposition"] is not None
+            and events["decision_at"] is not None
+        ):
+            operator_decision = {
+                "disposition": events["decision_disposition"],
+                "recorded_at": datetime.fromtimestamp(
+                    float(events["decision_at"]), timezone.utc
+                ).isoformat(),
+                "action_executed": False,
+            }
+        payload["recovery_snapshot_id"] = snapshot_id
+        payload["operator_decision"] = operator_decision
+        payload["diagnostics_version"] = 4
+        return payload, events, snapshot_id
 
     def lease_args(body: LeaseRequest, settings: Any) -> tuple[str, str, int, int]:
         return settings.workbuddy_connector_id, body.lease_token, body.lease_version, settings.workbuddy_connector_lease_seconds
@@ -507,6 +633,37 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
             }
         return state
 
+    @router.post("/recovery/decision")
+    @audited("recovery_decision")
+    async def record_recovery_decision(
+        body: RecoveryDecisionRequest,
+        connector_token: str | None = Header(default=None, alias="X-WorkBuddy-Connector-Token"),
+    ) -> dict[str, Any]:
+        _, settings = runtime()
+        await guard(connector_token, settings)
+        if not hmac.compare_digest(body.connector_id, settings.workbuddy_connector_id):
+            raise HTTPException(status_code=403, detail="WorkBuddy connector identity mismatch")
+        _, events, current_snapshot_id = diagnostics_payload(settings)
+        if not hmac.compare_digest(body.snapshot_id, current_snapshot_id):
+            raise HTTPException(status_code=409, detail="Recovery snapshot is stale; refresh diagnostics")
+        recorded, recorded_at = presence_for(settings).record_recovery_decision(
+            settings.workbuddy_connector_id,
+            events["recovery_revision"],
+            body.snapshot_id,
+            body.disposition,
+        )
+        if not recorded:
+            raise HTTPException(status_code=409, detail="Recovery state changed; refresh diagnostics")
+        return {
+            "accepted": True,
+            "connector_id": settings.workbuddy_connector_id,
+            "snapshot_id": body.snapshot_id,
+            "disposition": body.disposition,
+            "recorded_at": datetime.fromtimestamp(recorded_at, timezone.utc).isoformat(),
+            "action_executed": False,
+            "automatic_actions_enabled": False,
+        }
+
     @router.get("/diagnostics")
     @audited("diagnostics")
     async def diagnostics(
@@ -514,62 +671,7 @@ def build_workbuddy_connector_router(get_hub: Callable[[], Any]) -> APIRouter:
     ) -> dict[str, Any]:
         _, settings = runtime()
         await guard(connector_token, settings)
-        presence_store = presence_for(settings)
-        state = presence_store.get_presence(settings.workbuddy_connector_id)
-        events = presence_store.get_runtime_events(settings.workbuddy_connector_id)
-        if state is None:
-            return {
-                "connector_id": settings.workbuddy_connector_id,
-                "connection_state": "offline",
-                "online": False,
-                "reason": "handshake_not_seen",
-                "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
-                "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
-                "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
-                "last_error_code": events["last_error_code"],
-                "last_error_at": events["last_error_at"],
-                "reconnect_attempt": events["reconnect_attempt"],
-                "recovery": recovery_advice({
-                    "connection_state": "offline",
-                    "reconnect_attempt": events["reconnect_attempt"],
-                    "last_error_code": events["last_error_code"],
-                }),
-                "diagnostics_version": 3,
-            }
-        health = classify_connection_age(
-            state.get("seconds_since_seen"),
-            heartbeat_interval_seconds=settings.workbuddy_heartbeat_interval_seconds,
-            presence_ttl_seconds=settings.workbuddy_presence_ttl_seconds,
-        )
-        recovery_state = (
-            "offline"
-            if events["last_error_code"] is not None or events["reconnect_attempt"] > 0
-            else health["state"]
-        )
-        return {
-            "connector_id": state["connector_id"],
-            "connection_state": recovery_state,
-            "online": state["online"] and recovery_state == "online",
-            "status": "offline" if recovery_state == "offline" else state["status"],
-            "protocol_version": state["protocol_version"],
-            "supported_protocol_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
-            "client_version": state["client_version"],
-            "capabilities": state["capabilities"],
-            "last_heartbeat_id": state["last_heartbeat_id"],
-            "last_heartbeat_seq": state["last_heartbeat_seq"],
-            "last_seen_at": state["last_seen_at"],
-            "seconds_since_seen": health["seconds_since_seen"],
-            "heartbeat_interval_seconds": settings.workbuddy_heartbeat_interval_seconds,
-            "presence_ttl_seconds": settings.workbuddy_presence_ttl_seconds,
-            "last_error_code": events["last_error_code"],
-            "last_error_at": events["last_error_at"],
-            "reconnect_attempt": events["reconnect_attempt"],
-            "recovery": recovery_advice({
-                "connection_state": recovery_state,
-                "reconnect_attempt": events["reconnect_attempt"],
-                "last_error_code": events["last_error_code"],
-            }),
-            "diagnostics_version": 3,
-        }
+        payload, _, _ = diagnostics_payload(settings)
+        return payload
 
     return router

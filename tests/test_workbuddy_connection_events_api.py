@@ -55,7 +55,9 @@ def test_fatal_error_report_before_handshake_reaches_diagnostics(client, monkeyp
     configure(monkeypatch, tmp_path)
     assert report_error(client, "authentication_failed").status_code == 200
     body = diagnostics(client).json()
-    assert body["diagnostics_version"] == 3
+    assert body["diagnostics_version"] == 4
+    assert len(body["recovery_snapshot_id"]) == 64
+    assert body["operator_decision"] is None
     assert body["connection_state"] == "offline"
     assert body["last_error_code"] == "authentication_failed"
     assert body["last_error_at"] is not None

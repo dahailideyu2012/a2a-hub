@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from a2a_hub.workbuddy_runtime import (
     CONNECTOR_ERROR_CODES, ConnectorRuntimeStore, SUPPORTED_PROTOCOL_VERSIONS,
-    classify_connection_age, negotiate_protocol, reconnect_delay,
+    classify_connection_age, negotiate_protocol, reconnect_delay, recovery_snapshot_id,
 )
 
 
@@ -245,3 +245,34 @@ def test_mark_disconnected_remains_offline_until_new_handshake(tmp_path):
     assert store.snapshot(now=101)["connection_state"] == "offline"
     store.record_handshake("1.0", "client-a")
     assert store.snapshot(now=101)["connection_state"] == "offline"
+
+
+
+def test_recovery_snapshot_id_is_stable_and_tracks_state_revision():
+    snapshot = {
+        "connector_id": "workbuddy-personal",
+        "connection_state": "offline",
+        "recovery_action": "reconnect",
+        "recovery_reason": "timeout",
+        "last_error_code": "timeout",
+        "last_error_at": 123.5,
+        "reconnect_attempt": 2,
+        "last_heartbeat_id": "heartbeat-0001",
+        "last_heartbeat_seq": 1,
+        "last_seen_at": "2026-11-26T00:00:00+00:00",
+        "protocol_version": "1.0",
+        "client_version": "test-client",
+        "recovery_revision": 4,
+    }
+    first = recovery_snapshot_id(snapshot)
+    assert first == recovery_snapshot_id(dict(snapshot))
+    assert len(first) == 64
+    changed = {**snapshot, "recovery_revision": 5}
+    assert recovery_snapshot_id(changed) != first
+
+
+def test_recovery_snapshot_id_rejects_non_finite_and_unsupported_values():
+    with pytest.raises(ValueError, match="finite"):
+        recovery_snapshot_id({"last_error_at": math.nan})
+    with pytest.raises(ValueError, match="unsupported"):
+        recovery_snapshot_id({"connector_id": ["not", "a", "scalar"]})
