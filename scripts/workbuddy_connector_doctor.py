@@ -22,7 +22,17 @@ EXPECTED_FIELDS = {
     "A2A_WORKBUDDY_CONNECTOR_TOKEN",
 }
 PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-VERSION = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
+VERSION = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+EXPECTED_FIELD_TYPES = {
+    "A2A_HUB_MCP_SERVER_PATH": "text",
+    "A2A_WORKBUDDY_HUB_URL": "text",
+    "A2A_WORKBUDDY_CONNECTOR_TOKEN": "password",
+}
 META_KEYS = {
     "name", "name_zh", "name_en", "description", "description_zh", "description_en",
     "source", "type", "auth_mode", "version", "minWorkbuddyVersion",
@@ -34,13 +44,23 @@ MCP_ROOT_KEYS = {"mcpServers"}
 MCP_SERVER_KEYS = {"type", "command", "args", "env", "timeout"}
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate keys instead of silently accepting the last value."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
 def _read_json(path: Path, checks: list[dict[str, str]]) -> dict[str, Any]:
     if not path.is_file():
         checks.append({"id": f"file:{path.name}", "status": "FAIL", "message": f"缺少文件：{path.name}"})
         return {}
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
+    except (OSError, UnicodeError, ValueError):
         checks.append({"id": f"json:{path.name}", "status": "FAIL", "message": f"{path.name} 不是有效 UTF-8 JSON"})
         return {}
     if not isinstance(value, dict):
@@ -81,11 +101,13 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
     min_version = meta.get("minWorkbuddyVersion")
     _check(checks, "metadata-keys", set(meta).issubset(META_KEYS),
            "连接器元信息没有未知字段", "connector-meta.json 包含未识别字段")
+    package_version = meta.get("version")
     _check(checks, "metadata", meta.get("type") == "mcp" and meta.get("auth_mode") == "token"
            and isinstance(source, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", source))
-           and isinstance(min_version, str) and bool(VERSION.fullmatch(min_version)),
-           "连接器元信息包含 MCP/Token 模式、合法 source 和非空语义版本",
-           "connector-meta.json 的 type/auth_mode/source/minWorkbuddyVersion 不符合规范")
+           and isinstance(min_version, str) and bool(VERSION.fullmatch(min_version))
+           and (package_version is None or (isinstance(package_version, str) and bool(VERSION.fullmatch(package_version)))),
+           "连接器元信息包含 MCP/Token 模式、合法 source 和有效 SemVer 版本",
+           "connector-meta.json 的 type/auth_mode/source/version/minWorkbuddyVersion 不符合规范")
 
     _check(checks, "token-schema-keys", set(token_schema).issubset(TOKEN_SCHEMA_KEYS),
            "凭据表单没有未知顶层字段", "token-schema.json 包含未识别顶层字段")
@@ -97,6 +119,19 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
            "token-schema.json 必须恰好包含三个不重复的必需字段")
     _check(checks, "token-field-keys", len(field_objects) == 3 and all(set(item).issubset(TOKEN_FIELD_KEYS) for item in field_objects),
            "凭据字段没有未知属性", "token-schema.json 的字段对象包含未识别属性")
+    field_contract_ok = (
+        len(field_objects) == 3
+        and all(
+            item.get("type") == EXPECTED_FIELD_TYPES.get(item.get("key"))
+            and item.get("required") is True
+            and isinstance(item.get("label"), str) and bool(item["label"].strip())
+            and isinstance(item.get("label_en"), str) and bool(item["label_en"].strip())
+            for item in field_objects
+        )
+    )
+    _check(checks, "token-field-contract", field_contract_ok,
+           "三个凭据字段的类型、必填状态和双语标签符合契约",
+           "token-schema.json 字段类型/required/label 契约不符合要求")
     token_field = next((item for item in fields if isinstance(item, dict) and item.get("key") == "A2A_WORKBUDDY_CONNECTOR_TOKEN"), {}) if isinstance(fields, list) else {}
     _check(checks, "token-secret-type", token_field.get("type") == "password",
            "Connector Token 使用 password 输入类型", "Connector Token 字段必须使用 password 类型")
@@ -185,7 +220,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_env:
         checks.extend(validate_environment(allow_loopback_http=args.allow_loopback_http))
     failed = sum(item["status"] == "FAIL" for item in checks)
-    summary = {"status": "FAIL" if failed else "PASS", "passed": len(checks) - failed, "failed": failed, "checks": checks}
+    summary = {
+        "schema_version": 1,
+        "status": "FAIL" if failed else "PASS",
+        "passed": len(checks) - failed,
+        "failed": failed,
+        "checks": checks,
+    }
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     else:
