@@ -172,9 +172,9 @@ one connector bucket, not a multi-device/token registry.
 ## Structured security audit (T31)
 
 The connector emits one-line JSON audit records to the dedicated Python logger
-`a2a_hub.audit.workbuddy` at INFO level. Events cover all ten connector routes:
+`a2a_hub.audit.workbuddy` at INFO level. Events cover the authenticated connector routes:
 claim, start, renew, progress, result, handshake, heartbeat, presence, callback
-status, and callback retry. HTTP failures are recorded with their status and a
+status/retry, connection-error reporting, reconnect-attempt reporting, and recovery-decision receipts. HTTP failures are recorded with their status and a
 fixed reason code; the original exception text and response body are not logged.
 
 The record uses a closed field set: event, outcome, configured connector ID,
