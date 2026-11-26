@@ -75,27 +75,33 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
            "connector-meta.json 的 type/auth_mode/source/minWorkbuddyVersion 不符合规范")
 
     fields = token_schema.get("fields")
-    field_keys = {item.get("key") for item in fields if isinstance(item, dict)} if isinstance(fields, list) else set()
-    _check(checks, "token-fields", field_keys == EXPECTED_FIELDS,
-           "凭据表单包含且仅包含三个必需字段", "token-schema.json 字段必须恰好包含本机脚本路径、Hub URL、Connector Token")
+    field_keys = [item.get("key") for item in fields if isinstance(item, dict)] if isinstance(fields, list) else []
+    _check(checks, "token-fields", isinstance(fields, list) and len(fields) == 3 and len(field_keys) == 3 and set(field_keys) == EXPECTED_FIELDS,
+           "凭据表单包含且仅包含三个必需字段，且没有重复项",
+           "token-schema.json 必须恰好包含三个不重复的必需字段")
     token_field = next((item for item in fields if isinstance(item, dict) and item.get("key") == "A2A_WORKBUDDY_CONNECTOR_TOKEN"), {}) if isinstance(fields, list) else {}
     _check(checks, "token-secret-type", token_field.get("type") == "password",
            "Connector Token 使用 password 输入类型", "Connector Token 字段必须使用 password 类型")
 
     servers = mcp.get("mcpServers")
     server_values = list(servers.values()) if isinstance(servers, dict) else []
-    _check(checks, "mcp-server-count", len(server_values) == 1,
-           "mcp.json 仅配置一个 MCP Server", "mcp.json 必须且只能配置一个 MCP Server")
+    _check(checks, "mcp-server-count", isinstance(servers, dict) and list(servers) == ["netivora-a2a-workbuddy"],
+           "mcp.json 仅包含预期的 NETIVORA MCP Server",
+           "mcp.json 必须且只能包含 netivora-a2a-workbuddy")
     server = server_values[0] if len(server_values) == 1 and isinstance(server_values[0], dict) else {}
-    _check(checks, "mcp-stdio", server.get("type") == "stdio" and isinstance(server.get("command"), str),
-           "MCP 使用 stdio 子进程传输", "当前连接器包应使用 stdio MCP 配置")
+    expected_args = [
+        "-c",
+        "import os,runpy; runpy.run_path(os.environ['A2A_HUB_MCP_SERVER_PATH'], run_name='__main__')",
+    ]
+    _check(checks, "mcp-stdio", server.get("type") == "stdio" and server.get("command") == "python"
+           and server.get("args") == expected_args and server.get("timeout") == 30000,
+           "MCP 使用固定的 Python stdio 启动器和受控脚本路径",
+           "MCP 必须使用预期 Python stdio 启动命令，不得注入任意命令或参数")
     env_map = server.get("env") if isinstance(server.get("env"), dict) else {}
-    used = set()
-    for value in _strings(env_map):
-        used.update(PLACEHOLDER.findall(value))
-    _check(checks, "mcp-placeholders", used == EXPECTED_FIELDS and set(env_map.values()) == {f"${{{key}}}" for key in EXPECTED_FIELDS},
-           "三个用户配置字段均通过占位符注入，未硬编码凭据",
-           "mcp.json env 必须逐项使用 token-schema.json 对应的 ${FIELD} 占位符")
+    expected_env = {key: f"${{{key}}}" for key in EXPECTED_FIELDS}
+    _check(checks, "mcp-placeholders", env_map == expected_env,
+           "三个用户配置字段逐项精确映射为占位符，未硬编码凭据",
+           "mcp.json env 必须仅包含三个字段及其同名占位符")
     return checks
 
 
@@ -109,11 +115,27 @@ def validate_environment(env: dict[str, str] | None = None, allow_loopback_http:
            "本机 MCP 脚本路径存在且文件名正确", "A2A_HUB_MCP_SERVER_PATH 必须指向存在的 workbuddy_mcp_server.py")
 
     hub_url = values.get("A2A_WORKBUDDY_HUB_URL", "").strip()
-    parsed = urlsplit(hub_url)
-    loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-    scheme_ok = parsed.scheme == "https" or (allow_loopback_http and parsed.scheme == "http" and loopback)
-    url_ok = bool(hub_url and scheme_ok and parsed.netloc and not parsed.username and not parsed.password
-                  and not parsed.query and not parsed.fragment)
+    try:
+        parsed = urlsplit(hub_url)
+        hostname = parsed.hostname
+        port = parsed.port  # Access validates malformed and out-of-range ports.
+        loopback = hostname in {"localhost", "127.0.0.1", "::1"}
+        scheme_ok = parsed.scheme == "https" or (allow_loopback_http and parsed.scheme == "http" and loopback)
+        url_ok = bool(
+            hub_url
+            and not any(ch.isspace() for ch in hub_url)
+            and scheme_ok
+            and parsed.netloc
+            and hostname
+            and (port is None or 1 <= port <= 65535)
+            and parsed.path in {"", "/"}
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        url_ok = False
     _check(checks, "hub-url", url_ok,
            "Hub 地址格式有效（不会发起网络请求）",
            "A2A_WORKBUDDY_HUB_URL 必须是 HTTPS 根地址；仅显式允许时可使用 localhost HTTP，且不得含凭据、查询或片段")

@@ -60,7 +60,18 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 退出码：`0` 表示静态/本机检查通过，`1` 表示存在配置问题。
 
-## 4. 连接后的验证顺序
+## 4. 静态体检的严格边界（T113–T116）
+
+体检器不仅检查 JSON 可解析，还会验证：
+- Token schema 恰好有三个不重复字段，Connector Token 必须是 password。
+- MCP 配置只允许预期的单一 server、固定 Python stdio 启动器和仓库脚本路径占位符；不允许注入任意命令或参数。
+- Hub URL 必须是 HTTPS 根地址（可选尾部斜杠），拒绝路径、查询、片段、userinfo、空白、非法 IPv6 和越界端口。
+- 只有显式传入 --allow-loopback-http 时，才允许 localhost HTTP。
+- 诊断输出只报告字段是否有效，不回显 Token 或 URL 凭据。
+
+以上均为静态/本机验证，不发起 DNS、TCP、TLS 或 HTTP 请求，不代表远端服务可达，也不代表 WorkBuddy Desktop 已加载 Connector。
+
+## 5. 连接后的验证顺序
 
 1. 在 WorkBuddy 中启用并信任该 Connector。
 2. 明确要求 WorkBuddy 调用 `workbuddy_connector_status` 完成握手并查看 presence。
@@ -70,7 +81,7 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 `workbuddy_connector_status` / heartbeat 的成功只证明对应 MCP 工具请求到达 Hub。只有从 WorkBuddy Desktop 实际发起并记录了带版本、时间、工具调用和 Hub 回执的证据，才能标记为真实 Desktop 联调通过。静态体检、CI 和模拟测试都不能替代该证据。
 
-## 5. 安全和限制
+## 6. 安全和限制
 
 - 不自动轮询，不后台领取，不自动执行队列任务。
 - 每次只领取一项；领取行为必须有明确用户授权。
