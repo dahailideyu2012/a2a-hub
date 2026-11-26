@@ -27,7 +27,6 @@ VERSION = re.compile(
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
 )
-EXPECTED_FIELD_TYPES = {
 def _is_semver(value: Any) -> bool:
     if not isinstance(value, str):
         return False
