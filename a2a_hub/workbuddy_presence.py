@@ -242,7 +242,7 @@ class WorkBuddyPresenceStore:
             raise ValueError("recovery revision must be a non-negative integer")
         if not isinstance(snapshot_id, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
             raise ValueError("invalid recovery snapshot ID")
-        if disposition not in {"acknowledged", "deferred", "dismissed"}:
+        if not isinstance(disposition, str) or disposition not in {"acknowledged", "deferred", "dismissed"}:
             raise ValueError("unsupported recovery decision")
         now = time.time()
         with closing(self._connect()) as db, db:
