@@ -24,10 +24,26 @@ EXPECTED_FIELDS = {
 PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 VERSION = re.compile(
     r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
-    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
 )
+EXPECTED_FIELD_TYPES = {
+def _is_semver(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    match = VERSION.fullmatch(value)
+    if match is None:
+        return False
+    prerelease = match.group(1)
+    if prerelease is not None:
+        for identifier in prerelease.split("."):
+            if not any(char.isalnum() for char in identifier):
+                return False
+            if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
+                return False
+    return True
+
+
 EXPECTED_FIELD_TYPES = {
     "A2A_HUB_MCP_SERVER_PATH": "text",
     "A2A_WORKBUDDY_HUB_URL": "text",
@@ -104,8 +120,8 @@ def validate_package(package_dir: Path | str = DEFAULT_PACKAGE) -> list[dict[str
     package_version = meta.get("version")
     _check(checks, "metadata", meta.get("type") == "mcp" and meta.get("auth_mode") == "token"
            and isinstance(source, str) and bool(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", source))
-           and isinstance(min_version, str) and bool(VERSION.fullmatch(min_version))
-           and (package_version is None or (isinstance(package_version, str) and bool(VERSION.fullmatch(package_version)))),
+           and _is_semver(min_version)
+           and (package_version is None or _is_semver(package_version)),
            "连接器元信息包含 MCP/Token 模式、合法 source 和有效 SemVer 版本",
            "connector-meta.json 的 type/auth_mode/source/version/minWorkbuddyVersion 不符合规范")
 
