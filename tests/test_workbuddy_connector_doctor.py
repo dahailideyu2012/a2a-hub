@@ -23,9 +23,9 @@ def _package(tmp_path: Path) -> Path:
     }), encoding="utf-8")
     (root / "token-schema.json").write_text(json.dumps({
         "fields": [
-            {"key": "A2A_HUB_MCP_SERVER_PATH", "type": "text"},
-            {"key": "A2A_WORKBUDDY_HUB_URL", "type": "text"},
-            {"key": "A2A_WORKBUDDY_CONNECTOR_TOKEN", "type": "password"},
+            {"key": "A2A_HUB_MCP_SERVER_PATH", "type": "text", "required": True, "label": "本机脚本路径", "label_en": "Local script path"},
+            {"key": "A2A_WORKBUDDY_HUB_URL", "type": "text", "required": True, "label": "Hub 地址", "label_en": "Hub URL"},
+            {"key": "A2A_WORKBUDDY_CONNECTOR_TOKEN", "type": "password", "required": True, "label": "Connector Token", "label_en": "Connector Token"},
         ]
     }), encoding="utf-8")
     (root / "mcp.json").write_text(json.dumps({
