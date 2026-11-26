@@ -1,6 +1,8 @@
 """Durable local connector state, liveness classification, and retry policy."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 import re
@@ -287,3 +289,37 @@ def recovery_advice(snapshot: dict[str, Any], *, now: float | None = None,
             "attempts_remaining": remaining,
             "reason": error_code or "connection_offline",
             "automatic_actions_enabled": False}
+
+_RECOVERY_SNAPSHOT_FIELDS = (
+    "connector_id",
+    "connection_state",
+    "recovery_action",
+    "recovery_reason",
+    "last_error_code",
+    "last_error_at",
+    "reconnect_attempt",
+    "last_heartbeat_id",
+    "last_heartbeat_seq",
+    "last_seen_at",
+    "protocol_version",
+    "client_version",
+    "recovery_revision",
+)
+
+
+def recovery_snapshot_id(snapshot: dict[str, Any]) -> str:
+    """Return a stable opaque ID for one redacted recovery-state snapshot."""
+    if not isinstance(snapshot, dict):
+        raise ValueError("recovery snapshot must be a mapping")
+    safe: dict[str, Any] = {}
+    for key in _RECOVERY_SNAPSHOT_FIELDS:
+        value = snapshot.get(key)
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise ValueError("recovery snapshot contains an unsupported value")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("recovery snapshot values must be finite")
+        safe[key] = value
+    encoded = json.dumps(
+        safe, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
