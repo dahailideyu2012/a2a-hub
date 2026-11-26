@@ -30,7 +30,7 @@ def _package(tmp_path: Path) -> Path:
     (root / "mcp.json").write_text(json.dumps({
         "mcpServers": {"netivora-a2a-workbuddy": {
             "type": "stdio", "command": "python", "args": ["-c", "import os,runpy; runpy.run_path(os.environ['A2A_HUB_MCP_SERVER_PATH'], run_name='__main__')"],
-            "env": {key: f"${{{key}}}" for key in EXPECTED_FIELDS},
+            "env": {key: f"${{{key}}}" for key in EXPECTED_FIELDS}, "timeout": 30000,
         }}
     }), encoding="utf-8")
     return root
@@ -45,7 +45,7 @@ def test_valid_connector_package_passes(tmp_path: Path):
 def test_package_rejects_multiple_mcp_servers(tmp_path: Path):
     root = _package(tmp_path)
     config = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
-    config["mcpServers"]["second"] = config["mcpServers"]["hub"]
+    config["mcpServers"]["second"] = config["mcpServers"]["netivora-a2a-workbuddy"]
     (root / "mcp.json").write_text(json.dumps(config), encoding="utf-8")
     assert "mcp-server-count" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
 
