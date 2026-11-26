@@ -60,16 +60,19 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 退出码：`0` 表示静态/本机检查通过，`1` 表示存在配置问题。
 
-## 4. 静态体检的严格边界（T113–T120）
+## 4. 静态体检的严格边界（T113–T124）
 
 体检器不仅检查 JSON 可解析，还会验证：
-- Connector 元信息中的最低 WorkBuddy 版本必须是非空的三段式版本号（可带预发布/构建后缀）。
+- Connector 元信息中的最低 WorkBuddy 版本和包自身版本均按 SemVer 校验：主/次/补丁版本不允许前导零，预发布标识符和构建元数据必须非空，数字预发布标识符不允许前导零。
 - Token schema 恰好有三个不重复字段，Connector Token 必须是 password；字段对象和顶层对象均拒绝未识别属性，避免通过默认值等扩展字段夹带凭据。
 - MCP 配置只允许预期的单一 server、固定 Python stdio 启动器和仓库脚本路径占位符；MCP 根对象和 server 对象拒绝未识别属性（例如 cwd）。
 - Hub URL 必须是 HTTPS 根地址（可选尾部斜杠），拒绝路径、查询、片段、userinfo、空白、非法 IPv6 和越界端口。
 - 只有显式传入 --allow-loopback-http 时，才允许 localhost HTTP。
 - 环境检查对非字符串的程序化输入采取 fail-closed，返回对应检查失败而不是抛出类型异常。
 - 诊断输出只报告字段是否有效，不回显 Token 或 URL 凭据。
+- JSON 对象中的重复键会直接拒绝，不允许依赖解析器“最后一个值覆盖前一个值”的歧义行为。
+- 三个 Token 表单字段必须逐项符合固定类型、必填状态及中英文标签契约。
+- `--json` 输出带 `schema_version: 1` 的稳定结果封套；字段值仅含检查 ID、状态和不含凭据的说明。
 
 以上均为静态/本机验证，不发起 DNS、TCP、TLS 或 HTTP 请求，不代表远端服务可达，也不代表 WorkBuddy Desktop 已加载 Connector。
 
