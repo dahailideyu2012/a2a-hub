@@ -351,7 +351,7 @@ def _handle(message: dict[str,Any]) -> None:
  params=message.get("params") or {}
  if method=="initialize":
   requested=params.get("protocolVersion")
-  _write({"jsonrpc":"2.0","id":request_id,"result":{"protocolVersion":requested if requested in SUPPORTED else PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"a2a-hub-workbuddy-pull","version":"1.0.0"},"instructions":"使用 workbuddy_claim_task 领取一项任务，随后 start；长任务应在子步骤之间调用 workbuddy_check_task_cancellation 检查取消信号，should_stop=true 时立即停止且不再提交 progress/result；模型可用 progress/renew 更新状态，最后 submit_result。只在用户明确要求时领取一次，不要后台轮询。"}})
+  _write({"jsonrpc":"2.0","id":request_id,"result":{"protocolVersion":requested if requested in SUPPORTED else PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"a2a-hub-workbuddy-pull","version":"1.0.0"},"instructions":"连接故障时先调用 workbuddy_recovery_diagnostics 只读查看诊断；仅在用户明确选择后调用 workbuddy_record_recovery_decision 记录 acknowledged/deferred/dismissed。该回执不执行恢复动作。任务处理仍须由用户明确要求后才调用 workbuddy_claim_task；随后 start，长任务应在子步骤之间调用 workbuddy_check_task_cancellation 检查取消信号，should_stop=true 时立即停止且不再提交 progress/result；模型可用 progress/renew 更新状态，最后 submit_result。不要后台轮询。"}})
  elif method=="tools/list": _write({"jsonrpc":"2.0","id":request_id,"result":{"tools":TOOLS}})
  elif method=="tools/call": _write({"jsonrpc":"2.0","id":request_id,"result":call_tool(params.get("name",""),params.get("arguments") or {})})
  elif method=="ping": _write({"jsonrpc":"2.0","id":request_id,"result":{}})
