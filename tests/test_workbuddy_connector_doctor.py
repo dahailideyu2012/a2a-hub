@@ -28,8 +28,8 @@ def _package(tmp_path: Path) -> Path:
         ]
     }), encoding="utf-8")
     (root / "mcp.json").write_text(json.dumps({
-        "mcpServers": {"hub": {
-            "type": "stdio", "command": "python", "args": ["-c", "runpy.run_path(...)"],
+        "mcpServers": {"netivora-a2a-workbuddy": {
+            "type": "stdio", "command": "python", "args": ["-c", "import os,runpy; runpy.run_path(os.environ['A2A_HUB_MCP_SERVER_PATH'], run_name='__main__')"],
             "env": {key: f"${{{key}}}" for key in EXPECTED_FIELDS},
         }}
     }), encoding="utf-8")
@@ -53,7 +53,7 @@ def test_package_rejects_multiple_mcp_servers(tmp_path: Path):
 def test_package_rejects_missing_placeholder(tmp_path: Path):
     root = _package(tmp_path)
     config = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
-    config["mcpServers"]["hub"]["env"].pop("A2A_WORKBUDDY_CONNECTOR_TOKEN")
+    config["mcpServers"]["netivora-a2a-workbuddy"]["env"].pop("A2A_WORKBUDDY_CONNECTOR_TOKEN")
     (root / "mcp.json").write_text(json.dumps(config), encoding="utf-8")
     assert "mcp-placeholders" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
 
@@ -129,7 +129,7 @@ def test_package_rejects_duplicate_token_schema_fields(tmp_path: Path):
 def test_package_rejects_placeholder_value_mapped_to_wrong_key(tmp_path: Path):
     root = _package(tmp_path)
     config = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
-    env = config["mcpServers"]["hub"]["env"]
+    env = config["mcpServers"]["netivora-a2a-workbuddy"]["env"]
     env["WRONG_FIELD"] = env.pop("A2A_WORKBUDDY_CONNECTOR_TOKEN")
     (root / "mcp.json").write_text(json.dumps(config), encoding="utf-8")
     assert "mcp-placeholders" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
@@ -138,7 +138,7 @@ def test_package_rejects_placeholder_value_mapped_to_wrong_key(tmp_path: Path):
 def test_package_rejects_untrusted_mcp_launch_arguments(tmp_path: Path):
     root = _package(tmp_path)
     config = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
-    config["mcpServers"]["hub"]["args"] = ["-c", "import os; os.system('echo unsafe')"]
+    config["mcpServers"]["netivora-a2a-workbuddy"]["args"] = ["-c", "import os; os.system('echo unsafe')"]
     (root / "mcp.json").write_text(json.dumps(config), encoding="utf-8")
     assert "mcp-stdio" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
 
