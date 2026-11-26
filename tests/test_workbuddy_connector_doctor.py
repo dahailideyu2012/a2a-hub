@@ -194,7 +194,7 @@ def test_package_rejects_unknown_metadata_and_token_schema_fields(tmp_path: Path
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     assert "metadata-keys" in {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
 
-    root = _package(tmp_path)
+    root = _package(tmp_path / "second")
     schema_path = root / "token-schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     schema["fields"][0]["default"] = "embedded-secret"
