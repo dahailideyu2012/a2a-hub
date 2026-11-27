@@ -9,6 +9,9 @@ This batch hardens the WorkBuddy stdio connector's HTTP response reader. It does
 - **T149 — bounded chunk reader:** `_read_limited(response, limit, label)` reads until EOF in chunks no larger than 16 KiB. It tolerates short reads from buffered/network streams, accepts an exactly-at-limit body, and fails immediately once the body exceeds its byte budget.
 - **T150 — consistent response limits:** successful POST responses remain capped at 256 KiB; successful GET responses remain capped at 64 KiB; HTTP error bodies remain capped at 16 KiB. All three paths use the same bounded reader. No unbounded `read()` call is introduced.
 - **T151 — regression coverage:** tests cover fragmented/short reads, exact-limit acceptance, limit-plus-one rejection, non-byte stream rejection, and JSON parsing through both GET and POST.
+- **T153/T154 — endpoint ceiling regression tests:** exercise the real `_post` and `_get` request paths with synthetic success bodies at one byte above 256 KiB and 64 KiB respectively; assert fail-closed errors and that reading stops at the first over-limit byte.
+- **T155 — invalid limit regression tests:** directly verify `_read_limited` rejects booleans, negative values, floats, strings, and `None` before reading the response.
+- **T156 — acceptance evidence:** these tests pin the endpoint-specific limits and defensive argument validation; they do not imply a real Hub or WorkBuddy network test.
 - **T152 — operational documentation:** this note records the limits and the failure behavior for future connector maintenance.
 
 ## Failure behavior
