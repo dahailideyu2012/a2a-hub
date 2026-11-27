@@ -7,6 +7,20 @@ import pytest
 import workbuddy_mcp_server as server
 
 
+@pytest.fixture(autouse=True)
+def isolated_connector_session(monkeypatch):
+    with server.LEASES_LOCK:
+        server.LEASES.clear()
+    server.HANDSHAKE_READY = False
+    server.HANDSHAKE_CACHE_KEY = None
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
+    monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL", "https://hub.example.test")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "x" * 48)
+    yield
+    with server.LEASES_LOCK:
+        server.LEASES.clear()
+
+
 @pytest.mark.parametrize("status_code", [401, 403, 409, 426])
 def test_heartbeat_auth_protocol_conflicts_invalidate_handshake_cache(status_code, monkeypatch):
     calls = []
