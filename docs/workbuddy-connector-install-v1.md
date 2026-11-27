@@ -65,7 +65,8 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 体检器不仅检查 JSON 可解析，还会验证：
 - Connector 元信息中的最低 WorkBuddy 版本和包自身版本均按 SemVer 校验：主/次/补丁版本不允许前导零，预发布标识符和构建元数据必须非空，数字预发布标识符不允许前导零。
 - Token schema 恰好有三个不重复字段，Connector Token 必须是 password；字段对象和顶层对象均拒绝未识别属性，避免通过默认值等扩展字段夹带凭据。
-- MCP 配置只允许预期的单一 server、固定 Python stdio 启动器和仓库脚本路径占位符；MCP 根对象和 server 对象拒绝未识别属性（例如 cwd）。
+- MCP 配置只允许预期的单一 server、固定 Python stdio 启动器和仓库脚本路径占位符；MCP 根对象和 server 对象拒绝未识别属性（例如 cwd），并明确覆盖根对象未知属性的回归测试。
+- 本机 MCP 启动脚本必须是普通文件；拒绝最终脚本路径本身为符号链接，避免通过链接将 Connector 启动目标替换为未审查文件。
 - Hub URL 必须是 HTTPS 根地址（可选尾部斜杠），拒绝路径、查询、片段、userinfo、空白、非法 IPv6 和越界端口。
 - 只有显式传入 --allow-loopback-http 时，才允许 localhost HTTP。
 - 环境检查对非字符串的程序化输入采取 fail-closed，返回对应检查失败而不是抛出类型异常。
@@ -76,7 +77,14 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 以上均为静态/本机验证，不发起 DNS、TCP、TLS 或 HTTP 请求，不代表远端服务可达，也不代表 WorkBuddy Desktop 已加载 Connector。
 
-## 5. 连接后的验证顺序
+## 5. T125–T128 补充安全回归
+
+- MCP 根对象未知属性必须由产品回归测试直接捕获，不能只依赖一次性黑盒检查。
+- `mcpServers` 必须是对象，且只允许唯一的 `netivora-a2a-workbuddy` server。
+- `A2A_HUB_MCP_SERVER_PATH` 指向的最终脚本文件不得为符号链接；Windows 平台若无法创建符号链接，相关专项测试会明确标记跳过，不将跳过误报为通过。
+- 以上仍是静态/本机配置校验，不执行脚本、不访问网络、不连接 Hub。
+
+## 6. 连接后的验证顺序
 
 1. 在 WorkBuddy 中启用并信任该 Connector。
 2. 明确要求 WorkBuddy 调用 `workbuddy_connector_status` 完成握手并查看 presence。
@@ -86,7 +94,7 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 `workbuddy_connector_status` / heartbeat 的成功只证明对应 MCP 工具请求到达 Hub。只有从 WorkBuddy Desktop 实际发起并记录了带版本、时间、工具调用和 Hub 回执的证据，才能标记为真实 Desktop 联调通过。静态体检、CI 和模拟测试都不能替代该证据。
 
-## 6. 安全和限制
+## 7. 安全和限制
 
 - 不自动轮询，不后台领取，不自动执行队列任务。
 - 每次只领取一项；领取行为必须有明确用户授权。
