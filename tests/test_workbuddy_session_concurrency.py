@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import threading
 import time
 
@@ -123,7 +122,7 @@ def test_stale_renew_receipt_cannot_update_replacement_lease(monkeypatch):
     release_renew = threading.Event()
 
     def fake_post(path, payload):
-        if path == "renew":
+        if path.endswith("/renew"):
             renew_entered.set()
             assert release_renew.wait(5)
             return {"lease_expires_at": time.time() + 900}
