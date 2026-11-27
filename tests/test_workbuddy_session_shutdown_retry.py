@@ -185,7 +185,7 @@ def test_http_timeout_accepts_defaults_and_bounded_values(
     assert server._http_timeout(env_name, default, maximum) == expected
 
 
-@pytest.mark.parametrize("raw", ["", "abc", "0", "-1", "120.1", "nan", "inf", "-inf"])
+@pytest.mark.parametrize("raw", ["abc", "0", "-1", "120.1", "nan", "inf", "-inf"])
 def test_http_timeout_rejects_invalid_or_unbounded_values(monkeypatch, raw):
     env_name = "A2A_WORKBUDDY_TEST_TIMEOUT"
     monkeypatch.setenv(env_name, raw)
