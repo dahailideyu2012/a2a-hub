@@ -299,7 +299,7 @@ def test_connection_check_fails_closed_when_heartbeat_not_accepted(monkeypatch):
     monkeypatch.setattr(server, "_get", lambda _path: {"online": True})
     result = server.call_tool("workbuddy_connection_check", {})
     assert result["isError"] is True
-    assert "未确认" in result["content"][0]["text"]
+    assert "回执校验失败" in result["content"][0]["text"]
 
 
 def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_receipt_ids(monkeypatch):
@@ -651,7 +651,7 @@ def test_handshake_cache_is_scoped_to_hub_url_connector_and_token(monkeypatch):
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-secondary")
     server._ensure_handshake()
     assert [payload["connector_id"] for path, payload in calls] == [
-        "workbuddy-personal", "workbuddy-personal",
+        "workbuddy-personal", "workbuddy-personal", "workbuddy-personal",
         "workbuddy-secondary",
     ]
 
