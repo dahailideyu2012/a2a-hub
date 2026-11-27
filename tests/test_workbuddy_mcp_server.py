@@ -8,6 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 def reset_state(monkeypatch):
  with server.LEASES_LOCK: server.LEASES.clear()
  server.HANDSHAKE_READY=False
+ server.HANDSHAKE_CACHE_KEY=None
  monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID","workbuddy-personal")
  monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL","https://hub.example.test")
  monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN","x"*48)
@@ -213,7 +214,12 @@ def test_heartbeat_requires_handshake_and_sends_configured_identity(monkeypatch)
     calls = []
     monkeypatch.setattr(server, "_post", lambda path, payload: calls.append((path, payload)) or (
         {"accepted": True, "connector_id": "workbuddy-personal"} if path == "handshake"
-        else {"accepted": True, "receipt_id": payload["heartbeat_id"]}
+        else {
+            "accepted": True, "connector_id": payload["connector_id"],
+            "receipt_id": payload["heartbeat_id"], "status": payload["status"],
+            "current_task_id": payload["current_task_id"],
+            "cancel_requested": False, "cancel_reason": None,
+        }
     ))
     result = server.tool_heartbeat({"status": "busy", "current_task_id": "task-123"})
     assert result["isError"] is False
@@ -255,7 +261,13 @@ def test_connection_check_is_task_free_and_returns_redacted_receipts(monkeypatch
         if path == "handshake":
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         if path == "heartbeat":
-            return {"accepted": True, "receipt_id": payload["heartbeat_id"], "server_time": "2026-11-23T10:00:00Z"}
+            return {
+                "accepted": True, "connector_id": payload["connector_id"],
+                "receipt_id": payload["heartbeat_id"], "status": payload["status"],
+                "current_task_id": payload["current_task_id"],
+                "cancel_requested": False, "cancel_reason": None,
+                "server_time": "2026-11-23T10:00:00Z",
+            }
         raise AssertionError(f"unexpected POST {path}")
     def fake_get(path):
         calls.append(("GET", path, {}))
@@ -297,7 +309,12 @@ def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_rece
         if path == "handshake":
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         if path == "heartbeat":
-            return {"accepted": True, "server_time": "2026-11-23T10:00:00Z"}
+            return {
+                "accepted": True, "connector_id": payload["connector_id"],
+                "status": payload["status"], "current_task_id": payload["current_task_id"],
+                "cancel_requested": False, "cancel_reason": None,
+                "server_time": "2026-11-23T10:00:00Z",
+            }
         raise AssertionError(f"unexpected POST {path}")
     def fake_get(path):
         calls.append(("GET", path, {}))
@@ -343,7 +360,12 @@ def test_connection_check_fails_closed_when_final_presence_is_not_our_online_con
         if path == "handshake":
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         if path == "heartbeat":
-            return {"accepted": True, "receipt_id": "hub-receipt-123"}
+            return {
+                "accepted": True, "connector_id": payload["connector_id"],
+                "receipt_id": payload["heartbeat_id"], "status": payload["status"],
+                "current_task_id": payload["current_task_id"],
+                "cancel_requested": False, "cancel_reason": None,
+            }
         raise AssertionError(f"unexpected POST {path}")
 
     get_calls = []
@@ -604,3 +626,85 @@ def test_recovery_operator_tools_are_registered_with_strict_schema():
     assert schema["properties"]["disposition"]["enum"] == [
         "acknowledged", "deferred", "dismissed"
     ]
+
+
+def test_handshake_cache_is_scoped_to_hub_url_connector_and_token(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        return {"accepted": True, "connector_id": payload["connector_id"]}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    server._ensure_handshake()
+    server._ensure_handshake()
+    assert [path for path, _ in calls] == ["handshake"]
+
+    monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL", "https://other-hub.example.test")
+    server._ensure_handshake()
+    assert [path for path, _ in calls] == ["handshake", "handshake"]
+
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "y" * 48)
+    server._ensure_handshake()
+    assert [path for path, _ in calls] == ["handshake", "handshake", "handshake"]
+
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-secondary")
+    server._ensure_handshake()
+    assert [payload["connector_id"] for path, payload in calls] == [
+        "workbuddy-personal", "workbuddy-personal",
+        "workbuddy-secondary",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value", "message"),
+    [
+        ("connector_id", "other-connector", "identity"),
+        ("status", "idle", "状态或任务"),
+        ("current_task_id", "other-task", "状态或任务"),
+        ("receipt_id", "wrong-receipt", "回执 ID"),
+    ],
+)
+def test_heartbeat_fails_closed_on_mismatched_receipt(monkeypatch, field, wrong_value, message):
+    def fake_post(path, payload):
+        if path == "handshake":
+            return {"accepted": True, "connector_id": "workbuddy-personal"}
+        response = {
+            "accepted": True,
+            "connector_id": "workbuddy-personal",
+            "receipt_id": payload["heartbeat_id"],
+            "status": payload["status"],
+            "current_task_id": payload["current_task_id"],
+            "cancel_requested": False,
+            "cancel_reason": None,
+        }
+        response[field] = wrong_value
+        return response
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    result = server.call_tool("workbuddy_heartbeat", {"status": "busy", "current_task_id": "task-123"})
+    assert result["isError"] is True
+    assert message in result["content"][0]["text"]
+
+
+def test_presence_status_fails_closed_on_identity_mismatch(monkeypatch):
+    monkeypatch.setattr(server, "_post", lambda *_args: {
+        "accepted": True, "connector_id": "workbuddy-personal",
+    })
+    monkeypatch.setattr(server, "_get", lambda _path: {
+        "connector_id": "another-connector", "online": True, "status": "idle",
+    })
+    result = server.call_tool("workbuddy_connector_status", {})
+    assert result["isError"] is True
+    assert "identity mismatch" in result["content"][0]["text"]
+    assert server.HANDSHAKE_READY is False
+
+
+def test_failed_handshake_does_not_cache_readiness(monkeypatch):
+    monkeypatch.setattr(server, "_post", lambda *_args: {
+        "accepted": True, "connector_id": "another-connector",
+    })
+    with pytest.raises(RuntimeError, match="identity"):
+        server._ensure_handshake()
+    assert server.HANDSHAKE_READY is False
+    assert server.HANDSHAKE_CACHE_KEY is None
