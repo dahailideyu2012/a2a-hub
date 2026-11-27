@@ -94,7 +94,17 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 
 `workbuddy_connector_status` / heartbeat 的成功只证明对应 MCP 工具请求到达 Hub。只有从 WorkBuddy Desktop 实际发起并记录了带版本、时间、工具调用和 Hub 回执的证据，才能标记为真实 Desktop 联调通过。静态体检、CI 和模拟测试都不能替代该证据。
 
-## 7. 安全和限制
+## 7. T129–T132 会话回执校验
+
+- MCP bridge 的握手缓存按 Hub 根 URL、Connector ID 和 Token 的 SHA-256 指纹绑定；配置切换后必须重新握手，不会把旧会话误用于另一个 Hub 或身份。
+- 握手响应必须确认 `accepted=true` 且 Connector ID 与本机配置一致；握手失败不会缓存 ready 状态。
+- heartbeat 回执必须确认 accepted、Connector ID、status、current_task_id 与本次请求一致；若 Hub 返回 receipt_id，还必须与本次 heartbeat_id 一致。缺少或错配关键字段时 fail-closed。
+- status 工具校验 presence 的 Connector ID 和 online 布尔值；身份错配会使本地握手缓存失效。
+- 对认证、身份、握手协议或心跳冲突响应，客户端会清除握手缓存；下一次显式操作重新握手。不会启动后台轮询或自动领取任务。
+
+以上校验只证明本次客户端与 Hub 之间的协议回执一致，不证明 WorkBuddy Desktop UI 已启动，也不替代用户授权。
+
+## 8. 安全和限制
 
 - 不自动轮询，不后台领取，不自动执行队列任务。
 - 每次只领取一项；领取行为必须有明确用户授权。
