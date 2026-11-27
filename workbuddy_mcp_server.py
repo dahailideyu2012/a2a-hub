@@ -88,11 +88,15 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
   except Exception:
    return "Hub 返回 HTTP 错误"
  finally:
-  try:
-   exc.close()
-  except Exception:
-   # Preserve the original HTTP status even if a broken stream fails to close.
-   pass
+  # HTTPError is a wrapper; close its underlying response stream explicitly.
+  response_stream = getattr(exc, "fp", None)
+  close_stream = getattr(response_stream, "close", None)
+  if callable(close_stream):
+   try:
+    close_stream()
+   except Exception:
+    # Preserve the original HTTP status even if a broken stream fails to close.
+    pass
 
 
 def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
