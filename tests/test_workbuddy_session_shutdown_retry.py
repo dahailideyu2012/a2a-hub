@@ -323,3 +323,43 @@ def test_read_limited_accepts_exact_limit():
 
     assert server._read_limited(response, 5, "test response") == b"exact"
     assert response.offset == 5
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload", "limit"),
+    [
+        ("_post", "heartbeat", {"status": "idle"}, 256 * 1024),
+        ("_get", "presence", None, 64 * 1024),
+    ],
+)
+def test_http_methods_reject_success_bodies_over_configured_limit(
+    monkeypatch, method, path, payload, limit
+):
+    response = FragmentedResponse(b"x" * (limit + 1), chunk_size=16 * 1024)
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            assert timeout in (15, 30)
+            return response
+
+    monkeypatch.setattr(
+        server.urllib.request, "build_opener", lambda *_args: FakeOpener()
+    )
+
+    with pytest.raises(RuntimeError, match=f"超过 {limit} 字节限制"):
+        if method == "_get":
+            server._get(path)
+        else:
+            server._post(path, payload)
+
+    assert response.offset == limit + 1
+
+
+@pytest.mark.parametrize("invalid_limit", [True, -1, 3.5, "10", None])
+def test_read_limited_rejects_invalid_limit_types_and_values(invalid_limit):
+    response = FragmentedResponse(b"body", chunk_size=2)
+
+    with pytest.raises(ValueError, match="non-negative integer"):
+        server._read_limited(response, invalid_limit, "test response")
+
+    assert response.offset == 0
