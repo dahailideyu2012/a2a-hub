@@ -184,7 +184,7 @@ def validate_environment(env: dict[str, Any] | None = None, allow_loopback_http:
     raw_script = values.get("A2A_HUB_MCP_SERVER_PATH", "")
     script_value = raw_script.strip() if isinstance(raw_script, str) else ""
     script_path = Path(script_value).expanduser() if script_value else None
-    _check(checks, "local-script", bool(script_path and script_path.is_file() and script_path.name == "workbuddy_mcp_server.py"),
+    _check(checks, "local-script", bool(script_path and script_path.is_file() and not script_path.is_symlink() and script_path.name == "workbuddy_mcp_server.py"),
            "本机 MCP 脚本路径存在且文件名正确", "A2A_HUB_MCP_SERVER_PATH 必须指向存在的 workbuddy_mcp_server.py")
 
     raw_hub_url = values.get("A2A_WORKBUDDY_HUB_URL", "")
