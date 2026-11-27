@@ -200,7 +200,7 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
 
 
 
-def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
+def _tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
  """Check a locally leased task's durable cancellation flag with one heartbeat."""
  task_id=args.get("task_id")
  if not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128:
@@ -242,6 +242,13 @@ def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
   "heartbeat_id":heartbeat_id,
   "note":"这是一次显式协作式检查，不是后台轮询或进程级强制中断。should_stop=true 时应立即停止当前任务，不再提交进度或结果。",
  })
+
+
+def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
+ # Serialize cancellation with progress/result so a terminal cancellation
+ # cannot race a local task mutation in the same MCP process.
+ with LEASE_OPERATION_LOCK:
+  return _tool_check_task_cancellation(args)
 
 
 def _utc_now() -> str:
