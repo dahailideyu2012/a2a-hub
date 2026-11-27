@@ -214,8 +214,14 @@ def test_http_requests_apply_configured_timeout(
         def __exit__(self, *_args):
             return False
 
-        def read(self, _limit):
-            return b'{"accepted": true, "connector_id": "workbuddy-personal", "online": true}'
+        def __init__(self):
+            self.body = b'{"accepted": true, "connector_id": "workbuddy-personal", "online": true}'
+            self.offset = 0
+
+        def read(self, limit):
+            chunk = self.body[self.offset:self.offset + limit]
+            self.offset += len(chunk)
+            return chunk
 
     class FakeOpener:
         def open(self, request, timeout):
@@ -240,6 +246,12 @@ class FragmentedResponse:
         self.chunk_size = chunk_size
         self.offset = 0
         self.read_sizes = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
 
     def read(self, size: int) -> bytes:
         self.read_sizes.append(size)
