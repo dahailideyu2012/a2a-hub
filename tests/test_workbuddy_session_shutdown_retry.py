@@ -135,3 +135,29 @@ def test_non_idempotent_start_and_renew_are_never_automatically_retried(
     assert result["isError"] is True
     assert len(calls) == 1
     assert calls[0].endswith(path)
+
+
+def test_process_exit_registers_local_session_cleanup(monkeypatch):
+    import importlib
+
+    registered_callbacks = []
+
+    monkeypatch.setattr(
+        server.atexit,
+        "register",
+        lambda callback, *args, **kwargs: registered_callbacks.append(callback),
+    )
+    importlib.reload(server)
+
+    assert server._cleanup_local_session in registered_callbacks
+
+    seed_lease()
+    server.HANDSHAKE_READY = True
+    server.HANDSHAKE_CACHE_KEY = ("https://hub.example.test", "workbuddy-personal", "fingerprint")
+
+    registered_callbacks[-1]()
+
+    assert server.LEASES == {}
+    assert server.HANDSHAKE_READY is False
+    assert server.HANDSHAKE_CACHE_KEY is None
+
