@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import hashlib, json, math, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
+import atexit, hashlib, json, math, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -336,6 +336,16 @@ def _ok(data: Any) -> dict[str,Any]:
  return {"content":[{"type":"text","text":json.dumps(data,ensure_ascii=False,indent=2,default=str)}],"isError":False}
 def _err(message: str) -> dict[str,Any]:
  return {"content":[{"type":"text","text":message}],"isError":True}
+def _cleanup_local_session() -> None:
+ """Discard process-local credentials and handshake state during shutdown."""
+ with LEASES_LOCK:
+  LEASES.clear()
+ _invalidate_handshake()
+
+
+atexit.register(_cleanup_local_session)
+
+
 def _prune_expired_leases() -> None:
  now = time.time()
  with LEASES_LOCK:
