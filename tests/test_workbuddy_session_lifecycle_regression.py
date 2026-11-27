@@ -50,7 +50,7 @@ def test_heartbeat_server_error_does_not_invalidate_valid_handshake(monkeypatch)
         raise RuntimeError(f"Hub HTTP {status_code}: temporary")
 
     monkeypatch.setattr(server, "_post", fake_post)
-    assert server.tool_heartbeat({"status": "idle"})["isError"] is True
+    assert server.call_tool("workbuddy_heartbeat", {"status": "idle"})["isError"] is True
     assert server.HANDSHAKE_READY is True
     assert calls == ["handshake", "heartbeat"]
 
