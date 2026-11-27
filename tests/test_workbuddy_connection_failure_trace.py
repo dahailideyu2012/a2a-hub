@@ -11,6 +11,7 @@ import workbuddy_mcp_server as server
 @pytest.fixture(autouse=True)
 def connection_check_environment(monkeypatch):
     server.HANDSHAKE_READY = False
+    server.HANDSHAKE_CACHE_KEY = None
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
     monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL", "https://hub.example.test")
     monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "x" * 48)
@@ -36,7 +37,15 @@ def test_connection_check_failure_includes_safe_trace_metadata(
         if path == "handshake":
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         if path == "heartbeat":
-            return {"accepted": True, "receipt_id": "hub-receipt-not-copied-to-error"}
+            return {
+                "accepted": True,
+                "connector_id": payload["connector_id"],
+                "receipt_id": payload["heartbeat_id"],
+                "status": payload["status"],
+                "current_task_id": payload["current_task_id"],
+                "cancel_requested": False,
+                "cancel_reason": None,
+            }
         raise AssertionError(f"unexpected POST {path}")
 
     def fake_get(path):

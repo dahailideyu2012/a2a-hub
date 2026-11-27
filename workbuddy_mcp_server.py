@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import json, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
+import hashlib, json, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +12,7 @@ LEASES: dict[str, dict[str, Any]] = {}
 LEASES_LOCK = threading.Lock()
 MAX_ACTIVE_LEASES = 1
 HANDSHAKE_READY = False
+HANDSHAKE_CACHE_KEY: tuple[str, str, str] | None = None
 HANDSHAKE_LOCK = threading.Lock()
 TOOLS = [
  {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
@@ -85,19 +86,61 @@ def _connector_id() -> str:
   raise RuntimeError("A2A_WORKBUDDY_CONNECTOR_ID 格式无效")
  return value
 
-def _ensure_handshake() -> dict[str,Any]:
- global HANDSHAKE_READY
+def _handshake_cache_key() -> tuple[str, str, str]:
+ base, token = _config()
+ token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+ return base, _connector_id(), token_fingerprint
+
+
+def _invalidate_handshake() -> None:
+ global HANDSHAKE_READY, HANDSHAKE_CACHE_KEY
  with HANDSHAKE_LOCK:
-  if HANDSHAKE_READY: return {"accepted":True,"cached":True,"connector_id":_connector_id()}
-  result=_post("handshake",{"connector_id":_connector_id(),"protocol_version":"1.0","client_version":"1.0.0","capabilities":["claim","start","renew","progress","result","heartbeat"]})
-  if result.get("accepted") is not True or result.get("connector_id") != _connector_id():
+  HANDSHAKE_READY = False
+  HANDSHAKE_CACHE_KEY = None
+
+
+def _ensure_handshake() -> dict[str,Any]:
+ global HANDSHAKE_READY, HANDSHAKE_CACHE_KEY
+ with HANDSHAKE_LOCK:
+  cache_key = _handshake_cache_key()
+  if HANDSHAKE_READY and HANDSHAKE_CACHE_KEY == cache_key:
+   return {"accepted":True,"cached":True,"connector_id":cache_key[1]}
+  HANDSHAKE_READY = False
+  HANDSHAKE_CACHE_KEY = None
+  result=_post("handshake",{"connector_id":cache_key[1],"protocol_version":"1.0","client_version":"1.0.0","capabilities":["claim","start","renew","progress","result","heartbeat"]})
+  if not isinstance(result, dict) or result.get("accepted") is not True or result.get("connector_id") != cache_key[1]:
    raise RuntimeError("Hub handshake 响应与配置的 connector identity 不匹配")
-  HANDSHAKE_READY=True
+  HANDSHAKE_CACHE_KEY = cache_key
+  HANDSHAKE_READY = True
   return result
+
+
+def _validate_heartbeat_receipt(result: dict[str,Any], payload: dict[str,Any]) -> dict[str,Any]:
+ if not isinstance(result, dict) or result.get("accepted") is not True:
+  raise RuntimeError("Hub 未确认连接心跳")
+ if result.get("connector_id") != payload["connector_id"]:
+  raise RuntimeError("Hub 心跳回执 connector identity 不匹配")
+ if result.get("status") != payload["status"] or result.get("current_task_id") != payload.get("current_task_id"):
+  raise RuntimeError("Hub 心跳回执状态或任务不匹配")
+ receipt_id = result.get("receipt_id")
+ if receipt_id is not None and receipt_id != payload["heartbeat_id"]:
+  raise RuntimeError("Hub 心跳回执 ID 不匹配")
+ if not isinstance(result.get("cancel_requested"), bool):
+  raise RuntimeError("Hub 心跳回执缺少有效 cancel_requested 布尔值")
+ reason = result.get("cancel_reason")
+ if reason is not None and not isinstance(reason, str):
+  raise RuntimeError("Hub 心跳回执 cancel_reason 格式无效")
+ return result
 
 def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
- return _ok(_get("presence"))
+ result = _get("presence")
+ if not isinstance(result, dict) or result.get("connector_id") != _connector_id():
+  _invalidate_handshake()
+  raise RuntimeError("Hub presence connector identity mismatch")
+ if not isinstance(result.get("online"), bool):
+  raise RuntimeError("Hub presence response lacks a valid online boolean")
+ return _ok(result)
 
 def tool_recovery_diagnostics(_args: dict[str,Any]) -> dict[str,Any]:
  # Diagnostics must not handshake: a handshake intentionally clears prior error/retry
@@ -145,7 +188,13 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  if task_id is not None and (not isinstance(task_id,str) or len(task_id)>128): raise RuntimeError("current_task_id 无效")
  _ensure_handshake()
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
- return _ok(_post("heartbeat",payload))
+ try:
+  result = _post("heartbeat",payload)
+ except RuntimeError as exc:
+  if str(exc).startswith(("Hub HTTP 401:", "Hub HTTP 403:", "Hub HTTP 409:", "Hub HTTP 426:")):
+   _invalidate_handshake()
+  raise
+ return _ok(_validate_heartbeat_receipt(result, payload))
 
 
 
@@ -223,11 +272,16 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
  presence_before_observed_at=_utc_now()
  observed["presence_before_observed_at"]=presence_before_observed_at
  heartbeat_id="hb-"+uuid.uuid4().hex
- receipt=_post("heartbeat",{"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None})
+ heartbeat_payload={"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None}
+ receipt=_post("heartbeat",heartbeat_payload)
  heartbeat_observed_at=_utc_now()
  observed["heartbeat_observed_at"]=heartbeat_observed_at
- if receipt.get("accepted") is not True:
-  raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳")
+ try:
+  _validate_heartbeat_receipt(receipt, heartbeat_payload)
+ except RuntimeError as exc:
+  if str(exc) == "Hub 未确认连接心跳":
+   raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳") from None
+  raise _connection_check_failure("heartbeat_receipt",check_id,started_at,observed,"Hub 心跳回执校验失败") from None
  after=_get("presence")
  presence_after_observed_at=_utc_now()
  observed["presence_after_observed_at"]=presence_after_observed_at
