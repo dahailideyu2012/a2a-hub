@@ -23,7 +23,8 @@ def test_heartbeat_auth_protocol_conflicts_invalidate_handshake_cache(status_cod
     assert server.HANDSHAKE_CACHE_KEY is None
 
 
-def test_heartbeat_server_error_does_not_invalidate_valid_handshake(status_code=503, monkeypatch=None):
+def test_heartbeat_server_error_does_not_invalidate_valid_handshake(monkeypatch):
+    status_code = 503
     # Kept as a separate regression: transient server errors do not mean the
     # authenticated connector identity or protocol session is invalid.
     calls = []
