@@ -851,8 +851,14 @@ python run.py social deny ap-xxxx --reason "标签不符"
 | `A2A_AUTONOMY_INTERVAL` | `300` | 巡航轮询间隔（秒） |
 | `A2A_AUTONOMY_PER_ROUND` | `2` | 每轮最多发起的自主申请数 |
 | `A2A_AUTONOMY_DAILY` | `6` | 每天最多发起的自主申请数（巡航侧硬预算） |
+| `A2A_WORKBUDDY_POST_TIMEOUT_SECONDS` | `30` | WorkBuddy MCP → Hub 的 POST 请求超时；范围 1–120 秒 |
+| `A2A_WORKBUDDY_GET_TIMEOUT_SECONDS` | `15` | WorkBuddy MCP → Hub 的 GET 请求超时；范围 1–60 秒 |
 
 各厂商 Key 见 `.env.example`。成员表写法见 `config/members.example.yaml`。
+
+WorkBuddy MCP 连接器的 HTTP 超时可按请求类型单独调整：POST 默认 30 秒（允许 1–120 秒），
+GET 默认 15 秒（允许 1–60 秒）。设置非数字、非有限值或超出范围的值会在发起网络请求前
+失败关闭；未设置或留空时使用默认值。超时只限制单次 HTTP 请求，不会自动重试 claim/start/renew。
 
 ### agents.yaml
 
