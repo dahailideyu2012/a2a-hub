@@ -110,7 +110,7 @@ def test_progress_and_result_retry_transient_failures_with_stable_idempotency(mo
   return {"ok":True}
  monkeypatch.setattr(server,"_post",flaky_post)
  monkeypatch.setattr(server.time,"sleep",lambda _seconds:None)
- progress=server.tool_progress({"task_id":"task-retry","sequence":7,"message":"same update"})
+ progress=server.tool_progress({"task_id":"task-retry","sequence":1,"message":"same update"})
  result=server.tool_result({"task_id":"task-retry","state":"completed","output":"done"})
  assert progress["isError"] is False and result["isError"] is False
  progress_calls=[payload for path,payload in calls if path.endswith("/progress")]

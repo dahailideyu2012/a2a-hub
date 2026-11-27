@@ -10,6 +10,8 @@ PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED = {"2024-11-05", "2025-03-26", "2025-06-18"}
 LEASES: dict[str, dict[str, Any]] = {}
 LEASES_LOCK = threading.Lock()
+CLAIM_LOCK = threading.Lock()
+LEASE_OPERATION_LOCK = threading.RLock()
 MAX_ACTIVE_LEASES = 1
 HANDSHAKE_READY = False
 HANDSHAKE_CACHE_KEY: tuple[str, str, str] | None = None
@@ -24,7 +26,7 @@ TOOLS = [
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
  {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
- {"name":"workbuddy_progress_task","description":"向 Hub 回传任务进度。sequence 必须从 1 开始严格递增；重复提交相同 sequence/message 可安全重放。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"},"sequence":{"type":"integer","minimum":1},"message":{"type":"string","minLength":1,"maxLength":4000}},"required":["task_id","sequence","message"]}},
+ {"name":"workbuddy_progress_task","description":"向 Hub 回传任务进度。sequence 必须从 1 开始连续递增；重复提交相同 sequence/message 可安全重放，跳号或改写重复内容会被拒绝。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"},"sequence":{"type":"integer","minimum":1},"message":{"type":"string","minLength":1,"maxLength":4000}},"required":["task_id","sequence","message"]}},
  {"name":"workbuddy_submit_result","description":"任务执行结束后回传 completed 或 failed 结果。不要回传凭据、token、cookie 或其他秘密。result_key 可省略，省略时客户端使用 task_id 派生稳定幂等键。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"},"state":{"type":"string","enum":["completed","failed"]},"output":{"type":"string","maxLength":20000},"result_key":{"type":"string","minLength":8,"maxLength":128}},"required":["task_id","state","output"]}}
 ]
 
@@ -198,7 +200,7 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
 
 
 
-def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
+def _tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
  """Check a locally leased task's durable cancellation flag with one heartbeat."""
  task_id=args.get("task_id")
  if not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128:
@@ -240,6 +242,13 @@ def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
   "heartbeat_id":heartbeat_id,
   "note":"这是一次显式协作式检查，不是后台轮询或进程级强制中断。should_stop=true 时应立即停止当前任务，不再提交进度或结果。",
  })
+
+
+def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
+ # Serialize cancellation with progress/result so a terminal cancellation
+ # cannot race a local task mutation in the same MCP process.
+ with LEASE_OPERATION_LOCK:
+  return _tool_check_task_cancellation(args)
 
 
 def _utc_now() -> str:
@@ -355,42 +364,73 @@ def _task_prompt(task: dict[str,Any]) -> str:
     if isinstance(value,str): chunks.append(value)
  return "\n".join(chunks).strip()
 def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
- _ensure_handshake()
- _prune_expired_leases()
- with LEASES_LOCK:
-  if len(LEASES) >= MAX_ACTIVE_LEASES:
-   return _err("当前 MCP 会话已有未完成任务；请先提交该任务结果，再领取下一项")
- payload={}
- if args.get("agent_ids") is not None: payload["agent_ids"]=args["agent_ids"]
- if args.get("lease_seconds") is not None: payload["lease_seconds"]=args["lease_seconds"]
- result=_post("claim",payload)
- if not result.get("claimed"): return _ok({"claimed":False,"message":"当前没有可领取的任务"})
- task=result.get("task") or {}; lease=result.get("lease") or {}; task_id=str(task.get("id") or "")
- if not task_id or not lease.get("lease_token") or not lease.get("lease_version"): raise RuntimeError("Hub claim 响应缺少任务或租约字段")
- try: expires_at=float(lease["lease_expires_at"])
- except (KeyError,TypeError,ValueError): raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
- if expires_at <= time.time(): raise RuntimeError("Hub 返回的任务租约已经过期")
- with LEASES_LOCK: LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"]),"lease_expires_at":expires_at}
- return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
+ # Serialize the capacity check and remote claim as one local critical section.
+ # Otherwise two concurrent MCP calls can both observe an empty lease table.
+ with CLAIM_LOCK:
+  _ensure_handshake()
+  _prune_expired_leases()
+  with LEASES_LOCK:
+   if len(LEASES) >= MAX_ACTIVE_LEASES:
+    return _err("当前 MCP 会话已有未完成任务；请先提交该任务结果，再领取下一项")
+  payload={}
+  if args.get("agent_ids") is not None: payload["agent_ids"]=args["agent_ids"]
+  if args.get("lease_seconds") is not None: payload["lease_seconds"]=args["lease_seconds"]
+  result=_post("claim",payload)
+  if not result.get("claimed"): return _ok({"claimed":False,"message":"当前没有可领取的任务"})
+  task=result.get("task") or {}; lease=result.get("lease") or {}; task_id=str(task.get("id") or "")
+  if not task_id or not lease.get("lease_token") or not lease.get("lease_version"): raise RuntimeError("Hub claim 响应缺少任务或租约字段")
+  try: expires_at=float(lease["lease_expires_at"])
+  except (KeyError,TypeError,ValueError): raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
+  if expires_at <= time.time(): raise RuntimeError("Hub 返回的任务租约已经过期")
+  with LEASES_LOCK:
+   LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"]),"lease_expires_at":expires_at,"progress_sequence":0,"progress_message":None}
+  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
+ task_id=str(args.get("task_id") or "").strip()
+ with LEASE_OPERATION_LOCK:
+  return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
 def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload=_lease(task_id)
- result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload)
- try: expires_at=float(result["lease_expires_at"])
- except (KeyError,TypeError,ValueError): raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
- if expires_at <= time.time(): raise RuntimeError("Hub renew 返回的租约已经过期")
- with LEASES_LOCK:
-  if task_id in LEASES: LEASES[task_id]["lease_expires_at"]=expires_at
- return _ok(result)
+ task_id=str(args.get("task_id") or "").strip()
+ with LEASE_OPERATION_LOCK:
+  payload=_lease(task_id)
+  result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload)
+  try: expires_at=float(result["lease_expires_at"])
+  except (KeyError,TypeError,ValueError): raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
+  if expires_at <= time.time(): raise RuntimeError("Hub renew 返回的租约已经过期")
+  with LEASES_LOCK:
+   if task_id in LEASES: LEASES[task_id]["lease_expires_at"]=expires_at
+  return _ok(result)
 def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"sequence":args.get("sequence"),"message":args.get("message")}
- return _ok(_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload))
+ task_id=str(args.get("task_id") or "").strip()
+ sequence=args.get("sequence")
+ message=args.get("message")
+ with LEASE_OPERATION_LOCK:
+  lease=_lease(task_id)
+  if not isinstance(sequence,int) or isinstance(sequence,bool) or sequence < 1:
+   raise RuntimeError("progress sequence 必须是从 1 开始的正整数")
+  if not isinstance(message,str) or not message:
+   raise RuntimeError("progress message 必须是非空字符串")
+  last_sequence=int(lease.get("progress_sequence",0))
+  last_message=lease.get("progress_message")
+  if sequence == last_sequence and sequence > 0 and message == last_message:
+   pass  # Exact replay: the Hub's sequence/message idempotency contract applies.
+  elif sequence != last_sequence + 1:
+   raise RuntimeError("progress sequence 必须从 1 开始连续递增；相同 sequence 只能重放相同 message")
+  payload={**lease,"sequence":sequence,"message":message}
+  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload)
+  if sequence > last_sequence:
+   with LEASES_LOCK:
+    if task_id in LEASES:
+     LEASES[task_id]["progress_sequence"]=sequence
+     LEASES[task_id]["progress_message"]=message
+  return _ok(result)
 def tool_result(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
- result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
- with LEASES_LOCK: LEASES.pop(task_id,None)
- return _ok(result)
+ task_id=str(args.get("task_id") or "").strip()
+ with LEASE_OPERATION_LOCK:
+  payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
+  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
+  with LEASES_LOCK: LEASES.pop(task_id,None)
+  return _ok(result)
 TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_recovery_diagnostics":tool_recovery_diagnostics,"workbuddy_record_recovery_decision":tool_record_recovery_decision,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
  fn=TOOL_FUNCS.get(name)
