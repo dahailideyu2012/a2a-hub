@@ -363,3 +363,110 @@ def test_read_limited_rejects_invalid_limit_types_and_values(invalid_limit):
         server._read_limited(response, invalid_limit, "test response")
 
     assert response.offset == 0
+
+
+class TrackingErrorBody:
+    def __init__(self, body: bytes, *, close_error: bool = False):
+        self.body = body
+        self.offset = 0
+        self.closed = False
+        self.close_error = close_error
+        self.read_sizes = []
+
+    def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        chunk = self.body[self.offset:self.offset + size]
+        self.offset += len(chunk)
+        return chunk
+
+    def close(self):
+        self.closed = True
+        if self.close_error:
+            raise OSError("synthetic close failure")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("_get", "presence", None),
+        ("_post", "heartbeat", {"status": "idle"}),
+    ],
+)
+def test_http_error_response_stream_is_closed_after_reading(
+    monkeypatch, method, path, payload
+):
+    body = TrackingErrorBody(b'{"detail":"rate limited"}')
+    http_error = server.urllib.error.HTTPError(
+        "https://hub.example.test/" + path, 429, "Too Many Requests", {}, body
+    )
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            raise http_error
+
+    monkeypatch.setattr(
+        server.urllib.request, "build_opener", lambda *_args: FakeOpener()
+    )
+
+    with pytest.raises(RuntimeError, match="Hub HTTP 429: rate limited"):
+        if method == "_get":
+            server._get(path)
+        else:
+            server._post(path, payload)
+
+    assert body.closed is True
+    assert body.offset == len(body.body)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("_get", "presence", None),
+        ("_post", "heartbeat", {"status": "idle"}),
+    ],
+)
+def test_oversized_http_error_response_is_bounded_and_closed(
+    monkeypatch, method, path, payload
+):
+    body = TrackingErrorBody(b"x" * (16 * 1024 + 1))
+    http_error = server.urllib.error.HTTPError(
+        "https://hub.example.test/" + path, 502, "Bad Gateway", {}, body
+    )
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            raise http_error
+
+    monkeypatch.setattr(
+        server.urllib.request, "build_opener", lambda *_args: FakeOpener()
+    )
+
+    with pytest.raises(RuntimeError, match="Hub HTTP 502: Hub 返回 HTTP 错误"):
+        if method == "_get":
+            server._get(path)
+        else:
+            server._post(path, payload)
+
+    assert body.closed is True
+    assert body.offset == 16 * 1024 + 1
+    assert all(size <= 16 * 1024 for size in body.read_sizes)
+
+
+def test_http_error_close_failure_does_not_mask_original_status(monkeypatch):
+    body = TrackingErrorBody(b'{"detail":"upstream unavailable"}', close_error=True)
+    http_error = server.urllib.error.HTTPError(
+        "https://hub.example.test/presence", 503, "Service Unavailable", {}, body
+    )
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            raise http_error
+
+    monkeypatch.setattr(
+        server.urllib.request, "build_opener", lambda *_args: FakeOpener()
+    )
+
+    with pytest.raises(RuntimeError, match="Hub HTTP 503: upstream unavailable"):
+        server._get("presence")
+
+    assert body.closed is True
