@@ -57,6 +57,25 @@ def _http_timeout(env_name: str, default: float, maximum: float) -> float:
  return value
 
 
+def _read_limited(response: Any, limit: int, label: str) -> bytes:
+ """Read a response to EOF in bounded chunks, tolerating short reads."""
+ if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+  raise ValueError("response byte limit must be a non-negative integer")
+ chunks: list[bytes] = []
+ total = 0
+ while True:
+  chunk = response.read(min(16 * 1024, limit + 1 - total))
+  if chunk == b"":
+   break
+  if not isinstance(chunk, (bytes, bytearray)):
+   raise RuntimeError(f"{label}不是有效的字节流")
+  total += len(chunk)
+  if total > limit:
+   raise RuntimeError(f"{label}超过 {limit} 字节限制")
+  chunks.append(bytes(chunk))
+ return b"".join(chunks)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
 
@@ -65,14 +84,13 @@ def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),headers={"Content-Type":"application/json","Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="POST")
  try:
   with urllib.request.build_opener(_NoRedirect()).open(request,timeout=_http_timeout("A2A_WORKBUDDY_POST_TIMEOUT_SECONDS", 30, 120)) as response:
-   raw=response.read(256*1024+1)
-   if len(raw)>256*1024: raise RuntimeError("Hub 响应超过 256 KiB 限制")
+   raw=_read_limited(response,256*1024,"Hub 响应")
    data=json.loads(raw.decode("utf-8"))
    if not isinstance(data,dict): raise RuntimeError("Hub 返回了非对象 JSON")
    return data
  except urllib.error.HTTPError as exc:
   try:
-   error=json.loads(exc.read(16*1024).decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
+   error=json.loads(_read_limited(exc,16*1024,"Hub 错误响应").decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
   except Exception: detail="Hub 返回 HTTP 错误"
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
@@ -82,14 +100,13 @@ def _get(path: str) -> dict[str,Any]:
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),headers={"Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="GET")
  try:
   with urllib.request.build_opener(_NoRedirect()).open(request,timeout=_http_timeout("A2A_WORKBUDDY_GET_TIMEOUT_SECONDS", 15, 60)) as response:
-   raw=response.read(64*1024+1)
-   if len(raw)>64*1024: raise RuntimeError("Hub 响应超过 64 KiB 限制")
+   raw=_read_limited(response,64*1024,"Hub 响应")
    data=json.loads(raw.decode("utf-8"))
    if not isinstance(data,dict): raise RuntimeError("Hub 返回了非对象 JSON")
    return data
  except urllib.error.HTTPError as exc:
   try:
-   error=json.loads(exc.read(16*1024).decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
+   error=json.loads(_read_limited(exc,16*1024,"Hub 错误响应").decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
   except Exception: detail="Hub 返回 HTTP 错误"
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None

@@ -232,3 +232,82 @@ def test_http_requests_apply_configured_timeout(
 
     assert observed["timeout"] == expected
     assert observed["request"].full_url.endswith("/" + path)
+
+
+class FragmentedResponse:
+    def __init__(self, body: bytes, chunk_size: int = 3):
+        self.body = body
+        self.chunk_size = chunk_size
+        self.offset = 0
+        self.read_sizes = []
+
+    def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        take = min(size, self.chunk_size)
+        chunk = self.body[self.offset:self.offset + take]
+        self.offset += len(chunk)
+        return chunk
+
+
+def test_read_limited_reassembles_short_reads_until_eof():
+    body = b'{"accepted":true,"value":"fragmented"}'
+    response = FragmentedResponse(body, chunk_size=2)
+
+    assert server._read_limited(response, len(body), "test response") == body
+    assert response.offset == len(body)
+    assert len(response.read_sizes) > 2
+    assert all(size <= 16 * 1024 for size in response.read_sizes)
+
+
+def test_read_limited_rejects_limit_plus_one_without_unbounded_reading():
+    response = FragmentedResponse(b"1234567", chunk_size=2)
+
+    with pytest.raises(RuntimeError, match="6 字节限制"):
+        server._read_limited(response, 6, "test response")
+
+    assert response.offset == 7
+
+
+def test_read_limited_rejects_non_byte_stream():
+    class InvalidResponse:
+        def read(self, _size):
+            return "not-bytes"
+
+    with pytest.raises(RuntimeError, match="不是有效的字节流"):
+        server._read_limited(InvalidResponse(), 32, "test response")
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), [
+    ("_get", "presence", None),
+    ("_post", "heartbeat", {"status": "idle"}),
+])
+def test_http_methods_parse_fragmented_json_responses(
+    monkeypatch, method, path, payload
+):
+    response = FragmentedResponse(
+        b'{"accepted":true,"connector_id":"workbuddy-personal","online":true}',
+        chunk_size=4,
+    )
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            assert timeout in (15, 30)
+            return response
+
+    monkeypatch.setattr(
+        server.urllib.request, "build_opener", lambda *_args: FakeOpener()
+    )
+
+    result = getattr(server, method)(path) if method == "_get" else getattr(
+        server, method
+    )(path, payload)
+
+    assert result["accepted"] is True
+    assert response.offset == len(response.body)
+
+
+def test_read_limited_accepts_exact_limit():
+    response = FragmentedResponse(b"exact", chunk_size=1)
+
+    assert server._read_limited(response, 5, "test response") == b"exact"
+    assert response.offset == 5
