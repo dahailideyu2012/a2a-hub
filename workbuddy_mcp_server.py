@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """WorkBuddy stdio MCP bridge for the A2A Hub outbound-pull REST API."""
 from __future__ import annotations
-import hashlib, json, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
+import hashlib, json, math, os, re, sys, threading, time, uuid, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +10,7 @@ PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED = {"2024-11-05", "2025-03-26", "2025-06-18"}
 LEASES: dict[str, dict[str, Any]] = {}
 LEASES_LOCK = threading.Lock()
+CLAIM_LOCK = threading.Lock()
 MAX_ACTIVE_LEASES = 1
 HANDSHAKE_READY = False
 HANDSHAKE_CACHE_KEY: tuple[str, str, str] | None = None
@@ -356,21 +357,44 @@ def _task_prompt(task: dict[str,Any]) -> str:
  return "\n".join(chunks).strip()
 def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
- _prune_expired_leases()
- with LEASES_LOCK:
-  if len(LEASES) >= MAX_ACTIVE_LEASES:
-   return _err("当前 MCP 会话已有未完成任务；请先提交该任务结果，再领取下一项")
  payload={}
  if args.get("agent_ids") is not None: payload["agent_ids"]=args["agent_ids"]
  if args.get("lease_seconds") is not None: payload["lease_seconds"]=args["lease_seconds"]
- result=_post("claim",payload)
- if not result.get("claimed"): return _ok({"claimed":False,"message":"当前没有可领取的任务"})
- task=result.get("task") or {}; lease=result.get("lease") or {}; task_id=str(task.get("id") or "")
- if not task_id or not lease.get("lease_token") or not lease.get("lease_version"): raise RuntimeError("Hub claim 响应缺少任务或租约字段")
- try: expires_at=float(lease["lease_expires_at"])
- except (KeyError,TypeError,ValueError): raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
- if expires_at <= time.time(): raise RuntimeError("Hub 返回的任务租约已经过期")
- with LEASES_LOCK: LEASES[task_id]={"lease_token":str(lease["lease_token"]),"lease_version":int(lease["lease_version"]),"lease_expires_at":expires_at}
+ # Serialize the full check -> remote claim -> local registration sequence.
+ # Never hold LEASES_LOCK while waiting on the network.
+ with CLAIM_LOCK:
+  _prune_expired_leases()
+  with LEASES_LOCK:
+   if len(LEASES) >= MAX_ACTIVE_LEASES:
+    return _err("当前 MCP 会话已有未完成任务；请先提交该任务结果，再领取下一项")
+  result=_post("claim",payload)
+  if not isinstance(result,dict):
+   raise RuntimeError("Hub claim 响应格式无效")
+  if result.get("claimed") is not True:
+   if result.get("claimed") is False:
+    return _ok({"claimed":False,"message":"当前没有可领取的任务"})
+   raise RuntimeError("Hub claim 响应缺少有效 claimed 布尔值")
+  task=result.get("task")
+  lease=result.get("lease")
+  if not isinstance(task,dict) or not isinstance(lease,dict):
+   raise RuntimeError("Hub claim 响应缺少任务或租约对象")
+  task_id=task.get("id")
+  lease_token=lease.get("lease_token")
+  lease_version=lease.get("lease_version")
+  if (not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128
+      or not isinstance(lease_token,str) or not lease_token
+      or isinstance(lease_version,bool) or not isinstance(lease_version,int) or lease_version<=0):
+   raise RuntimeError("Hub claim 响应缺少有效任务或租约字段")
+  try:
+   expires_at=float(lease["lease_expires_at"])
+  except (KeyError,TypeError,ValueError,OverflowError):
+   raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
+  if not math.isfinite(expires_at) or expires_at <= time.time():
+   raise RuntimeError("Hub 返回的任务租约已经过期或无效")
+  with LEASES_LOCK:
+   if len(LEASES) >= MAX_ACTIVE_LEASES:
+    raise RuntimeError("本地活动租约数量超过限制，拒绝覆盖现有租约")
+   LEASES[task_id]={"lease_token":lease_token,"lease_version":lease_version,"lease_expires_at":expires_at}
  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
@@ -381,7 +405,11 @@ def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
  except (KeyError,TypeError,ValueError): raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
  if expires_at <= time.time(): raise RuntimeError("Hub renew 返回的租约已经过期")
  with LEASES_LOCK:
-  if task_id in LEASES: LEASES[task_id]["lease_expires_at"]=expires_at
+  current=LEASES.get(task_id)
+  if (current is None or current.get("lease_token") != payload["lease_token"]
+      or current.get("lease_version") != payload["lease_version"]):
+   raise RuntimeError("Hub renew 回执对应的本地租约已变更；拒绝应用过期回执")
+  current["lease_expires_at"]=expires_at
  return _ok(result)
 def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"sequence":args.get("sequence"),"message":args.get("message")}
@@ -389,7 +417,12 @@ def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
 def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
- with LEASES_LOCK: LEASES.pop(task_id,None)
+ with LEASES_LOCK:
+  current=LEASES.get(task_id)
+  if (current is None or current.get("lease_token") != payload["lease_token"]
+      or current.get("lease_version") != payload["lease_version"]):
+   raise RuntimeError("结果回执对应的本地租约已变更；拒绝清理新租约")
+  LEASES.pop(task_id,None)
  return _ok(result)
 TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_recovery_diagnostics":tool_recovery_diagnostics,"workbuddy_record_recovery_decision":tool_record_recovery_decision,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
