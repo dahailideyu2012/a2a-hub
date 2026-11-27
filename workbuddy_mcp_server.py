@@ -137,7 +137,8 @@ def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
  result = _get("presence")
  if not isinstance(result, dict) or result.get("connector_id") != _connector_id():
-  _invalidate_handshake()  raise RuntimeError("Hub presence connector identity mismatch")
+  _invalidate_handshake()
+  raise RuntimeError("Hub presence connector identity mismatch")
  if not isinstance(result.get("online"), bool):
   raise RuntimeError("Hub presence response lacks a valid online boolean")
  return _ok(result)
@@ -276,7 +277,8 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
  receipt=_post("heartbeat",heartbeat_payload)
  heartbeat_observed_at=_utc_now()
  observed["heartbeat_observed_at"]=heartbeat_observed_at
- try:  _validate_heartbeat_receipt(receipt, heartbeat_payload)
+ try:
+  _validate_heartbeat_receipt(receipt, heartbeat_payload)
  except RuntimeError as exc:
   if str(exc) == "Hub 未确认连接心跳":
    raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳") from None
@@ -425,7 +427,8 @@ def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
 def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
  result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
- with LEASES_LOCK:  current=LEASES.get(task_id)
+ with LEASES_LOCK:
+  current=LEASES.get(task_id)
   if (current is None or current.get("lease_token") != payload["lease_token"]
       or current.get("lease_version") != payload["lease_version"]):
    raise RuntimeError("结果回执对应的本地租约已变更；拒绝清理新租约")
