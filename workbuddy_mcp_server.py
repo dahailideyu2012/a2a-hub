@@ -278,7 +278,9 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
  observed["heartbeat_observed_at"]=heartbeat_observed_at
  try:
   _validate_heartbeat_receipt(receipt, heartbeat_payload)
- except RuntimeError:
+ except RuntimeError as exc:
+  if str(exc) == "Hub 未确认连接心跳":
+   raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳") from None
   raise _connection_check_failure("heartbeat_receipt",check_id,started_at,observed,"Hub 心跳回执校验失败") from None
  after=_get("presence")
  presence_after_observed_at=_utc_now()
