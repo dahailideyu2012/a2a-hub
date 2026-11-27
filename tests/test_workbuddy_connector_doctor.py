@@ -298,3 +298,39 @@ def test_json_output_has_versioned_stable_envelope(capsys):
     assert isinstance(output["passed"], int)
     assert output["failed"] == 0
     assert all(set(item) == {"id", "status", "message"} for item in output["checks"])
+
+
+
+def test_package_rejects_unknown_mcp_root_properties(tmp_path: Path):
+    root = _package(tmp_path)
+    config_path = root / "mcp.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["unexpectedRootOption"] = {"enabled": True}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    failures = {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+    assert "mcp-root-keys" in failures
+
+
+def test_environment_rejects_symlinked_mcp_script(tmp_path: Path):
+    target = tmp_path / "actual_server.py"
+    target.write_text("# not the approved launcher", encoding="utf-8")
+    link = tmp_path / "workbuddy_mcp_server.py"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlink creation is unavailable on this platform")
+    checks = validate_environment({
+        "A2A_HUB_MCP_SERVER_PATH": str(link),
+        "A2A_WORKBUDDY_HUB_URL": "https://hub.example.test",
+        "A2A_WORKBUDDY_CONNECTOR_TOKEN": "s" * 48,
+    })
+    assert "local-script" in {x["id"] for x in checks if x["status"] == "FAIL"}
+
+
+def test_package_rejects_non_object_mcp_servers_root(tmp_path: Path):
+    root = _package(tmp_path)
+    config_path = root / "mcp.json"
+    config_path.write_text(json.dumps({"mcpServers": []}), encoding="utf-8")
+    failures = {x["id"] for x in validate_package(root) if x["status"] == "FAIL"}
+    assert "mcp-server-count" in failures
