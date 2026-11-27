@@ -113,3 +113,13 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 - ChatGPT ingress token 与 WorkBuddy connector token 独立，不能互换。
 - 不允许将模拟集成测试称为真实 Desktop 在线或真实执行。
 - 本阶段体检脚本不发起网络请求、不修改 Hub 状态、不连接生产环境。
+
+
+## 9. T133–T136 会话生命周期与恢复回归
+
+- Connector 会话状态仅存在于 MCP bridge 进程内存；进程退出或重启后不会恢复旧 lease token。重新启动后必须重新握手，旧任务租约由 Hub 的到期机制最终回收。
+- 本地 lease 到期后，start、renew、progress、result 等任务变更必须在本地拒绝，不向 Hub 发送携带过期凭据的请求。
+- renew 只有在 Hub 返回有效且晚于当前时间的过期时间时，才更新本地 lease；无效或已过期的回执不得延长本地租约。
+- result 成功后本地租约立即移除；同一 MCP 进程后续重复提交会因没有有效本地租约而被拒绝，避免意外重复写入。
+- heartbeat 收到 401/403/409/426 时清除握手缓存；临时 5xx 不代表身份或协议会话失效，因此保留缓存并由调用方决定后续重试。
+- 这些回归只验证本地 MCP bridge 对合成响应的处理，不证明真实 Desktop 重连、远端网络恢复或 Hub 服务端租约回收已通过。
