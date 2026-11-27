@@ -32,7 +32,7 @@ def test_heartbeat_auth_protocol_conflicts_invalidate_handshake_cache(status_cod
         raise RuntimeError(f"Hub HTTP {status_code}: rejected")
 
     monkeypatch.setattr(server, "_post", fake_post)
-    assert server.tool_heartbeat({"status": "idle"})["isError"] is True
+    assert server.call_tool("workbuddy_heartbeat", {"status": "idle"})["isError"] is True
     assert server.HANDSHAKE_READY is False
     assert server.HANDSHAKE_CACHE_KEY is None
 
