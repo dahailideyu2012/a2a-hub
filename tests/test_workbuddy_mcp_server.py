@@ -299,7 +299,7 @@ def test_connection_check_fails_closed_when_heartbeat_not_accepted(monkeypatch):
     monkeypatch.setattr(server, "_get", lambda _path: {"online": True})
     result = server.call_tool("workbuddy_connection_check", {})
     assert result["isError"] is True
-    assert "回执校验失败" in result["content"][0]["text"]
+    assert "Hub 未确认连接检查心跳" in result["content"][0]["text"]
 
 
 def test_connection_check_trace_has_ordered_timestamps_and_never_fabricates_receipt_ids(monkeypatch):
