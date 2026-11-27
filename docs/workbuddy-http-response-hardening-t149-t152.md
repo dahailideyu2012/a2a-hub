@@ -1,4 +1,4 @@
-# WorkBuddy connector bounded HTTP response handling (T149–T152)
+# WorkBuddy connector bounded HTTP response handling (T149–T160)
 
 ## Scope
 
@@ -12,11 +12,15 @@ This batch hardens the WorkBuddy stdio connector's HTTP response reader. It does
 - **T153/T154 — endpoint ceiling regression tests:** exercise the real `_post` and `_get` request paths with synthetic success bodies at one byte above 256 KiB and 64 KiB respectively; assert fail-closed errors and that reading stops at the first over-limit byte.
 - **T155 — invalid limit regression tests:** directly verify `_read_limited` rejects booleans, negative values, floats, strings, and `None` before reading the response.
 - **T156 — acceptance evidence:** these tests pin the endpoint-specific limits and defensive argument validation; they do not imply a real Hub or WorkBuddy network test.
+- **T157 — HTTP error stream lifecycle:** centralize bounded HTTP error parsing and close the `HTTPError` response stream in a `finally` block on every path.
+- **T158 — lifecycle regression tests:** cover GET/POST HTTP errors, successful detail parsing, oversized error bodies, and stream closure.
+- **T159 — close-failure isolation:** a stream-close exception must not mask the original Hub HTTP status or parsed error detail.
+- **T160 — boundary documentation:** HTTP error bodies remain capped at 16 KiB; both success and error response streams are released on exit.
 - **T152 — operational documentation:** this note records the limits and the failure behavior for future connector maintenance.
 
 ## Failure behavior
 
-Oversized success responses raise a bounded-response error before JSON parsing. Non-byte stream chunks fail closed. Invalid UTF-8/JSON and non-object JSON continue to be rejected by the existing response validation. HTTP error handling still preserves the HTTP status prefix used by the existing transient-retry classifier; the error body is read only up to 16 KiB.
+Oversized success responses raise a bounded-response error before JSON parsing. Non-byte stream chunks fail closed. Invalid UTF-8/JSON and non-object JSON continue to be rejected by the existing response validation. HTTP error handling still preserves the HTTP status prefix used by the existing transient-retry classifier; the error body is read only up to 16 KiB. The `HTTPError` stream is closed even when reading, decoding, or parsing fails; a close failure is suppressed so it cannot replace the original HTTP status.
 
 ## Validation required before acceptance
 

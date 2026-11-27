@@ -79,6 +79,26 @@ def _read_limited(response: Any, limit: int, label: str) -> bytes:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
 
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+ """Read a bounded HTTP error body and always release its response stream."""
+ try:
+  try:
+   error=json.loads(_read_limited(exc,16*1024,"Hub 错误响应").decode("utf-8"))
+   return error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
+  except Exception:
+   return "Hub 返回 HTTP 错误"
+ finally:
+  # HTTPError is a wrapper; close its underlying response stream explicitly.
+  response_stream = getattr(exc, "fp", None)
+  close_stream = getattr(response_stream, "close", None)
+  if callable(close_stream):
+   try:
+    close_stream()
+   except Exception:
+    # Preserve the original HTTP status even if a broken stream fails to close.
+    pass
+
+
 def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
  base,token=_config()
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),headers={"Content-Type":"application/json","Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="POST")
@@ -89,9 +109,7 @@ def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
    if not isinstance(data,dict): raise RuntimeError("Hub 返回了非对象 JSON")
    return data
  except urllib.error.HTTPError as exc:
-  try:
-   error=json.loads(_read_limited(exc,16*1024,"Hub 错误响应").decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
-  except Exception: detail="Hub 返回 HTTP 错误"
+  detail=_http_error_detail(exc)
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
  except (UnicodeDecodeError,json.JSONDecodeError): raise RuntimeError("Hub 返回了无效 JSON") from None
@@ -105,9 +123,7 @@ def _get(path: str) -> dict[str,Any]:
    if not isinstance(data,dict): raise RuntimeError("Hub 返回了非对象 JSON")
    return data
  except urllib.error.HTTPError as exc:
-  try:
-   error=json.loads(_read_limited(exc,16*1024,"Hub 错误响应").decode("utf-8")); detail=error.get("detail","请求被 Hub 拒绝") if isinstance(error,dict) else "请求被 Hub 拒绝"
-  except Exception: detail="Hub 返回 HTTP 错误"
+  detail=_http_error_detail(exc)
   raise RuntimeError(f"Hub HTTP {exc.code}: {detail}") from None
  except urllib.error.URLError as exc: raise RuntimeError(f"无法连接 Hub：{type(exc.reason).__name__}") from None
  except (UnicodeDecodeError,json.JSONDecodeError): raise RuntimeError("Hub 返回了无效 JSON") from None
