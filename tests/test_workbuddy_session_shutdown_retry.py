@@ -161,3 +161,74 @@ def test_process_exit_registers_local_session_cleanup(monkeypatch):
     assert server.HANDSHAKE_READY is False
     assert server.HANDSHAKE_CACHE_KEY is None
 
+
+
+@pytest.mark.parametrize(
+    ("raw", "default", "maximum", "expected"),
+    [
+        (None, 30, 120, 30),
+        ("2.5", 30, 120, 2.5),
+        ("120", 30, 120, 120),
+        (None, 15, 60, 15),
+        ("60", 15, 60, 60),
+    ],
+)
+def test_http_timeout_accepts_defaults_and_bounded_values(
+    monkeypatch, raw, default, maximum, expected
+):
+    env_name = "A2A_WORKBUDDY_TEST_TIMEOUT"
+    if raw is None:
+        monkeypatch.delenv(env_name, raising=False)
+    else:
+        monkeypatch.setenv(env_name, raw)
+
+    assert server._http_timeout(env_name, default, maximum) == expected
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-1", "120.1", "nan", "inf", "-inf"])
+def test_http_timeout_rejects_invalid_or_unbounded_values(monkeypatch, raw):
+    env_name = "A2A_WORKBUDDY_TEST_TIMEOUT"
+    monkeypatch.setenv(env_name, raw)
+
+    with pytest.raises(RuntimeError, match="A2A_WORKBUDDY_TEST_TIMEOUT"):
+        server._http_timeout(env_name, 30, 120)
+
+
+@pytest.mark.parametrize(
+    ("path", "env_name", "env_value", "expected"),
+    [
+        ("presence", "A2A_WORKBUDDY_GET_TIMEOUT_SECONDS", "4.5", 4.5),
+        ("heartbeat", "A2A_WORKBUDDY_POST_TIMEOUT_SECONDS", "8", 8.0),
+    ],
+)
+def test_http_requests_apply_configured_timeout(
+    monkeypatch, path, env_name, env_value, expected
+):
+    monkeypatch.setenv(env_name, env_value)
+    observed = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b'{"accepted": true, "connector_id": "workbuddy-personal", "online": true}'
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            observed["request"] = request
+            observed["timeout"] = timeout
+            return FakeResponse()
+
+    monkeypatch.setattr(server.urllib.request, "build_opener", lambda *_args: FakeOpener())
+
+    if path == "presence":
+        server._get(path)
+    else:
+        server._post(path, {"status": "idle"})
+
+    assert observed["timeout"] == expected
+    assert observed["request"].full_url.endswith("/" + path)

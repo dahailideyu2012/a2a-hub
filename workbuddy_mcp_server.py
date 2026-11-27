@@ -43,6 +43,20 @@ def _config() -> tuple[str,str]:
  if not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment: raise RuntimeError("Hub 地址格式无效")
  if not token or len(token)<32: raise RuntimeError("WorkBuddy Connector Token 未配置或长度不足 32 位")
  return base,token
+def _http_timeout(env_name: str, default: float, maximum: float) -> float:
+ """Read a bounded per-request timeout; invalid values fail closed."""
+ raw = os.environ.get(env_name)
+ if raw is None or not raw.strip():
+  return default
+ try:
+  value = float(raw)
+ except (TypeError, ValueError):
+  raise RuntimeError(f"{env_name} 必须是 1 到 {maximum:g} 秒之间的数字") from None
+ if not math.isfinite(value) or value < 1 or value > maximum:
+  raise RuntimeError(f"{env_name} 必须是 1 到 {maximum:g} 秒之间的有限数字")
+ return value
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self, req, fp, code, msg, headers, newurl): return None
 
@@ -50,7 +64,7 @@ def _post(path: str,payload: dict[str,Any]) -> dict[str,Any]:
  base,token=_config()
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),data=json.dumps(payload,ensure_ascii=False).encode("utf-8"),headers={"Content-Type":"application/json","Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="POST")
  try:
-  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=30) as response:
+  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=_http_timeout("A2A_WORKBUDDY_POST_TIMEOUT_SECONDS", 30, 120)) as response:
    raw=response.read(256*1024+1)
    if len(raw)>256*1024: raise RuntimeError("Hub 响应超过 256 KiB 限制")
    data=json.loads(raw.decode("utf-8"))
@@ -67,7 +81,7 @@ def _get(path: str) -> dict[str,Any]:
  base,token=_config()
  request=urllib.request.Request(base+"/integrations/workbuddy/v1/"+path.lstrip("/"),headers={"Accept":"application/json","X-WorkBuddy-Connector-Token":token},method="GET")
  try:
-  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=15) as response:
+  with urllib.request.build_opener(_NoRedirect()).open(request,timeout=_http_timeout("A2A_WORKBUDDY_GET_TIMEOUT_SECONDS", 15, 60)) as response:
    raw=response.read(64*1024+1)
    if len(raw)>64*1024: raise RuntimeError("Hub 响应超过 64 KiB 限制")
    data=json.loads(raw.decode("utf-8"))
