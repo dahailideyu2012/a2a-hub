@@ -123,3 +123,12 @@ python scripts/workbuddy_connector_doctor.py --check-env --json
 - result 成功后本地租约立即移除；同一 MCP 进程后续重复提交会因没有有效本地租约而被拒绝，避免意外重复写入。
 - heartbeat 收到 401/403/409/426 时清除握手缓存；临时 5xx 不代表身份或协议会话失效，因此保留缓存并由调用方决定后续重试。
 - 这些回归只验证本地 MCP bridge 对合成响应的处理，不证明真实 Desktop 重连、远端网络恢复或 Hub 服务端租约回收已通过。
+
+
+## 10. T137–T140 并发领取与任务进度顺序
+
+- 单个 MCP 进程最多持有一个活动租约。领取操作将本地容量检查、Hub claim 请求和租约登记串行化，避免并发 MCP 调用同时通过空闲检查而领取多项任务。
+- 同一进程内的 start、renew、progress、取消检查和 result 操作使用统一的租约操作互斥区；取消或终态 result 不会与本地 progress/renew 操作交错执行。
+- progress sequence 必须从 1 开始连续递增。相同 sequence 只有在 message 完全相同时才允许安全重放；相同 sequence 携带不同 message、跳号、倒退或非法 sequence 均在本地拒绝，不访问 Hub。
+- 只有 Hub 成功确认进度后，才更新本地 sequence/message 游标；网络失败不会推进游标，调用方可使用原 sequence/message 重试。
+- 这些互斥区只协调同一 MCP 进程内的并发调用；跨进程、跨 Connector 的最终一致性和幂等仍由 Hub 服务端租约与幂等契约负责。模拟并发测试不等于真实 Desktop 多会话联调。
