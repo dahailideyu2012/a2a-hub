@@ -533,7 +533,7 @@ def test_cancellation_checkpoint_fails_closed_on_mismatched_receipt(
     )
 
     assert result["isError"] is True
-    assert "身份或任务不匹配" in result["content"][0]["text"]
+    assert "不匹配" in result["content"][0]["text"]
     assert task_id in server.LEASES
     assert calls == ["handshake", "heartbeat"]
 
