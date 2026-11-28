@@ -19,12 +19,12 @@ RECOVERY_SNAPSHOT_LOCK = threading.Lock()
 LAST_RECOVERY_SNAPSHOT: tuple[tuple[str, str, str], str] | None = None
 TOOLS = [
  {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
- {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
+ {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["status"]}},
  {"name":"workbuddy_check_task_cancellation","description":"检查当前 MCP 会话持有的任务是否已被取消。执行一次认证 busy 心跳；收到取消信号时立即丢弃本地租约并返回 should_stop=true。适合长任务在子步骤之间主动检查；不启动后台轮询或中断正在运行的外部程序。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
  {"name":"workbuddy_connection_check","description":"执行一次连接专用检查：握手、读取 presence、发送一次 idle 心跳并复查 presence。绝不领取或执行任务。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_recovery_diagnostics","description":"只读读取 Hub 当前恢复诊断和 recovery_snapshot_id；不触发握手、心跳、重连或任务操作。用于在用户指示下记录人工处理决定。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_record_recovery_decision","description":"仅在用户/操作员明确决定后，记录当前诊断快照的 acknowledged、deferred 或 dismissed 决定。必须先读取 workbuddy_recovery_diagnostics；过期快照会被拒绝。本工具只记录回执，绝不执行 reconnect、heartbeat probe、claim 或任务。","inputSchema":{"type":"object","properties":{"snapshot_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},"disposition":{"type":"string","enum":["acknowledged","deferred","dismissed"]}},"required":["snapshot_id","disposition"]}},
- {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
+ {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*$"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
  {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
  {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
  {"name":"workbuddy_progress_task","description":"向 Hub 回传任务进度。sequence 必须从 1 开始严格递增；重复提交相同 sequence/message 可安全重放。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"sequence":{"type":"integer","minimum":1},"message":{"type":"string","minLength":1,"maxLength":4000}},"required":["task_id","sequence","message"]}},
@@ -285,11 +285,11 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  # Reject malformed input locally before performing any network handshake.
  status=args.get("status")
  if status not in {"idle","busy","degraded"}: raise RuntimeError("status 必须是 idle、busy 或 degraded")
- task_id=args.get("current_task_id")
- if task_id is not None and (not isinstance(task_id,str) or len(task_id)>128): raise RuntimeError("current_task_id 无效")
+ raw_task_id=args.get("current_task_id")
+ task_id = _validated_task_id_value(raw_task_id, "current_task_id") if raw_task_id is not None else None
  if status == "idle" and task_id is not None:
   raise RuntimeError("idle 心跳不能绑定 current_task_id")
- if status == "busy" and (not isinstance(task_id,str) or not task_id.strip()):
+ if status == "busy" and task_id is None:
   raise RuntimeError("busy 心跳必须绑定有效 current_task_id")
  _ensure_handshake()
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
@@ -299,10 +299,7 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
 
 def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
  """Check a locally leased task's durable cancellation flag with one heartbeat."""
- task_id=args.get("task_id")
- if not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128:
-  raise RuntimeError("task_id 无效")
- task_id=task_id.strip()
+ task_id = _validated_task_id(args)
  # A model cannot use this tool to probe arbitrary task IDs: the bridge must
  # already hold the corresponding private lease in this MCP process.
  _lease(task_id)
@@ -464,29 +461,77 @@ atexit.register(_cleanup_local_session)
 
 
 def _prune_expired_leases() -> None:
+ """Remove expired or structurally invalid local lease records without raising."""
  now = time.time()
  with LEASES_LOCK:
-  expired = [task_id for task_id, lease in LEASES.items() if float(lease.get("lease_expires_at", 0)) <= now]
-  for task_id in expired: LEASES.pop(task_id, None)
+  invalid: list[str] = []
+  for task_id, lease in LEASES.items():
+   if not isinstance(lease, dict):
+    invalid.append(task_id)
+    continue
+   token = lease.get("lease_token")
+   version = lease.get("lease_version")
+   expires_at = lease.get("lease_expires_at")
+   if (not isinstance(token, str) or not token or len(token) > 4096
+       or isinstance(version, bool) or not isinstance(version, int) or version <= 0
+       or isinstance(expires_at, bool) or not isinstance(expires_at, (int, float))):
+    invalid.append(task_id)
+    continue
+   try:
+    expiry = float(expires_at)
+   except (OverflowError, TypeError, ValueError):
+    invalid.append(task_id)
+    continue
+   if not math.isfinite(expiry) or expiry <= now:
+    invalid.append(task_id)
+  for task_id in invalid:
+   LEASES.pop(task_id, None)
+
 
 def _lease(task_id: str) -> dict[str,Any]:
  _prune_expired_leases()
- with LEASES_LOCK: value=LEASES.get(task_id)
- if not value: raise RuntimeError("当前 MCP 会话没有该任务的有效租约；请等待旧租约到期后重新领取")
+ with LEASES_LOCK:
+  value = LEASES.get(task_id)
+  if not isinstance(value, dict):
+   value = None
+  else:
+   value = dict(value)
+ if value is None:
+  raise RuntimeError("当前 MCP 会话没有该任务的有效租约；请等待旧租约到期后重新领取")
  return {"lease_token":value["lease_token"],"lease_version":value["lease_version"]}
 def _task_prompt(task: dict[str,Any]) -> str:
  chunks=[]
  for message in task.get("history") or []:
   for part in message.get("parts") or []:
+   if not isinstance(part, dict):
+    continue
    if part.get("kind")=="text" or "text" in part:
     value=part.get("text")
     if isinstance(value,str): chunks.append(value)
  return "\n".join(chunks).strip()
+def _validated_claim_args(args: dict[str,Any]) -> dict[str,Any]:
+ """Validate optional claim filters locally before handshake or claim network I/O."""
+ payload: dict[str,Any] = {}
+ agent_ids = args.get("agent_ids")
+ if agent_ids is not None:
+  if not isinstance(agent_ids, list) or not 1 <= len(agent_ids) <= 32:
+   raise RuntimeError("agent_ids 必须是 1 到 32 项的数组")
+  if any(not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", item) for item in agent_ids):
+   raise RuntimeError("agent_ids 包含无效 Agent ID")
+  if len(set(agent_ids)) != len(agent_ids):
+   raise RuntimeError("agent_ids 不能包含重复项")
+  payload["agent_ids"] = list(agent_ids)
+ lease_seconds = args.get("lease_seconds")
+ if lease_seconds is not None:
+  if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 15 <= lease_seconds <= 900:
+   raise RuntimeError("lease_seconds 必须是 15 到 900 之间的整数")
+  payload["lease_seconds"] = lease_seconds
+ return payload
+
+
 def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
+ payload = _validated_claim_args(args)
  _ensure_handshake()
- payload={}
- if args.get("agent_ids") is not None: payload["agent_ids"]=args["agent_ids"]
- if args.get("lease_seconds") is not None: payload["lease_seconds"]=args["lease_seconds"]
  # Serialize the full check -> remote claim -> local registration sequence.
  # Never hold LEASES_LOCK while waiting on the network.
  with CLAIM_LOCK:
@@ -505,32 +550,48 @@ def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
   lease=result.get("lease")
   if not isinstance(task,dict) or not isinstance(lease,dict):
    raise RuntimeError("Hub claim 响应缺少任务或租约对象")
-  task_id=task.get("id")
+  try:
+   task_id = _validated_task_id_value(task.get("id"))
+  except RuntimeError:
+   raise RuntimeError("Hub claim 响应缺少有效任务 ID") from None
   lease_token=lease.get("lease_token")
   lease_version=lease.get("lease_version")
-  if (not isinstance(task_id,str) or not task_id.strip() or len(task_id)>128
-      or not isinstance(lease_token,str) or not lease_token
-      or isinstance(lease_version,bool) or not isinstance(lease_version,int) or lease_version<=0):
-   raise RuntimeError("Hub claim 响应缺少有效任务或租约字段")
+  if (not isinstance(lease_token,str) or not 1 <= len(lease_token) <= 4096
+      or any(ord(ch) < 32 or ord(ch) == 127 for ch in lease_token)
+      or isinstance(lease_version,bool) or not isinstance(lease_version,int)
+      or not 1 <= lease_version <= 2**31 - 1):
+   raise RuntimeError("Hub claim 响应缺少有效租约字段")
+  raw_expires_at = lease.get("lease_expires_at")
+  if isinstance(raw_expires_at, bool) or not isinstance(raw_expires_at, (int, float)):
+   raise RuntimeError("Hub claim 响应缺少有效租约过期时间")
   try:
-   expires_at=float(lease["lease_expires_at"])
-  except (KeyError,TypeError,ValueError,OverflowError):
+   expires_at = float(raw_expires_at)
+  except (OverflowError, TypeError, ValueError):
    raise RuntimeError("Hub claim 响应缺少有效租约过期时间") from None
   if not math.isfinite(expires_at) or expires_at <= time.time():
    raise RuntimeError("Hub 返回的任务租约已经过期或无效")
+  history = task.get("history", [])
+  if not isinstance(history, list) or any(not isinstance(message, dict) for message in history):
+   raise RuntimeError("Hub claim 响应任务历史格式无效")
+  if any(not isinstance(message.get("parts", []), list) for message in history):
+   raise RuntimeError("Hub claim 响应任务内容格式无效")
   with LEASES_LOCK:
    if len(LEASES) >= MAX_ACTIVE_LEASES:
     raise RuntimeError("本地活动租约数量超过限制，拒绝覆盖现有租约")
    LEASES[task_id]={"lease_token":lease_token,"lease_version":lease_version,"lease_expires_at":expires_at}
  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
+def _validated_task_id_value(value: Any, field: str = "task_id") -> str:
+ if not isinstance(value, str):
+  raise RuntimeError(f"{field} 必须是字符串")
+ normalized = value.strip()
+ if (not normalized or len(normalized) > 128
+     or any(ord(ch) < 32 or ord(ch) == 127 for ch in normalized)):
+  raise RuntimeError(f"{field} 无效")
+ return normalized
+
+
 def _validated_task_id(args: dict[str,Any]) -> str:
- task_id = args.get("task_id")
- if not isinstance(task_id, str):
-  raise RuntimeError("task_id 必须是字符串")
- task_id = task_id.strip()
- if not task_id or len(task_id) > 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in task_id):
-  raise RuntimeError("task_id 无效")
- return task_id
+ return _validated_task_id_value(args.get("task_id"))
 
 
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
