@@ -470,3 +470,78 @@ def test_http_error_close_failure_does_not_mask_original_status(monkeypatch):
         server._get("presence")
 
     assert body.closed is True
+
+
+# T161–T164: handshake receipt and cache-boundary regression guards.
+
+def test_handshake_rejects_unaccepted_receipt_without_caching(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        return {"accepted": False, "connector_id": payload["connector_id"]}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+
+    with pytest.raises(RuntimeError, match="connector identity"):
+        server._ensure_handshake()
+
+    assert calls[0][0] == "handshake"
+    assert server.HANDSHAKE_READY is False
+    assert server.HANDSHAKE_CACHE_KEY is None
+
+
+def test_handshake_rejects_mismatched_connector_identity_without_caching(monkeypatch):
+    def fake_post(_path, _payload):
+        return {"accepted": True, "connector_id": "another-connector"}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+
+    with pytest.raises(RuntimeError, match="connector identity"):
+        server._ensure_handshake()
+
+    assert server.HANDSHAKE_READY is False
+    assert server.HANDSHAKE_CACHE_KEY is None
+
+
+def test_handshake_reuses_receipt_for_unchanged_configuration(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        return {"accepted": True, "connector_id": payload["connector_id"]}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+
+    first = server._ensure_handshake()
+    second = server._ensure_handshake()
+
+    assert first["accepted"] is True
+    assert second == {
+        "accepted": True,
+        "cached": True,
+        "connector_id": "workbuddy-personal",
+    }
+    assert len(calls) == 1
+    assert calls[0][0] == "handshake"
+
+
+def test_handshake_repeats_after_token_or_hub_url_changes(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload):
+        calls.append((path, payload.copy()))
+        return {"accepted": True, "connector_id": payload["connector_id"]}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+
+    server._ensure_handshake()
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "y" * 48)
+    server._ensure_handshake()
+    monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL", "https://hub-two.example.test")
+    server._ensure_handshake()
+
+    assert len(calls) == 3
+    assert all(path == "handshake" for path, _payload in calls)
+    # The raw credential must never be copied into the handshake payload.
+    assert all("y" * 48 not in repr(payload) for _path, payload in calls)
