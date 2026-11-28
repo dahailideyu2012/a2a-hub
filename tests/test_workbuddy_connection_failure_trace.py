@@ -109,7 +109,7 @@ def test_connection_check_heartbeat_rejection_includes_trace_without_secrets(mon
 def _trace_from_error(result):
     assert result["isError"] is True
     message = result["content"][0]["text"]
-    match = re.search(r"\\[connection_check_trace=(\\{.*\\})\\]$", message)
+    match = re.search(r"\[connection_check_trace=(\{.*\})\]$", message)
     assert match, message
     trace = json.loads(match.group(1))
     assert trace["check_id"].startswith("conn-")
