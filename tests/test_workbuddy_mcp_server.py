@@ -296,7 +296,7 @@ def test_connection_check_fails_closed_when_heartbeat_not_accepted(monkeypatch):
         {"accepted": True, "connector_id": "workbuddy-personal"}
         if path == "handshake" else {"accepted": False}
     ))
-    monkeypatch.setattr(server, "_get", lambda _path: {"online": True})
+    monkeypatch.setattr(server, "_get", lambda _path: {"connector_id": "workbuddy-personal", "online": True})
     result = server.call_tool("workbuddy_connection_check", {})
     assert result["isError"] is True
     assert "Hub 未确认连接检查心跳" in result["content"][0]["text"]
