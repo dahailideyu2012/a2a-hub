@@ -81,7 +81,7 @@ def test_t175_progress_rejects_invalid_message_before_network(monkeypatch, messa
     assert calls == []
 
 
-@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf"), True, "9999999999", 1, 10 ** 10000])
+@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf"), True, "9999999999", 1, 10 ** 400])
 def test_t174_renew_rejects_nonfinite_or_invalid_expiry_without_mutating_lease(
     monkeypatch, expires_at
 ):
