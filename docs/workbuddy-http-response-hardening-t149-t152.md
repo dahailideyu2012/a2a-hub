@@ -73,3 +73,13 @@ Run the focused connector regression suite, compileall, and the full pytest suit
 - **T175 — progress payload validation:** sequence must be a positive integer (not a boolean), and message must be a 1–4000 character string. Invalid progress never reaches the Hub or the idempotent retry wrapper.
 - **T176 — result payload validation:** state is limited to completed/failed, output is a string up to 20,000 characters, and an explicit result_key must be 8–128 characters. The default key preserves the existing task-based format when it fits; maximum-length task IDs use a deterministic SHA-256-derived key that remains within the API limit.
 - Tests use the MCP `call_tool` boundary with a stubbed HTTP function to prove invalid inputs are rejected before network activity. They do not claim live Hub or Desktop connectivity.
+
+
+
+## T177–T180 — claim filters, lease receipts, and local lease integrity
+
+- **T177 — claim argument gate:** optional `agent_ids` must be a unique list of 1–32 valid identifiers (1–64 ASCII letters/digits/dot/underscore/hyphen, starting alphanumeric); optional `lease_seconds` must be a non-boolean integer from 15 through 900. Invalid filters are rejected before handshake or claim network I/O, and MCP schemas publish the same bounds.
+- **T178 — strict claim receipt validation:** claimed task IDs use the shared non-empty/128-character/control-character contract; lease tokens must be non-empty bounded printable values; lease versions are positive bounded integers and not booleans; expiry must be a finite numeric Unix timestamp strictly in the future (booleans and numeric strings are rejected). Invalid receipts never enter the local lease registry. Malformed task history is rejected and malformed non-text parts are ignored safely.
+- **T179 — local lease registry integrity:** pruning removes expired and malformed lease records without raising; token, version, and expiry types are validated before a record can remain active. A corrupted record cannot crash a later claim or leak a key/type exception through lifecycle tools.
+- **T180 — shared task identity boundary:** heartbeat `current_task_id` and cancellation-check `task_id` now use the same canonical validator as start/renew/progress/result. Whitespace-only, control-character, oversized, and non-string identifiers fail locally before handshake/heartbeat. Valid surrounding whitespace is normalized consistently.
+- Tests exercise MCP product entry points and the local lease registry with stubbed HTTP only. They do not establish live Hub, Desktop, or Connector connectivity.
