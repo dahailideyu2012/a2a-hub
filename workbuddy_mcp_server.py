@@ -313,30 +313,50 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
  check_id="conn-"+uuid.uuid4().hex
  started_at=_utc_now()
  observed: dict[str,str] = {}
- handshake=_ensure_handshake()
+ try:
+  handshake=_ensure_handshake()
+ except Exception:
+  raise _connection_check_failure("handshake",check_id,started_at,observed,"Hub 握手失败") from None
  handshake_observed_at=_utc_now()
  observed["handshake_observed_at"]=handshake_observed_at
- before=_get("presence")
+ try:
+  before=_get("presence")
+ except Exception:
+  raise _connection_check_failure("presence_before",check_id,started_at,observed,"读取初始 presence 失败") from None
  presence_before_observed_at=_utc_now()
  observed["presence_before_observed_at"]=presence_before_observed_at
+ if not isinstance(before,dict):
+  raise _connection_check_failure("presence_before_shape",check_id,started_at,observed,"初始 presence 响应格式无效") from None
+ if before.get("connector_id") != _connector_id():
+  raise _connection_check_failure("presence_before_identity",check_id,started_at,observed,"初始 presence connector identity 不匹配") from None
+ if not isinstance(before.get("online"),bool):
+  raise _connection_check_failure("presence_before_online",check_id,started_at,observed,"初始 presence 缺少有效 online 布尔值") from None
  heartbeat_id="hb-"+uuid.uuid4().hex
  heartbeat_payload={"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None}
- receipt=_post("heartbeat",heartbeat_payload)
+ try:
+  receipt=_post("heartbeat",heartbeat_payload)
+ except Exception:
+  raise _connection_check_failure("heartbeat_request",check_id,started_at,observed,"发送连接检查心跳失败") from None
  heartbeat_observed_at=_utc_now()
  observed["heartbeat_observed_at"]=heartbeat_observed_at
  try:
-  _validate_heartbeat_receipt(receipt, heartbeat_payload)
+  _validate_heartbeat_receipt(receipt,heartbeat_payload)
  except RuntimeError as exc:
   if str(exc) == "Hub 未确认连接心跳":
    raise _connection_check_failure("heartbeat_acceptance",check_id,started_at,observed,"Hub 未确认连接检查心跳") from None
   raise _connection_check_failure("heartbeat_receipt",check_id,started_at,observed,"Hub 心跳回执校验失败") from None
- after=_get("presence")
+ try:
+  after=_get("presence")
+ except Exception:
+  raise _connection_check_failure("presence_after",check_id,started_at,observed,"读取最终 presence 失败") from None
  presence_after_observed_at=_utc_now()
  observed["presence_after_observed_at"]=presence_after_observed_at
+ if not isinstance(after,dict):
+  raise _connection_check_failure("final_presence_shape",check_id,started_at,observed,"最终 presence 响应格式无效") from None
  if after.get("online") is not True:
-  raise _connection_check_failure("final_presence_online",check_id,started_at,observed,"Hub 已接受心跳，但连接 presence 未确认 online")
+  raise _connection_check_failure("final_presence_online",check_id,started_at,observed,"Hub 已接受心跳，但连接 presence 未确认 online") from None
  if after.get("connector_id") != _connector_id():
-  raise _connection_check_failure("final_presence_identity",check_id,started_at,observed,"Hub presence connector identity 与当前配置不匹配")
+  raise _connection_check_failure("final_presence_identity",check_id,started_at,observed,"Hub presence connector identity 与当前配置不匹配") from None
  completed_at=_utc_now()
  return _ok({
   "connection_check":"passed",
@@ -360,7 +380,6 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   "task_executed":False,
   "note":"时间戳由本地 MCP 进程记录；receipt_id 仅在 Hub 实际返回时提供。该结果不证明 Desktop UI 身份，也未领取或执行任务。"
  })
-
 
 def _post_idempotent(path: str, payload: dict[str,Any]) -> dict[str,Any]:
  """Retry only operations whose server contract is idempotent.
