@@ -39,6 +39,9 @@ def seed(task_id="task-validation", expires_in=120):
 def test_t173_lifecycle_tools_reject_invalid_task_ids_before_network(
     monkeypatch, bad_task_id, tool_name, extra
 ):
+    # Seed even malformed IDs so a missing validator cannot be masked by
+    # the downstream "no active lease" guard. The validator must reject first.
+    seed(bad_task_id)
     calls = []
     monkeypatch.setattr(
         server, "_post",
