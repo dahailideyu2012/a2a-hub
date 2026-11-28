@@ -149,3 +149,25 @@ def test_t172_handshake_invalidation_clears_pending_recovery_snapshot(monkeypatc
     assert server.LAST_RECOVERY_SNAPSHOT is not None
     server._invalidate_handshake()
     assert server.LAST_RECOVERY_SNAPSHOT is None
+
+def test_t172_recovery_decision_rejects_snapshot_after_connector_token_changes(
+    monkeypatch,
+):
+    snapshot_id = "9" * 64
+    monkeypatch.setattr(server, "_get", lambda _path: _diagnostics(snapshot_id))
+    assert server.tool_recovery_diagnostics({})["isError"] is False
+
+    calls = []
+    monkeypatch.setattr(
+        server, "_post", lambda path, payload: calls.append((path, payload)) or {}
+    )
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "y" * 48)
+
+    result = server.call_tool(
+        "workbuddy_record_recovery_decision",
+        {"snapshot_id": snapshot_id, "disposition": "acknowledged"},
+    )
+
+    assert result["isError"] is True
+    assert "必须先读取当前" in result["content"][0]["text"]
+    assert calls == []
