@@ -20,12 +20,12 @@ def connection_check_environment(monkeypatch):
 @pytest.mark.parametrize(
     ("final_presence", "expected_stage", "expected_reason"),
     [
-        ({"connector_id": "workbuddy-personal", "online": False}, "final_presence_online", "未确认 online"),
-        ({"connector_id": "workbuddy-personal"}, "final_presence_online", "未确认 online"),
+        ({"connector_id": "workbuddy-personal", "online": False}, "final_presence_online", "Hub 已接受心跳，但连接 presence 未确认 online"),
+        ({"connector_id": "workbuddy-personal"}, "final_presence_online", "Hub presence 缺少有效 online 布尔值"),
         ({"connector_id": "other-connector", "online": True}, "final_presence_identity", "identity"),
         ({"online": True}, "final_presence_identity", "identity"),
-        ({"connector_id": "workbuddy-personal", "online": "true"}, "final_presence_online", "未确认 online"),
-        ({"connector_id": "workbuddy-personal", "online": 1}, "final_presence_online", "未确认 online"),
+        ({"connector_id": "workbuddy-personal", "online": "true"}, "final_presence_online", "Hub presence 缺少有效 online 布尔值"),
+        ({"connector_id": "workbuddy-personal", "online": 1}, "final_presence_online", "Hub presence 缺少有效 online 布尔值"),
         (["malformed-final-presence"], "final_presence_shape", "最终 presence 响应格式无效"),
         (None, "final_presence_shape", "最终 presence 响应格式无效"),
     ],

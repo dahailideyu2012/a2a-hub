@@ -15,6 +15,8 @@ MAX_ACTIVE_LEASES = 1
 HANDSHAKE_READY = False
 HANDSHAKE_CACHE_KEY: tuple[str, str, str] | None = None
 HANDSHAKE_LOCK = threading.Lock()
+RECOVERY_SNAPSHOT_LOCK = threading.Lock()
+LAST_RECOVERY_SNAPSHOT: tuple[tuple[str, str, str], str] | None = None
 TOOLS = [
  {"name":"workbuddy_connector_status","description":"与 Hub 完成协议握手并读取连接 presence；online 只表示最近收到认证心跳，不代表 Desktop UI 已启动。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_heartbeat","description":"向 Hub 发送一次认证心跳。status 可为 idle/busy/degraded；只发送单次心跳，不启动后台轮询。","inputSchema":{"type":"object","properties":{"status":{"type":"string","enum":["idle","busy","degraded"]},"current_task_id":{"type":"string","maxLength":128}},"required":["status"]}},
@@ -141,10 +143,12 @@ def _handshake_cache_key() -> tuple[str, str, str]:
 
 
 def _invalidate_handshake() -> None:
- global HANDSHAKE_READY, HANDSHAKE_CACHE_KEY
+ global HANDSHAKE_READY, HANDSHAKE_CACHE_KEY, LAST_RECOVERY_SNAPSHOT
  with HANDSHAKE_LOCK:
   HANDSHAKE_READY = False
   HANDSHAKE_CACHE_KEY = None
+ with RECOVERY_SNAPSHOT_LOCK:
+  LAST_RECOVERY_SNAPSHOT = None
 
 
 def _ensure_handshake() -> dict[str,Any]:
@@ -180,37 +184,86 @@ def _validate_heartbeat_receipt(result: dict[str,Any], payload: dict[str,Any]) -
   raise RuntimeError("Hub 心跳回执 cancel_reason 格式无效")
  return result
 
+
+def _post_heartbeat(payload: dict[str,Any]) -> dict[str,Any]:
+ """Send one heartbeat and invalidate cached handshake on auth/protocol rejection."""
+ try:
+  return _post("heartbeat", payload)
+ except RuntimeError as exc:
+  if str(exc).startswith(("Hub HTTP 401:", "Hub HTTP 403:", "Hub HTTP 409:", "Hub HTTP 426:")):
+   _invalidate_handshake()
+  raise
+
+
+def _presence_issue(result: Any, connector_id: str, require_online: bool = False) -> str | None:
+ """Return a stable validation code for a presence response without leaking its contents."""
+ if not isinstance(result, dict):
+  return "shape"
+ if result.get("connector_id") != connector_id:
+  return "identity"
+ if not isinstance(result.get("online"), bool):
+  return "online_type"
+ if require_online and result.get("online") is not True:
+  return "offline"
+ return None
+
 def tool_status(_args: dict[str,Any]) -> dict[str,Any]:
  _ensure_handshake()
  result = _get("presence")
- if not isinstance(result, dict) or result.get("connector_id") != _connector_id():
+ issue = _presence_issue(result, _connector_id())
+ if issue == "identity":
   _invalidate_handshake()
   raise RuntimeError("Hub presence connector identity mismatch")
- if not isinstance(result.get("online"), bool):
+ if issue == "shape":
+  raise RuntimeError("Hub presence response must be an object")
+ if issue == "online_type":
   raise RuntimeError("Hub presence response lacks a valid online boolean")
  return _ok(result)
 
 def tool_recovery_diagnostics(_args: dict[str,Any]) -> dict[str,Any]:
+ global LAST_RECOVERY_SNAPSHOT
  # Diagnostics must not handshake: a handshake intentionally clears prior error/retry
  # history, which would hide the state this read-only tool is meant to inspect.
  result=_get("diagnostics")
- if result.get("connector_id") != _connector_id():
+ if not isinstance(result,dict):
+  raise RuntimeError("Hub diagnostics response must be an object")
+ connector_id=_connector_id()
+ if result.get("connector_id") != connector_id:
   raise RuntimeError("Hub diagnostics connector identity mismatch")
  snapshot_id=result.get("recovery_snapshot_id")
  if not isinstance(snapshot_id,str) or not re.fullmatch(r"[0-9a-f]{64}",snapshot_id):
   raise RuntimeError("Hub diagnostics response lacks a valid recovery snapshot ID")
  if result.get("diagnostics_version") != 4:
   raise RuntimeError("Hub diagnostics version 4 is required for recovery decisions")
+ recovery=result.get("recovery")
+ if not isinstance(recovery,dict) or not isinstance(recovery.get("action"),str):
+  raise RuntimeError("Hub diagnostics recovery section is invalid")
+ if recovery.get("automatic_actions_enabled") is not False:
+  raise RuntimeError("Hub diagnostics must confirm automatic recovery actions are disabled")
+ operator_decision=result.get("operator_decision")
+ if operator_decision is not None and not isinstance(operator_decision,dict):
+  raise RuntimeError("Hub diagnostics operator decision section is invalid")
+ snapshot_key=_handshake_cache_key()
+ with RECOVERY_SNAPSHOT_LOCK:
+  LAST_RECOVERY_SNAPSHOT=(snapshot_key,snapshot_id)
  return _ok(result)
 
 
 def tool_record_recovery_decision(args: dict[str,Any]) -> dict[str,Any]:
+ global LAST_RECOVERY_SNAPSHOT
  snapshot_id=args.get("snapshot_id")
  disposition=args.get("disposition")
  if not isinstance(snapshot_id,str) or not re.fullmatch(r"[0-9a-f]{64}",snapshot_id):
   raise RuntimeError("snapshot_id 必须是 64 位小写十六进制")
  if disposition not in {"acknowledged","deferred","dismissed"}:
   raise RuntimeError("disposition 必须是 acknowledged、deferred 或 dismissed")
+ snapshot_key=_handshake_cache_key()
+ with RECOVERY_SNAPSHOT_LOCK:
+  current=LAST_RECOVERY_SNAPSHOT
+  if current is None or current != (snapshot_key,snapshot_id):
+   raise RuntimeError("必须先读取当前 connector 的恢复诊断快照；快照缺失或已过期")
+  # Consume before the write: if the response is lost, re-read diagnostics before retrying.
+  LAST_RECOVERY_SNAPSHOT=None
  # This endpoint records only an operator decision. It does not handshake or
  # perform the recommended recovery action, and it never touches task APIs.
  result=_post("recovery/decision",{
@@ -234,15 +287,13 @@ def tool_heartbeat(args: dict[str,Any]) -> dict[str,Any]:
  if status not in {"idle","busy","degraded"}: raise RuntimeError("status 必须是 idle、busy 或 degraded")
  task_id=args.get("current_task_id")
  if task_id is not None and (not isinstance(task_id,str) or len(task_id)>128): raise RuntimeError("current_task_id 无效")
+ if status == "idle" and task_id is not None:
+  raise RuntimeError("idle 心跳不能绑定 current_task_id")
+ if status == "busy" and (not isinstance(task_id,str) or not task_id.strip()):
+  raise RuntimeError("busy 心跳必须绑定有效 current_task_id")
  _ensure_handshake()
  payload={"connector_id":_connector_id(),"heartbeat_id":"hb-"+uuid.uuid4().hex,"status":status,"current_task_id":task_id}
- try:
-  result = _post("heartbeat",payload)
- except RuntimeError as exc:
-  if str(exc).startswith(("Hub HTTP 401:", "Hub HTTP 403:", "Hub HTTP 409:", "Hub HTTP 426:")):
-   _invalidate_handshake()
-  raise
- return _ok(_validate_heartbeat_receipt(result, payload))
+ return _ok(_validate_heartbeat_receipt(_post_heartbeat(payload), payload))
 
 
 
@@ -257,22 +308,15 @@ def tool_check_task_cancellation(args: dict[str,Any]) -> dict[str,Any]:
  _lease(task_id)
  _ensure_handshake()
  heartbeat_id="hb-"+uuid.uuid4().hex
- response=_post("heartbeat",{
+ heartbeat_payload={
   "connector_id":_connector_id(),
   "heartbeat_id":heartbeat_id,
   "status":"busy",
   "current_task_id":task_id,
- })
- if response.get("accepted") is not True:
-  raise RuntimeError("Hub 未确认任务取消检查心跳")
- if response.get("connector_id") != _connector_id() or response.get("current_task_id") != task_id:
-  raise RuntimeError("Hub 心跳回执身份或任务不匹配")
- cancel_requested=response.get("cancel_requested")
- if not isinstance(cancel_requested,bool):
-  raise RuntimeError("Hub 心跳响应缺少有效 cancel_requested 布尔值")
+ }
+ response=_validate_heartbeat_receipt(_post_heartbeat(heartbeat_payload),heartbeat_payload)
+ cancel_requested=response["cancel_requested"]
  reason=response.get("cancel_reason")
- if reason is not None and not isinstance(reason,str):
-  raise RuntimeError("Hub 心跳响应 cancel_reason 格式无效")
  discarded=False
  if cancel_requested:
   # The task is already terminal on the Hub. Dropping the local lease prevents
@@ -325,16 +369,19 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   raise _connection_check_failure("presence_before",check_id,started_at,observed,"读取初始 presence 失败") from None
  presence_before_observed_at=_utc_now()
  observed["presence_before_observed_at"]=presence_before_observed_at
- if not isinstance(before,dict):
-  raise _connection_check_failure("presence_before_shape",check_id,started_at,observed,"初始 presence 响应格式无效") from None
- if before.get("connector_id") != _connector_id():
-  raise _connection_check_failure("presence_before_identity",check_id,started_at,observed,"初始 presence connector identity 不匹配") from None
- if not isinstance(before.get("online"),bool):
-  raise _connection_check_failure("presence_before_online",check_id,started_at,observed,"初始 presence 缺少有效 online 布尔值") from None
+ presence_issue = _presence_issue(before,_connector_id())
+ presence_failure = {
+  "shape": ("presence_before_shape","初始 presence 响应格式无效"),
+  "identity": ("presence_before_identity","初始 presence connector identity 不匹配"),
+  "online_type": ("presence_before_online","初始 presence 缺少有效 online 布尔值"),
+ }
+ if presence_issue:
+  stage,reason=presence_failure[presence_issue]
+  raise _connection_check_failure(stage,check_id,started_at,observed,reason) from None
  heartbeat_id="hb-"+uuid.uuid4().hex
  heartbeat_payload={"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None}
  try:
-  receipt=_post("heartbeat",heartbeat_payload)
+  receipt=_post_heartbeat(heartbeat_payload)
  except Exception:
   raise _connection_check_failure("heartbeat_request",check_id,started_at,observed,"发送连接检查心跳失败") from None
  heartbeat_observed_at=_utc_now()
@@ -351,12 +398,16 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   raise _connection_check_failure("presence_after",check_id,started_at,observed,"读取最终 presence 失败") from None
  presence_after_observed_at=_utc_now()
  observed["presence_after_observed_at"]=presence_after_observed_at
- if not isinstance(after,dict):
-  raise _connection_check_failure("final_presence_shape",check_id,started_at,observed,"最终 presence 响应格式无效") from None
- if after.get("online") is not True:
-  raise _connection_check_failure("final_presence_online",check_id,started_at,observed,"Hub 已接受心跳，但连接 presence 未确认 online") from None
- if after.get("connector_id") != _connector_id():
-  raise _connection_check_failure("final_presence_identity",check_id,started_at,observed,"Hub presence connector identity 与当前配置不匹配") from None
+ presence_issue = _presence_issue(after,_connector_id(),require_online=True)
+ presence_failure = {
+  "shape": ("final_presence_shape","最终 presence 响应格式无效"),
+  "identity": ("final_presence_identity","Hub presence connector identity 与当前配置不匹配"),
+  "online_type": ("final_presence_online","Hub presence 缺少有效 online 布尔值"),
+  "offline": ("final_presence_online","Hub 已接受心跳，但连接 presence 未确认 online"),
+ }
+ if presence_issue:
+  stage,reason=presence_failure[presence_issue]
+  raise _connection_check_failure(stage,check_id,started_at,observed,reason) from None
  completed_at=_utc_now()
  return _ok({
   "connection_check":"passed",
