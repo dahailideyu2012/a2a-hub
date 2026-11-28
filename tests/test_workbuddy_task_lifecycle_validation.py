@@ -9,12 +9,21 @@ import workbuddy_mcp_server as server
 
 
 @pytest.fixture(autouse=True)
-def clean_leases():
+def clean_leases(monkeypatch):
     with server.LEASES_LOCK:
         server.LEASES.clear()
+    server.HANDSHAKE_READY = False
+    server.HANDSHAKE_CACHE_KEY = None
+    server.LAST_RECOVERY_SNAPSHOT = None
+    monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL", "https://hub.example.test")
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN", "x" * 48)
+    monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID", "workbuddy-personal")
     yield
     with server.LEASES_LOCK:
         server.LEASES.clear()
+    server.HANDSHAKE_READY = False
+    server.HANDSHAKE_CACHE_KEY = None
+    server.LAST_RECOVERY_SNAPSHOT = None
 
 
 def seed(task_id="task-validation", expires_in=120):
@@ -180,7 +189,8 @@ def test_t177_claim_accepts_valid_filters_and_sends_normalized_payload(monkeypat
     monkeypatch.setattr(server, "_post", fake_post)
     result = server.call_tool("workbuddy_claim_task", {"agent_ids": ["echo", "codex"], "lease_seconds": 60})
     assert result["isError"] is False
-    assert calls == [("handshake", calls[0][1]), ("claim", {"agent_ids": ["echo", "codex"], "lease_seconds": 60})]
+    assert [path for path, _ in calls] == ["handshake", "claim"]
+    assert calls[1][1] == {"agent_ids": ["echo", "codex"], "lease_seconds": 60}
 
 
 # T178 — claim receipts must use strict, bounded lease fields and task identity.
