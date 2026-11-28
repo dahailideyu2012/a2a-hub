@@ -210,7 +210,7 @@ def test_t178_claim_rejects_invalid_expiry_receipts_without_storing_lease(monkey
     assert server.LEASES == {}
 
 
-@pytest.mark.parametrize("task_id", [None, 7, "", "   ", "bad\\nkey", "x" * 129])
+@pytest.mark.parametrize("task_id", [None, 7, "", "   ", "bad\nkey", "x" * 129])
 def test_t178_claim_rejects_invalid_task_identity_without_storing_lease(monkeypatch, task_id):
     def fake_post(path, payload):
         if path == "handshake":
@@ -266,7 +266,7 @@ def test_t179_prune_preserves_valid_unexpired_lease():
 
 
 # T180 — heartbeat and cancellation share the strict task identity boundary.
-@pytest.mark.parametrize("task_id", ["   ", "bad\\nkey", "x" * 129, 7, True])
+@pytest.mark.parametrize("task_id", ["   ", "bad\nkey", "x" * 129, 7, True])
 def test_t180_heartbeat_rejects_invalid_current_task_id_before_network(monkeypatch, task_id):
     calls = []
     monkeypatch.setattr(server, "_post", lambda path, payload: calls.append(path) or {})
@@ -275,7 +275,7 @@ def test_t180_heartbeat_rejects_invalid_current_task_id_before_network(monkeypat
     assert calls == []
 
 
-@pytest.mark.parametrize("task_id", ["   ", "bad\\nkey", "x" * 129, 7, True])
+@pytest.mark.parametrize("task_id", ["   ", "bad\nkey", "x" * 129, 7, True])
 def test_t180_cancellation_rejects_invalid_task_id_before_network(monkeypatch, task_id):
     calls = []
     monkeypatch.setattr(server, "_post", lambda path, payload: calls.append(path) or {})
