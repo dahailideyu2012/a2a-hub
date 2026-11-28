@@ -9,6 +9,7 @@ def reset_state(monkeypatch):
  with server.LEASES_LOCK: server.LEASES.clear()
  server.HANDSHAKE_READY=False
  server.HANDSHAKE_CACHE_KEY=None
+ server.LAST_RECOVERY_SNAPSHOT=None
  monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_ID","workbuddy-personal")
  monkeypatch.setenv("A2A_WORKBUDDY_HUB_URL","https://hub.example.test")
  monkeypatch.setenv("A2A_WORKBUDDY_CONNECTOR_TOKEN","x"*48)
@@ -570,6 +571,14 @@ def test_record_recovery_decision_posts_only_receipt_and_validates_response(monk
         }
 
     monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", lambda path: {
+        "connector_id": "workbuddy-personal",
+        "diagnostics_version": 4,
+        "recovery_snapshot_id": snapshot_id,
+        "recovery": {"action": "reconnect", "automatic_actions_enabled": False},
+        "operator_decision": None,
+    })
+    assert server.tool_recovery_diagnostics({})["isError"] is False
     result = server.call_tool("workbuddy_record_recovery_decision", {
         "snapshot_id": snapshot_id,
         "disposition": "deferred",
@@ -609,6 +618,14 @@ def test_record_recovery_decision_fails_closed_on_mismatched_receipt(monkeypatch
         "action_executed": False,
         "automatic_actions_enabled": False,
     })
+    monkeypatch.setattr(server, "_get", lambda _path: {
+        "connector_id": "workbuddy-personal",
+        "diagnostics_version": 4,
+        "recovery_snapshot_id": snapshot_id,
+        "recovery": {"action": "reconnect", "automatic_actions_enabled": False},
+        "operator_decision": None,
+    })
+    assert server.tool_recovery_diagnostics({})["isError"] is False
     result = server.call_tool("workbuddy_record_recovery_decision", {
         "snapshot_id": snapshot_id,
         "disposition": "acknowledged",
