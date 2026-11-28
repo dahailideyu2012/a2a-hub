@@ -41,3 +41,12 @@ Run the focused connector regression suite, compileall, and the full pytest suit
 - **T163:** reuse a successful handshake only while the complete cache key remains unchanged; repeated checks with identical configuration must not send another handshake.
 - **T164:** changing the Hub URL or connector token changes the cache key and forces a fresh handshake. The token is represented in the cache key only by a SHA-256 fingerprint and is never copied into the handshake payload.
 - These tests stub the HTTP boundary and verify local receipt/cache behavior only. They do not prove a real Hub, WorkBuddy Desktop, or Connector network session.
+
+
+## T165–T168 — connection-check stage hardening
+
+- **T165:** validate the initial presence response before sending the idle heartbeat: it must be an object for the configured connector and contain a boolean `online`. An initial `online=false` remains valid because this check is designed to send a heartbeat and then confirm the final state.
+- **T166:** handshake failures return a stage-specific connection trace without copying arbitrary exception text, response bodies, headers, or credentials.
+- **T167:** initial presence transport failures are captured as `presence_before` failures with only timestamps observed before the failure.
+- **T168:** heartbeat-request and final-presence transport failures are captured with distinct stages; traces never fabricate timestamps for steps that did not complete.
+- These are local validation and mocked-boundary guarantees; they do not prove a live Hub or WorkBuddy Desktop session.
