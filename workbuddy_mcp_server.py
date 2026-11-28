@@ -541,11 +541,14 @@ def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
  payload = _lease(task_id)
  result = _post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew", payload)
  raw_expires_at = result.get("lease_expires_at") if isinstance(result, dict) else None
- if (isinstance(raw_expires_at, bool)
-     or not isinstance(raw_expires_at, (int, float))
-     or not math.isfinite(raw_expires_at)):
+ if isinstance(raw_expires_at, bool) or not isinstance(raw_expires_at, (int, float)):
   raise RuntimeError("Hub renew 响应缺少有效租约过期时间")
- expires_at = float(raw_expires_at)
+ try:
+  expires_at = float(raw_expires_at)
+ except (OverflowError, TypeError, ValueError):
+  raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
+ if not math.isfinite(expires_at):
+  raise RuntimeError("Hub renew 响应缺少有效租约过期时间")
  if expires_at <= time.time():
   raise RuntimeError("Hub renew 返回的租约已经过期")
  with LEASES_LOCK:
