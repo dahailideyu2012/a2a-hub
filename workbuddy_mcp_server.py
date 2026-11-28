@@ -577,7 +577,7 @@ def tool_result(args: dict[str,Any]) -> dict[str,Any]:
  if result_key is None:
   # Hash the task identity so the deterministic default always fits the API
   # result_key limit, including maximum-length task IDs.
-  result_key = "wb-result-" + hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+  result_key = (task_id + ":workbuddy-result-v1") if len(task_id) + len(":workbuddy-result-v1") <= 128 else ("wb-result-" + hashlib.sha256(task_id.encode("utf-8")).hexdigest())
  elif not isinstance(result_key, str) or not 8 <= len(result_key) <= 128:
   raise RuntimeError("result_key 必须是 8 到 128 字符的字符串")
  payload = {**_lease(task_id), "result_key": result_key, "state": state, "output": output}
