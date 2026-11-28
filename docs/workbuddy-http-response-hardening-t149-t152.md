@@ -32,3 +32,12 @@ Run the focused connector regression suite, compileall, and the full pytest suit
 - No retries for claim, start, or renew.
 - No change to progress/result idempotency claims.
 - No real Hub, Desktop, or WorkBuddy Connector network test is implied by unit tests.
+
+
+## T161–T164 — handshake receipt and cache guards
+
+- **T161:** reject a handshake response unless `accepted is True`; a rejected receipt must not mark the process handshake-ready.
+- **T162:** reject a receipt whose `connector_id` differs from the configured identity; do not cache the mismatched receipt.
+- **T163:** reuse a successful handshake only while the complete cache key remains unchanged; repeated checks with identical configuration must not send another handshake.
+- **T164:** changing the Hub URL or connector token changes the cache key and forces a fresh handshake. The token is represented in the cache key only by a SHA-256 fingerprint and is never copied into the handshake payload.
+- These tests stub the HTTP boundary and verify local receipt/cache behavior only. They do not prove a real Hub, WorkBuddy Desktop, or Connector network session.
