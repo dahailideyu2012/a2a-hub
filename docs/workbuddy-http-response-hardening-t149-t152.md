@@ -64,3 +64,12 @@ Run the focused connector regression suite, compileall, and the full pytest suit
 - **T171 — recovery snapshot consistency:** read-only diagnostics must return a structured recovery section and explicitly confirm automatic recovery actions are disabled. Reading a new snapshot replaces the previous process-local snapshot; no handshake or recovery action is triggered by the read.
 - **T172 — decision/diagnostic closure:** recording an operator disposition requires the exact recovery snapshot to have been read by the current connector configuration in this MCP process. The snapshot is consumed before the write attempt; after an uncertain/failed write, diagnostics must be read again before another decision attempt. The endpoint only records acknowledged/deferred/dismissed and never executes reconnect or task operations.
 - These protections are local protocol and mocked-boundary guarantees. They do not prove a live Hub/Desktop/Connector session or server-side recovery execution.
+
+
+## T173–T176 — task lifecycle input and lease receipt guards
+
+- **T173 — task identity validation:** start, renew, progress, and result tools require a non-empty string task ID of at most 128 characters and reject control characters before any network request. MCP tool schemas publish the same length bounds.
+- **T174 — renewal expiry validation:** renew accepts only a finite numeric Unix expiry strictly later than the current time. Booleans, numeric strings, NaN, infinities, and expired values are rejected; an invalid receipt never mutates the locally held lease.
+- **T175 — progress payload validation:** sequence must be a positive integer (not a boolean), and message must be a 1–4000 character string. Invalid progress never reaches the Hub or the idempotent retry wrapper.
+- **T176 — result payload validation:** state is limited to completed/failed, output is a string up to 20,000 characters, and an explicit result_key must be 8–128 characters. The default key preserves the existing task-based format when it fits; maximum-length task IDs use a deterministic SHA-256-derived key that remains within the API limit.
+- Tests use the MCP `call_tool` boundary with a stubbed HTTP function to prove invalid inputs are rejected before network activity. They do not claim live Hub or Desktop connectivity.
