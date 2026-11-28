@@ -399,6 +399,7 @@ def test_cancellation_checkpoint_keeps_lease_when_hub_reports_not_cancelled(monk
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         return {
             "accepted": True, "connector_id": "workbuddy-personal",
+            "receipt_id": payload["heartbeat_id"], "status": "busy",
             "current_task_id": "task-check", "cancel_requested": False,
             "cancel_reason": None,
         }
@@ -430,6 +431,7 @@ def test_cancellation_checkpoint_discards_lease_and_blocks_later_progress(monkey
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         return {
             "accepted": True, "connector_id": "workbuddy-personal",
+            "receipt_id": payload["heartbeat_id"], "status": "busy",
             "current_task_id": "task-cancelled", "cancel_requested": True,
             "cancel_reason": "task_cancelled_by_caller",
         }
@@ -471,6 +473,7 @@ def test_cancellation_checkpoint_fails_closed_on_missing_boolean_and_keeps_lease
             return {"accepted": True, "connector_id": "workbuddy-personal"}
         return {
             "accepted": True, "connector_id": "workbuddy-personal",
+            "receipt_id": payload["heartbeat_id"], "status": "busy",
             "current_task_id": "task-unknown-cancel",
         }
 
@@ -515,6 +518,8 @@ def test_cancellation_checkpoint_fails_closed_on_mismatched_receipt(
         receipt = {
             "accepted": True,
             "connector_id": "workbuddy-personal",
+            "receipt_id": payload["heartbeat_id"],
+            "status": "busy",
             "current_task_id": task_id,
             "cancel_requested": True,
             "cancel_reason": "task_cancelled_by_caller",
