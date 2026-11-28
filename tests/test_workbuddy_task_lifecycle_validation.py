@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import hashlib
 import time
 
 import pytest
@@ -81,7 +81,7 @@ def test_t175_progress_rejects_invalid_message_before_network(monkeypatch, messa
     assert calls == []
 
 
-@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf"), True, "9999999999", 1])
+@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf"), True, "9999999999", 1, 10 ** 10000])
 def test_t174_renew_rejects_nonfinite_or_invalid_expiry_without_mutating_lease(
     monkeypatch, expires_at
 ):
@@ -142,5 +142,5 @@ def test_t176_long_task_id_uses_bounded_stable_default_result_key(monkeypatch):
     assert result["isError"] is False
     result_key = calls[0][1]["result_key"]
     assert 8 <= len(result_key) <= 128
-    assert result_key == "wb-result-" + __import__("hashlib").sha256(task_id.encode()).hexdigest()
+    assert result_key == "wb-result-" + hashlib.sha256(task_id.encode()).hexdigest()
     assert task_id not in server.LEASES
