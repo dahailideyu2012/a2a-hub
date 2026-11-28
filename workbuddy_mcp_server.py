@@ -25,10 +25,10 @@ TOOLS = [
  {"name":"workbuddy_recovery_diagnostics","description":"只读读取 Hub 当前恢复诊断和 recovery_snapshot_id；不触发握手、心跳、重连或任务操作。用于在用户指示下记录人工处理决定。","inputSchema":{"type":"object","properties":{},"required":[]}},
  {"name":"workbuddy_record_recovery_decision","description":"仅在用户/操作员明确决定后，记录当前诊断快照的 acknowledged、deferred 或 dismissed 决定。必须先读取 workbuddy_recovery_diagnostics；过期快照会被拒绝。本工具只记录回执，绝不执行 reconnect、heartbeat probe、claim 或任务。","inputSchema":{"type":"object","properties":{"snapshot_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},"disposition":{"type":"string","enum":["acknowledged","deferred","dismissed"]}},"required":["snapshot_id","disposition"]}},
  {"name":"workbuddy_claim_task","description":"从 A2A Hub Pull 队列领取一项任务。只领取、不执行；返回任务 prompt。每次用户明确要求处理 Hub 任务时调用一次，不要循环轮询。","inputSchema":{"type":"object","properties":{"agent_ids":{"type":"array","items":{"type":"string"},"description":"可选：进一步缩小领取范围，不能扩大服务端白名单"},"lease_seconds":{"type":"integer","minimum":15,"maximum":900}},"required":[]}},
- {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
- {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]}},
- {"name":"workbuddy_progress_task","description":"向 Hub 回传任务进度。sequence 必须从 1 开始严格递增；重复提交相同 sequence/message 可安全重放。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"},"sequence":{"type":"integer","minimum":1},"message":{"type":"string","minLength":1,"maxLength":4000}},"required":["task_id","sequence","message"]}},
- {"name":"workbuddy_submit_result","description":"任务执行结束后回传 completed 或 failed 结果。不要回传凭据、token、cookie 或其他秘密。result_key 可省略，省略时客户端使用 task_id 派生稳定幂等键。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string"},"state":{"type":"string","enum":["completed","failed"]},"output":{"type":"string","maxLength":20000},"result_key":{"type":"string","minLength":8,"maxLength":128}},"required":["task_id","state","output"]}}
+ {"name":"workbuddy_start_task","description":"领取任务后、开始执行前调用。lease token 由 MCP 客户端内部保管，不要索取或输出 token。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
+ {"name":"workbuddy_renew_task","description":"任务执行时间较长、租约即将到期时续租。仅续当前 MCP 进程领取的任务。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128}},"required":["task_id"]}},
+ {"name":"workbuddy_progress_task","description":"向 Hub 回传任务进度。sequence 必须从 1 开始严格递增；重复提交相同 sequence/message 可安全重放。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"sequence":{"type":"integer","minimum":1},"message":{"type":"string","minLength":1,"maxLength":4000}},"required":["task_id","sequence","message"]}},
+ {"name":"workbuddy_submit_result","description":"任务执行结束后回传 completed 或 failed 结果。不要回传凭据、token、cookie 或其他秘密。result_key 可省略，省略时客户端使用 task_id 派生稳定幂等键。","inputSchema":{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"state":{"type":"string","enum":["completed","failed"]},"output":{"type":"string","maxLength":20000},"result_key":{"type":"string","minLength":8,"maxLength":128}},"required":["task_id","state","output"]}}
 ]
 
 def _write(obj: dict[str, Any]) -> None:
@@ -523,33 +523,71 @@ def tool_claim(args: dict[str,Any]) -> dict[str,Any]:
     raise RuntimeError("本地活动租约数量超过限制，拒绝覆盖现有租约")
    LEASES[task_id]={"lease_token":lease_token,"lease_version":lease_version,"lease_expires_at":expires_at}
  return _ok({"claimed":True,"task_id":task_id,"agent_id":task.get("agentId"),"state":(task.get("status") or {}).get("state"),"prompt":_task_prompt(task),"lease_expires_at":lease.get("lease_expires_at"),"note":"租约凭据由本地 MCP 进程保管，不会返回给模型。"})
+def _validated_task_id(args: dict[str,Any]) -> str:
+ task_id = args.get("task_id")
+ if not isinstance(task_id, str):
+  raise RuntimeError("task_id 必须是字符串")
+ task_id = task_id.strip()
+ if not task_id or len(task_id) > 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in task_id):
+  raise RuntimeError("task_id 无效")
+ return task_id
+
+
 def tool_start(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start",_lease(task_id)))
+ task_id = _validated_task_id(args)
+ return _ok(_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/start", _lease(task_id)))
 def tool_renew(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload=_lease(task_id)
- result=_post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew",payload)
- try: expires_at=float(result["lease_expires_at"])
- except (KeyError,TypeError,ValueError): raise RuntimeError("Hub renew 响应缺少有效租约过期时间") from None
- if expires_at <= time.time(): raise RuntimeError("Hub renew 返回的租约已经过期")
+ task_id = _validated_task_id(args)
+ payload = _lease(task_id)
+ result = _post(f"tasks/{urllib.parse.quote(task_id,safe='')}/renew", payload)
+ raw_expires_at = result.get("lease_expires_at") if isinstance(result, dict) else None
+ if (isinstance(raw_expires_at, bool)
+     or not isinstance(raw_expires_at, (int, float))
+     or not math.isfinite(raw_expires_at)):
+  raise RuntimeError("Hub renew 响应缺少有效租约过期时间")
+ expires_at = float(raw_expires_at)
+ if expires_at <= time.time():
+  raise RuntimeError("Hub renew 返回的租约已经过期")
  with LEASES_LOCK:
-  current=LEASES.get(task_id)
+  current = LEASES.get(task_id)
   if (current is None or current.get("lease_token") != payload["lease_token"]
       or current.get("lease_version") != payload["lease_version"]):
    raise RuntimeError("Hub renew 回执对应的本地租约已变更；拒绝应用过期回执")
-  current["lease_expires_at"]=expires_at
+  current["lease_expires_at"] = expires_at
  return _ok(result)
 def tool_progress(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"sequence":args.get("sequence"),"message":args.get("message")}
- return _ok(_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress",payload))
+ task_id = _validated_task_id(args)
+ sequence = args.get("sequence")
+ message = args.get("message")
+ if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+  raise RuntimeError("sequence 必须是大于等于 1 的整数")
+ if not isinstance(message, str) or not 1 <= len(message) <= 4000:
+  raise RuntimeError("message 必须是 1 到 4000 字符的字符串")
+ payload = {**_lease(task_id), "sequence": sequence, "message": message}
+ return _ok(_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/progress", payload))
 def tool_result(args: dict[str,Any]) -> dict[str,Any]:
- task_id=str(args.get("task_id") or "").strip(); payload={**_lease(task_id),"result_key":args.get("result_key") or (task_id+":workbuddy-result-v1"),"state":args.get("state"),"output":args.get("output","")}
- result=_post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result",payload)
+ task_id = _validated_task_id(args)
+ state = args.get("state")
+ output = args.get("output")
+ result_key = args.get("result_key")
+ if state not in {"completed", "failed"}:
+  raise RuntimeError("state 必须是 completed 或 failed")
+ if not isinstance(output, str) or len(output) > 20000:
+  raise RuntimeError("output 必须是最多 20000 字符的字符串")
+ if result_key is None:
+  # Hash the task identity so the deterministic default always fits the API
+  # result_key limit, including maximum-length task IDs.
+  result_key = "wb-result-" + hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+ elif not isinstance(result_key, str) or not 8 <= len(result_key) <= 128:
+  raise RuntimeError("result_key 必须是 8 到 128 字符的字符串")
+ payload = {**_lease(task_id), "result_key": result_key, "state": state, "output": output}
+ result = _post_idempotent(f"tasks/{urllib.parse.quote(task_id,safe='')}/result", payload)
  with LEASES_LOCK:
-  current=LEASES.get(task_id)
+  current = LEASES.get(task_id)
   if (current is None or current.get("lease_token") != payload["lease_token"]
       or current.get("lease_version") != payload["lease_version"]):
    raise RuntimeError("结果回执对应的本地租约已变更；拒绝清理新租约")
-  LEASES.pop(task_id,None)
+  LEASES.pop(task_id, None)
  return _ok(result)
 TOOL_FUNCS={"workbuddy_connector_status":tool_status,"workbuddy_heartbeat":tool_heartbeat,"workbuddy_check_task_cancellation":tool_check_task_cancellation,"workbuddy_connection_check":tool_connection_check,"workbuddy_recovery_diagnostics":tool_recovery_diagnostics,"workbuddy_record_recovery_decision":tool_record_recovery_decision,"workbuddy_claim_task":tool_claim,"workbuddy_start_task":tool_start,"workbuddy_renew_task":tool_renew,"workbuddy_progress_task":tool_progress,"workbuddy_submit_result":tool_result}
 def call_tool(name: str,args: dict[str,Any]) -> dict[str,Any]:
