@@ -369,12 +369,15 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   raise _connection_check_failure("presence_before",check_id,started_at,observed,"读取初始 presence 失败") from None
  presence_before_observed_at=_utc_now()
  observed["presence_before_observed_at"]=presence_before_observed_at
- if not isinstance(before,dict):
-  raise _connection_check_failure("presence_before_shape",check_id,started_at,observed,"初始 presence 响应格式无效") from None
- if before.get("connector_id") != _connector_id():
-  raise _connection_check_failure("presence_before_identity",check_id,started_at,observed,"初始 presence connector identity 不匹配") from None
- if not isinstance(before.get("online"),bool):
-  raise _connection_check_failure("presence_before_online",check_id,started_at,observed,"初始 presence 缺少有效 online 布尔值") from None
+ presence_issue = _presence_issue(before,_connector_id())
+ presence_failure = {
+  "shape": ("presence_before_shape","初始 presence 响应格式无效"),
+  "identity": ("presence_before_identity","初始 presence connector identity 不匹配"),
+  "online_type": ("presence_before_online","初始 presence 缺少有效 online 布尔值"),
+ }
+ if presence_issue:
+  stage,reason=presence_failure[presence_issue]
+  raise _connection_check_failure(stage,check_id,started_at,observed,reason) from None
  heartbeat_id="hb-"+uuid.uuid4().hex
  heartbeat_payload={"connector_id":_connector_id(),"heartbeat_id":heartbeat_id,"status":"idle","current_task_id":None}
  try:
@@ -395,12 +398,16 @@ def tool_connection_check(_args: dict[str,Any]) -> dict[str,Any]:
   raise _connection_check_failure("presence_after",check_id,started_at,observed,"读取最终 presence 失败") from None
  presence_after_observed_at=_utc_now()
  observed["presence_after_observed_at"]=presence_after_observed_at
- if not isinstance(after,dict):
-  raise _connection_check_failure("final_presence_shape",check_id,started_at,observed,"最终 presence 响应格式无效") from None
- if after.get("online") is not True:
-  raise _connection_check_failure("final_presence_online",check_id,started_at,observed,"Hub 已接受心跳，但连接 presence 未确认 online") from None
- if after.get("connector_id") != _connector_id():
-  raise _connection_check_failure("final_presence_identity",check_id,started_at,observed,"Hub presence connector identity 与当前配置不匹配") from None
+ presence_issue = _presence_issue(after,_connector_id(),require_online=True)
+ presence_failure = {
+  "shape": ("final_presence_shape","最终 presence 响应格式无效"),
+  "identity": ("final_presence_identity","Hub presence connector identity 与当前配置不匹配"),
+  "online_type": ("final_presence_online","Hub presence 缺少有效 online 布尔值"),
+  "offline": ("final_presence_online","Hub 已接受心跳，但连接 presence 未确认 online"),
+ }
+ if presence_issue:
+  stage,reason=presence_failure[presence_issue]
+  raise _connection_check_failure(stage,check_id,started_at,observed,reason) from None
  completed_at=_utc_now()
  return _ok({
   "connection_check":"passed",
