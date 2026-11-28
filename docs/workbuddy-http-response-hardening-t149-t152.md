@@ -50,3 +50,9 @@ Run the focused connector regression suite, compileall, and the full pytest suit
 - **T167:** initial presence transport failures are captured as `presence_before` failures with only timestamps observed before the failure.
 - **T168:** heartbeat-request and final-presence transport failures are captured with distinct stages; traces never fabricate timestamps for steps that did not complete.
 - These are local validation and mocked-boundary guarantees; they do not prove a live Hub or WorkBuddy Desktop session.
+
+### T165–T168 acceptance follow-up — presence boundary regression coverage
+
+- The initial presence `online` field is a boolean observation, not a precondition that the connector is already online. A valid `online=false` response must still proceed to the idle heartbeat and final presence check; a regression test asserts the successful transition when final presence becomes online.
+- The final presence response must remain an object. Non-object values (including `null` and arrays) must produce the sanitized `final_presence_shape` trace rather than leaking an attribute/type exception.
+- These are local mocked-boundary regression tests. They do not establish a live Hub/Desktop/Connector session.

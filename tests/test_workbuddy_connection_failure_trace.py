@@ -26,6 +26,8 @@ def connection_check_environment(monkeypatch):
         ({"online": True}, "final_presence_identity", "identity"),
         ({"connector_id": "workbuddy-personal", "online": "true"}, "final_presence_online", "未确认 online"),
         ({"connector_id": "workbuddy-personal", "online": 1}, "final_presence_online", "未确认 online"),
+        (["malformed-final-presence"], "final_presence_shape", "最终 presence 响应格式无效"),
+        (None, "final_presence_shape", "最终 presence 响应格式无效"),
     ],
 )
 def test_connection_check_failure_includes_safe_trace_metadata(
@@ -152,6 +154,35 @@ def test_t165_initial_presence_is_validated_before_heartbeat(
     assert trace["failed_stage"] == expected_stage
     assert "heartbeat_observed_at" not in trace
     assert calls == ["handshake"]
+
+
+def test_t165_initial_online_false_is_valid_and_heartbeat_still_runs(monkeypatch):
+    calls = []
+    get_count = 0
+
+    def fake_post(path, payload):
+        calls.append(path)
+        return _successful_heartbeat(path, payload)
+
+    def fake_get(_path):
+        nonlocal get_count
+        get_count += 1
+        if get_count == 1:
+            return {"connector_id": "workbuddy-personal", "online": False}
+        return {"connector_id": "workbuddy-personal", "online": True}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+    result = server.call_tool("workbuddy_connection_check", {})
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["connection_check"] == "passed"
+    assert data["presence_online_before"] is False
+    assert data["presence_online_after"] is True
+    assert data["heartbeat_accepted"] is True
+    assert calls == ["handshake", "heartbeat"]
+    assert get_count == 2
 
 
 def test_t166_handshake_transport_failure_has_sanitized_trace(monkeypatch):
